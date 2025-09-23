@@ -22,9 +22,7 @@ class FreezeCache:
     # public
     # ----------------------------------------------------------
     def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
-        x, y, z = sq
-        if not self.occupancy[z, y, x].item():
-            return False
+        return sq in self._frozen[victim]
 
     def apply_move(self, mv: Move, mover: Color) -> None:
         """Update cache after move (full rebuild for now – O(V) but V=729)."""

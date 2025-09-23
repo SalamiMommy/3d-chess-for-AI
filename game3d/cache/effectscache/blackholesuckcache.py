@@ -7,7 +7,6 @@ from game3d.board.board import Board
 from game3d.effects.auras.blackholesuck import suck_candidates
 from game.move import Move
 
-
 class BlackHoleSuckCache:
     __slots__ = ("_pull_map", "_board")
 
@@ -19,9 +18,7 @@ class BlackHoleSuckCache:
         }
         self._rebuild()
 
-    # ---------- public ----------
     def pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Return {enemy_square: pull_target} for controller's turn-end."""
         return self._pull_map[controller]
 
     def apply_move(self, mv: Move, mover: Color) -> None:
@@ -32,22 +29,15 @@ class BlackHoleSuckCache:
         self._board.undo_move(mv)
         self._rebuild()
 
-    # ---------- internals ----------
     def _rebuild(self) -> None:
         for col in (Color.WHITE, Color.BLACK):
             self._pull_map[col] = suck_candidates(self._board, col)
 
-
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
 _suck_cache: Optional[BlackHoleSuckCache] = None
-
 
 def init_black_hole_suck_cache(board: Board) -> None:
     global _suck_cache
     _suck_cache = BlackHoleSuckCache(board)
-
 
 def get_black_hole_suck_cache() -> BlackHoleSuckCache:
     if _suck_cache is None:

@@ -15,7 +15,8 @@ from typing import List, Tuple, Optional, Callable
 from game.state import GameState
 from game.move import Move
 from common import in_bounds, add_coords
-
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 
 # ────────────────────────────────
 # CORE BLOCKING DECISION HELPER
