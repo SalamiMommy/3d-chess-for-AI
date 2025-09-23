@@ -1,0 +1,105 @@
+# game3d/movement/movetypes/pawnmovement.py
+
+"""3D Pawn move generation logic — pure movement rules, no registration."""
+
+from typing import List
+from pieces.enums import PieceType, Color
+from game.state import GameState
+from game.move import Move
+from common import in_bounds, add_coords
+
+
+def _is_on_start_rank(z: int, color: Color) -> bool:
+    """Check if pawn is on its starting rank in Z (Z=1 for White, Z=7 for Black in 0–8 indexing)."""
+    if color == Color.WHITE:
+        return z == 1
+    else:
+        return z == 7  # SIZE_Z - 2 = 9-2 = 7
+
+
+def _create_pawn_move(
+    from_pos: tuple[int, int, int],
+    to_pos: tuple[int, int, int],
+    color: Color,
+    is_capture: bool = False,
+    is_en_passant: bool = False
+) -> Move:
+    """Helper to create a Move with optional promotion flag — now based on Z."""
+    x, y, z = to_pos
+    is_promotion = (color == Color.WHITE and z == 8) or \
+                   (color == Color.BLACK and z == 0)
+
+    return Move(
+        from_coord=from_pos,
+        to_coord=to_pos,
+        is_capture=is_capture,
+        is_promotion=is_promotion,
+        is_en_passant=is_en_passant,
+        piece_type=PieceType.PAWN
+    )
+
+
+def generate_pawn_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    """
+    Generate all legal pawn moves from (x, y, z) — pawns move in Z-direction.
+    White: +Z | Black: -Z
+    Captures: diagonally in XZ, YZ, and full 3D diagonals (configurable).
+    Promotes at opposite Z-end.
+    Does NOT handle en passant yet — placeholder commented.
+    """
+    moves = []
+    board = state.board
+    current_color = state.current
+
+    # Get the piece — defensive check
+    pos = (x, y, z)
+    piece = board.piece_at(pos)
+    if piece is None or piece.color != current_color or piece.ptype != PieceType.PAWN:
+        return moves
+
+    color = piece.color
+    dz = 1 if color == Color.WHITE else -1  # Forward in Z
+
+    # --- 1. Regular forward move (same X,Y, +1 Z) ---
+    forward = add_coords(pos, (0, 0, dz))
+    if in_bounds(forward) and board.piece_at(forward) is None:
+        moves.append(_create_pawn_move(pos, forward, color))
+
+        # --- 2. Double-step from starting rank ---
+        if _is_on_start_rank(z, color):
+            double_forward = add_coords(pos, (0, 0, 2 * dz))
+            if (in_bounds(double_forward) and
+                board.piece_at(double_forward) is None and
+                board.piece_at(forward) is None):
+                moves.append(_create_pawn_move(pos, double_forward, color))
+
+    # --- 3. Capture moves (diagonally in XZ plane: ±X, ±Z, Y fixed) ---
+    for dx in (-1, 1):
+        capture = add_coords(pos, (dx, 0, dz))  # Keep Y the same, change X and Z
+        if not in_bounds(capture):
+            continue
+        target_piece = board.piece_at(capture)
+        if target_piece and target_piece.color != color:
+            moves.append(_create_pawn_move(pos, capture, color, is_capture=True))
+
+    # --- 4. Capture in YZ plane (same X, change Y and Z) ---
+    for dy in (-1, 1):
+        capture_yz = add_coords(pos, (0, dy, dz))
+        if in_bounds(capture_yz):
+            target = board.piece_at(capture_yz)
+            if target and target.color != color:
+                moves.append(_create_pawn_move(pos, capture_yz, color, is_capture=True))
+
+    # --- 5. Full 3D diagonal capture (change X, Y, Z) ---
+    for dx in (-1, 1):
+        for dy in (-1, 1):
+            capture_3d = add_coords(pos, (dx, dy, dz))
+            if in_bounds(capture_3d):
+                target = board.piece_at(capture_3d)
+                if target and target.color != color:
+                    moves.append(_create_pawn_move(pos, capture_3d, color, is_capture=True))
+
+    # ⚠️ En passant not implemented — placeholder commented out for now
+    # if en_passant_square: ... → implement later in state or board logic
+
+    return moves

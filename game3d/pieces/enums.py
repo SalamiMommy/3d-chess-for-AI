@@ -5,13 +5,18 @@ class Color(IntEnum):
     WHITE = 0
     BLACK = 1
 
-@unique
+from enum import IntEnum
+
 class PieceType(IntEnum):
-    # 42 unique types – placeholders until you define movement
-    TYPE_00 = 0
-    TYPE_01 = 1
-    ...
-    TYPE_41 = 41
+    PAWN = 0
+    KNIGHT = 1
+    BISHOP = 2
+    ROOK = 3
+    QUEEN = 4
+    KING = 5
+    ORBITAL = 6  # ← ADD THIS LINE
+    # ... continue up to 39 for 40 total pieces
+    # e.g., CUSTOM_1 = 7, ..., CUSTOM_34 = 39
 
 # Convenience
-N_PIECE_TYPES = 42
+N_PIECE_TYPES = 40

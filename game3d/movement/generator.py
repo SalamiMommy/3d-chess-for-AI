@@ -1,30 +1,33 @@
-"""Registry + dispatcher for 42 move generators."""
-
-from typing import Callable
+# generator.py  (keep the registrar, swap the implementation)
+from __future__ import annotations
+from typing import Callable, List
 from pieces.enums import PieceType
 from game.state import GameState
 from game.move import Move
+from game3d.movement.pseudo_legal import generate_pseudo_legal_moves  # NEW
+from game3d.cache.manager import get_cache_manager
 
-# type alias
-Generator = Callable[[GameState, int, int, int], list[Move]]
 
-_REGISTRY: dict[PieceType, Generator] = {}
+_REGISTRY: dict[PieceType, Callable[[GameState, int, int, int], List[Move]]] = {}
 
-def register(pt: PieceType, gen: Generator):
-    """Decorator / func registrar."""
-    _REGISTRY[pt] = gen
-    return gen
+def register(pt: PieceType):
+    """Decorator."""
+    def _decorator(fn):
+        _REGISTRY[pt] = fn
+        return fn
+    return _decorator
 
-def generate_legal_moves(state: GameState) -> list[Move]:
-    """Dispatch to piece-specific generators."""
-    moves: list[Move] = []
-    for z in range(9):
-        for y in range(9):
-            for x in range(9):
-                p = state.board.pieces[z][y][x]
-                if p is None or p.color != state.current:
-                    continue
-                gen = _REGISTRY.get(p.ptype)
-                if gen:
-                    moves.extend(gen(state, x, y, z))
-    return moves
+def get_dispatcher(pt: PieceType) -> Callable[[GameState, int, int, int], List[Move]] | None:
+    """Expose lookup for pseudo-legal generator."""
+    return _REGISTRY.get(pt)
+
+# ---- public API ----
+def generate_legal_moves(state: GameState) -> List[Move]:
+    """Full legal moves (pseudo-legal → legality filter)."""
+    # local import → breaks any potential circle
+    from game3d.movement.legal import generate_legal_moves as _legal_gen
+    return _legal_gen(state)
+
+max_steps = 3
+if get_cache_manager().is_movement_buffed(start_sq, state.current):
+    max_steps += 1

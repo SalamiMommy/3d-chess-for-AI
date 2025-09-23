@@ -1,0 +1,70 @@
+"""Network Teleporter — teleports to any empty square adjacent to any friendly piece."""
+
+from typing import List, Set, Tuple
+from game.state import GameState
+from game.move import Move
+from common import in_bounds, add_coords
+
+
+def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    """
+    Generate all teleport moves to empty squares adjacent to ANY friendly piece.
+    Does NOT require the teleporter itself to be near anyone — it can be isolated!
+    """
+    moves = []
+    board = state.board
+    current_color = state.current
+    self_pos = (x, y, z)
+
+    # Verify this piece exists and belongs to current player
+    piece = board.piece_at(self_pos)
+    if piece is None or piece.color != current_color:
+        return moves
+
+    # We will collect all candidate target squares
+    candidate_targets: Set[Tuple[int, int, int]] = set()
+
+    # Directions for 3D adjacency (26 neighbors)
+    directions = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if not (dx == dy == dz == 0)
+    ]
+
+    # Scan ENTIRE BOARD for friendly pieces
+    for check_x in range(9):
+        for check_y in range(9):
+            for check_z in range(9):
+                check_pos = (check_x, check_y, check_z)
+                neighbor_piece = board.piece_at(check_pos)
+
+                # If it's a friendly piece (any, including self)
+                if neighbor_piece is not None and neighbor_piece.color == current_color:
+                    # Add all its adjacent EMPTY squares
+                    for dx, dy, dz in directions:
+                        target = add_coords(check_pos, (dx, dy, dz))
+
+                        if not in_bounds(target):
+                            continue
+
+                        # Only allow teleport to EMPTY squares
+                        if board.piece_at(target) is not None:
+                            continue
+
+                        candidate_targets.add(target)
+
+    # Create teleport move for each unique target
+    for target in candidate_targets:
+        moves.append(Move(
+            from_coord=self_pos,
+            to_coord=target,
+            is_capture=False,
+            metadata={
+                "is_teleport": True,
+                "mechanic": "network_step"
+            }
+        ))
+
+    return moves

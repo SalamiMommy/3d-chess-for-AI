@@ -1,0 +1,92 @@
+"""Reflecting Bishop — diagonal rays that bounce off cube walls (≤3 bounces)."""
+
+from typing import List, Tuple, Set
+from pieces.enums import PieceType
+from game.state import GameState
+from game.move import Move
+from game3d.movement.pathvalidation import validate_piece_at
+from common import in_bounds, add_coords
+
+
+MAX_BOUNCES = 3
+
+# ---------- helper ----------
+def reflect_direction(direction: Tuple[int, int, int], axis: int) -> Tuple[int, int, int]:
+    """Flip the chosen axis component of the direction vector."""
+    dx, dy, dz = direction
+    if axis == 0:
+        return (-dx, dy, dz)
+    if axis == 1:
+        return (dx, -dy, dz)
+    return (dx, dy, -dz)
+
+
+# ---------- core generator ----------
+def generate_reflecting_bishop_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    """Generate all legal reflecting-bishop moves (wall-bouncing diagonal rays)."""
+    start_pos = (x, y, z)
+
+    if not validate_piece_at(state, start_pos, expected_type=PieceType.REFLECTING_BISHOP):
+        return []
+
+    initial_directions = [
+        (dx, dy, dz)
+        for dx in (-1, 1)
+        for dy in (-1, 1)
+        for dz in (-1, 1)
+    ]
+
+    visited_targets: Set[Tuple[int, int, int]] = set()
+    moves: List[Move] = []
+    current_color = state.current
+
+    for init_dir in initial_directions:
+        pos = start_pos
+        direction = init_dir
+        bounces = 0
+
+        while bounces <= MAX_BOUNCES:
+            next_pos = add_coords(pos, direction)
+
+            # ----- wall reflection -----
+            if not in_bounds(next_pos):
+                nx, ny, nz = next_pos
+                for axis, coord in enumerate((nx, ny, nz)):
+                    if coord < 0 or coord > 8:
+                        direction = reflect_direction(direction, axis)
+                        next_pos = add_coords(pos, direction)
+                        bounces += 1
+                        break
+                else:
+                    break  # should never happen
+                continue
+
+            # ----- occupancy -----
+            target_piece = state.board.piece_at(next_pos)
+
+            # cannot land on friendly
+            if target_piece is not None and target_piece.color == current_color:
+                break
+
+            # add unique target
+            if next_pos not in visited_targets:
+                visited_targets.add(next_pos)
+                is_capture = target_piece is not None
+                moves.append(Move(
+                    from_coord=start_pos,
+                    to_coord=next_pos,
+                    is_capture=is_capture,
+                    metadata={
+                        "is_reflect": True,
+                        "bounces": bounces,
+                        "path": [start_pos, next_pos],
+                    }
+                ))
+
+            # stop ray at any piece
+            if target_piece is not None:
+                break
+
+            pos = next_pos
+
+    return moves

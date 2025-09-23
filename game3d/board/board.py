@@ -1,4 +1,6 @@
-"""9×9×9 board – tensor-first, zero-copy, training-ready."""
+"""
+game3d/board/board.py
+9×9×9 board – tensor-first, zero-copy, training-ready."""
 
 from __future__ import annotations
 import torch
@@ -16,9 +18,9 @@ from pieces.piece import Piece
 # ------------------------------------------------------------------
 # Internal layout of the 4-D tensor (C, D, H, W)
 # ------------------------------------------------------------------
-# channel 0..41      : white pieces (one-hot PieceType)
-# channel 42..83     : black pieces (one-hot PieceType)
-# channel 84         : current player plane (1 = white, 0 = black)
+# channel 0..39      : white pieces (one-hot PieceType)
+# channel 40..79     : black pieces (one-hot PieceType)
+# channel 80         : current player plane (1 = white, 0 = black)
 # ------------------------------------------------------------------
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)

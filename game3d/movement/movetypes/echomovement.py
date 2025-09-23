@@ -1,0 +1,117 @@
+# game3d/movement/movetypes/echomovement.py
+
+"""Echo piece — jumps to any square within radius 2 of any point offset by ±3 in each axis.
+Pure movement logic — no registration, no dispatcher.
+"""
+
+from __future__ import annotations
+from typing import List, Tuple, Set
+from pieces.enums import PieceType
+from game.state import GameState
+from game3d.movement.pathvalidation import validate_piece_at
+from common import in_bounds, add_coords, Coord
+from game.move import Move  # 👈 Make sure Move is imported
+
+
+# ==============================================================================
+# Precompute all offsets within radius 2 (Euclidean) — for bubble around anchor
+# ==============================================================================
+_BUBBLE_OFFSETS: List[Tuple[int, int, int]] = [
+    (dx, dy, dz)
+    for dx in range(-2, 3)  # -2 to +2 inclusive
+    for dy in range(-2, 3)
+    for dz in range(-2, 3)
+    if not (dx == 0 and dy == 0 and dz == 0)  # exclude center
+    if dx*dx + dy*dy + dz*dz <= 4  # Euclidean² <= 4 → distance <= 2
+]
+
+# ✅ 32 offsets — forms a "blocky sphere" of radius 2 (excluding center)
+
+
+# ==============================================================================
+# Precompute the 8 anchor offsets: all combinations of (±3, ±3, ±3)
+# ==============================================================================
+_ANCHOR_OFFSETS: List[Tuple[int, int, int]] = [
+    (dx, dy, dz)
+    for dx in (-3, 3)
+    for dy in (-3, 3)
+    for dz in (-3, 3)
+]
+# ✅ 8 anchors — corners of a 6x6x6 cube centered on the piece
+
+
+def generate_echo_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    """
+    Generate all legal moves for the Echo piece from (x, y, z).
+
+    Projects 8 anchor points at (x±3, y±3, z±3).
+    From each anchor, jumps to any square within Euclidean distance <= 2.
+
+    ✅ Movement is "blocky" — aligned to cubic grid.
+    ✅ Ignores blocking pieces — pure jump.
+    ✅ Can land on empty squares or capture enemy pieces.
+    ✅ Anchors don't need to be on-board or occupied.
+    """
+    pos: Coord = (x, y, z)
+
+    # Validate piece exists and is correct type/color
+    if not validate_piece_at(state, pos, PieceType.ECHO):
+        return []
+
+    # Use a set to avoid duplicate moves (bubbles may overlap)
+    move_targets: Set[Coord] = set()
+
+    # For each of the 8 anchor points
+    for ax, ay, az in _ANCHOR_OFFSETS:
+        anchor: Coord = add_coords(pos, (ax, ay, az))
+
+        # For each point within radius 2 of this anchor
+        for bx, by, bz in _BUBBLE_OFFSETS:
+            target: Coord = add_coords(anchor, (bx, by, bz))
+
+            if in_bounds(target):
+                move_targets.add(target)
+
+    # Generate moves — cannot land on friendly pieces
+    moves: List[Move] = []
+    current_color = state.current
+
+    for target in move_targets:
+        target_piece = state.board.piece_at(target)
+        is_capture = target_piece is not None and target_piece.color != current_color
+
+        # Echo can move to empty squares or capture enemies
+        # Cannot land on friendly pieces
+        if target_piece is None or is_capture:
+            moves.append(Move(
+                from_coord=pos,
+                to_coord=target,
+                is_capture=is_capture,
+                piece_type=PieceType.ECHO  # optional, if Move requires it
+            ))
+
+    return moves
+
+
+# ==============================================================================
+# Optional: Helper functions (unchanged)
+# ==============================================================================
+
+def get_bubble_offsets() -> List[Tuple[int, int, int]]:
+    """Return all offsets within radius 2 (excluding center)."""
+    return _BUBBLE_OFFSETS.copy()
+
+
+def get_anchor_offsets() -> List[Tuple[int, int, int]]:
+    """Return the 8 anchor offsets (±3, ±3, ±3)."""
+    return _ANCHOR_OFFSETS.copy()
+
+
+def count_valid_echo_moves_from(state: GameState, x: int, y: int, z: int) -> int:
+    """Utility: count how many echo moves are possible from given coord."""
+    return len(generate_echo_moves(state, x, y, z))
+
+
+def get_echo_theoretical_reach() -> int:
+    """Return max theoretical targets (8 anchors × 32 bubble points = 256, minus overlaps)."""
+    return 8 * len(_BUBBLE_OFFSETS)  # 256 (upper bound)

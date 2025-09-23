@@ -1,0 +1,74 @@
+"""3D Face Cone Slider — projects sliding rays in conical volumes outward from each face."""
+
+from typing import List, Tuple, Set
+from math import gcd
+from game.state import GameState
+from game.move import Move
+from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from common import in_bounds, add_coords
+
+
+def _get_primitive_vector(dx: int, dy: int, dz: int) -> Tuple[int, int, int]:
+    """Reduce a vector to its primitive (smallest integer) direction by dividing by GCD."""
+    if dx == dy == dz == 0:
+        return (0, 0, 0)
+    g = gcd(gcd(abs(dx), abs(dy)), abs(dz))
+    if g == 0:  # technically unreachable, but safe
+        g = 1
+    return (dx // g, dy // g, dz // g)
+
+
+def generate_face_cone_slider_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    """
+    Generate slider moves in 6 conical volumes, each projecting outward perpendicular to a face.
+    For example, from +Z face: all rays where dz > 0 and |dx| <= dz, |dy| <= dz.
+    Uses centralized sliding logic — stops when blocked or out of bounds.
+    """
+    start = (x, y, z)
+
+    # Validate piece exists and belongs to current player
+    if not validate_piece_at(state, start):
+        return []
+
+    # Collect unique primitive direction vectors for all 6 cones
+    directions: Set[Tuple[int, int, int]] = set()
+
+    # Define 6 face normals and their cone constraints
+    faces = [
+        (0, +1, lambda dx, dy, dz: dx > 0 and abs(dy) <= dx and abs(dz) <= dx),  # +X face
+        (0, -1, lambda dx, dy, dz: dx < 0 and abs(dy) <= -dx and abs(dz) <= -dx), # -X
+        (1, +1, lambda dx, dy, dz: dy > 0 and abs(dx) <= dy and abs(dz) <= dy),  # +Y
+        (1, -1, lambda dx, dy, dz: dy < 0 and abs(dx) <= -dy and abs(dz) <= -dy), # -Y
+        (2, +1, lambda dx, dy, dz: dz > 0 and abs(dx) <= dz and abs(dy) <= dz),  # +Z
+        (2, -1, lambda dx, dy, dz: dz < 0 and abs(dx) <= -dz and abs(dy) <= -dz), # -Z
+    ]
+
+    # Search within board limits (9x9x9 → max displacement = 8)
+    MAX_OFFSET = 8
+
+    for axis_idx, sign, cone_condition in faces:
+        for dx in range(-MAX_OFFSET, MAX_OFFSET + 1):
+            for dy in range(-MAX_OFFSET, MAX_OFFSET + 1):
+                for dz in range(-MAX_OFFSET, MAX_OFFSET + 1):
+                    if dx == dy == dz == 0:
+                        continue
+                    if not cone_condition(dx, dy, dz):
+                        continue
+                    prim = _get_primitive_vector(dx, dy, dz)
+                    directions.add(prim)
+
+    # Convert to list for slide_along_directions
+    direction_list = list(directions)
+
+    # ✅ Delegate all movement logic to centralized slider
+    moves = slide_along_directions(
+        state=state,
+        start=start,
+        directions=direction_list,
+        allow_capture=True,
+        allow_self_block=False,
+        max_steps=None,
+        edge_only=False
+    )
+
+    return moves
