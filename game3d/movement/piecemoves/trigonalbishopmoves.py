@@ -12,8 +12,8 @@ from game3d.movement.movetypes.trigonalbishopmovement import generate_trigonal_b
 __all__ = ['generate_trigonal_bishop_moves']
 
 
-@register(PieceType.TRIGONAL_BISHOP)
-def trigonal_bishop_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+@register(PieceType.TRIGONALBISHOP)
+def trigonalbishop_dispatcher(state: GameState, x: int, y: int, z: int) -> List['Move']:
     """
     Registered dispatcher for trigonal bishop moves.
     Simply delegates to the core move generator.

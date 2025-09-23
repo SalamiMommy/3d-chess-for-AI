@@ -215,6 +215,28 @@ class GameState:
         # otherwise no legal moves → checkmate
         return Result.WHITE if self.current == Color.BLACK else Result.BLACK
 
+    def is_terminal(self) -> bool:
+        return self.is_game_over()
+
+    def outcome(self) -> int:
+        """Return game result: 1=white win, -1=black win, 0=draw."""
+        res = self.result()
+        if res == Result.WHITE:
+            return 1
+        if res == Result.BLACK:
+            return -1
+        if res == Result.DRAW:
+            return 0
+        return None
+
+    def sample_pi(self, pi):
+        """Sample a move from policy vector pi. Stub for now."""
+        # In practice, you’d use np.random.choice over legal moves weighted by pi
+        moves = self.legal_moves()
+        if not moves:
+            return None
+        return moves[0]
+
     # ----------------------------------------------------------
     # debug
     # ----------------------------------------------------------
