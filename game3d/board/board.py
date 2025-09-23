@@ -95,6 +95,10 @@ class Board:
             return Piece(Color.BLACK, PieceType(int(black_plane.argmax())))
         return None
 
+    def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
+        """Share-Square aware – returns **all** pieces on square."""
+        from game3d.cache.manager import get_share_square_cache
+        return get_share_square_cache().pieces_at(sq)
     # --------------------------------------------------------------
     # bulk operations – fully vectorised
     # --------------------------------------------------------------

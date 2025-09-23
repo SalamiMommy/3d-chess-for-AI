@@ -28,5 +28,16 @@ def apply_movement_effects(
         raw_directions = [d for d in raw_directions if 0 in d]  # keep axial only
 
     # 3. future: poison → max_steps = 1, wall → no slides, etc.
-
-    return raw_directions, max_steps
+    # 4. geomancy blocked squares – filter directions that land on blocked square
+    #    (we do it here so every slider automatically respects blocks)
+    directions = [
+        d for d in directions
+        if not get_cache_manager().is_geomancy_blocked(
+            add_coords(start, (d[0] * max_steps, d[1] * max_steps, d[2] * max_steps)),
+            state.halfmove_clock,  # or state.history length – your ply counter
+        )
+    ]
+    if victim is not None and victim.ptype == PieceType.WALL:
+        if not get_cache_manager().can_capture_wall_from_behind(start_sq, target_sq, state.current):
+            return []  # illegal – not behind the wall
+    return directions, max_steps

@@ -82,6 +82,75 @@ class GameState:
         new_hist = self.history.copy()
         new_hist.append(mv)
 
+        # === BLACK-HOLE SUCK ===
+        pull_map = get_cache_manager().black_hole_pull_map(self.current)
+        for from_sq, to_sq in pull_map.items():
+            piece = new_board.piece_at(from_sq)
+            if piece is None or piece.color == self.current:
+                continue  # safety
+            new_board.set_piece(to_sq, piece)
+            new_board.set_piece(from_sq, None)  # vacate old square
+        # === END SUCK ===
+
+        # === WHITE-HOLE PUSH ===
+        push_map = get_cache_manager().white_hole_push_map(self.current)
+        for from_sq, to_sq in push_map.items():
+            piece = new_board.piece_at(from_sq)
+            if piece is None or piece.color == self.current:
+                continue
+            new_board.set_piece(to_sq, piece)
+            new_board.set_piece(from_sq, None)
+        # === END PUSH ===
+
+        # === BOMB DETONATION ===
+        trigger_piece = self.board.piece_at(mv.from_coord)
+        target_piece  = self.board.piece_at(mv.to_coord)
+
+        # trigger 1: enemy captured a bomb
+        if (target_piece is not None and
+            target_piece.ptype == PieceType.BOMB and
+            target_piece.color != self.current):
+            cleared = detonate(new_board, mv.to_coord)
+            for sq in cleared:
+                new_board.set_piece(sq, None)
+
+        # trigger 2: bomb moved onto its own square (self-detonation)
+        if (trigger_piece is not None and
+            trigger_piece.ptype == PieceType.BOMB and
+            mv.from_coord == mv.to_coord):          # you can define this as legal for bombs
+            cleared = detonate(new_board, mv.to_coord)
+            for sq in cleared:
+                new_board.set_piece(sq, None)
+        # === END BOMB ===
+
+        # === TRAILBLAZE COUNTERS ===
+        trail_cache = get_trailblaze_cache()
+        enemy_color = self.current.opposite()
+
+        # 1. enemy **moved through** squares (every slid square)
+        #    (you must pass the enemy's slid path from their generator)
+        #    below shows the idea for the enemy that just moved
+        enemy_slid = extract_enemy_slid_path(mv)  # you’ll implement this helper
+        for sq in enemy_slid:
+            if trail_cache.increment_counter(sq, enemy_color):
+                victim = new_board.piece_at(sq)
+                if victim is not None and victim.ptype != PieceType.KING:
+                    new_board.set_piece(sq, None)  # remove non-king
+                elif victim is not None and victim.ptype == PieceType.KING:
+                    # king spared only if priests alive
+                    if not _any_priest_alive(new_board, enemy_color):
+                        new_board.set_piece(sq, None)
+
+        # 2. enemy **ended** move on a trail square
+        if trail_cache.increment_counter(mv.to_coord, enemy_color):
+            victim = new_board.piece_at(mv.to_coord)
+            if victim is not None and victim.ptype != PieceType.KING:
+                new_board.set_piece(mv.to_coord, None)
+            elif victim is not None and victim.ptype == PieceType.KING:
+                if not _any_priest_alive(new_board, enemy_color):
+                    new_board.set_piece(mv.to_coord, None)
+        # === END TRAILBLAZE ===
+
         return GameState(
             board=new_board,
             current=self.current.opposite(),
@@ -108,7 +177,13 @@ class GameState:
             history=self.history[:-1],
             halfmove_clock=new_clock,
         )
-
+    def submit_block(self, sq: Tuple[int, int, int]) -> bool:
+        """Geomancer player requests to block an unoccupied square within 3-sphere."""
+        if not self.state.current_player_controls_geomancer():  # you’ll add this helper
+            return False
+        if sq not in block_candidates(self.state.board, self.state.current):
+            return False  # outside 3-sphere
+        return get_cache_manager().block_square(sq, len(self.state.history))  # ply = history length
     # ----------------------------------------------------------
     # game outcome
     # ----------------------------------------------------------

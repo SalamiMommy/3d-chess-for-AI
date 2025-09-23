@@ -1,18 +1,7 @@
-"""Raw Knight data."""
+"""Master definition for Knight – imports its dispatcher and effect caches."""
 
-from typing import Final
 from pieces.enums import PieceType
+from game3d.movement.piecemoves.knightmoves import knight_dispatcher
 
-TYPE: Final[PieceType] = PieceType.TYPE_01
-
-LEAP_VECTORS: Final[tuple[tuple[int, int, int], ...]] = (
-    ( 2, 1, 0), ( 2,-1, 0),
-    (-2, 1, 0), (-2,-1, 0),
-    ( 1, 2, 0), ( 1,-2, 0),
-    (-1, 2, 0), (-1,-2, 0),
-    # 3D extensions – add z ±2, ±1 combinations
-    ( 1, 0, 2), ( 1, 0,-2),
-    (-1, 0, 2), (-1, 0,-2),
-    ( 0, 1, 2), ( 0, 1,-2),
-    ( 0,-1, 2), ( 0,-1,-2),
-)
+DISPATCHER = knight_dispatcher
+CACHES = ["share_square"]  # Share-Square multi-occupancy

@@ -7,7 +7,6 @@ from pieces.enums import PieceType
 # --- register every listed type as a pure king mover ---
 pure_king_pieces = [
     PieceType.PRIEST,
-    PieceType.TWIN,
     PieceType.FREEZER,
     PieceType.WALL,
     PieceType.ARCHER,
