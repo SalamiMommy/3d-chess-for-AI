@@ -35,7 +35,7 @@ def generate_xz_queen_with_king_moves(state: GameState, x: int, y: int, z: int) 
     return combined_moves
 
 
-@register(PieceType.XZ_QUEEN)
+@register(PieceType.XZQUEEN)
 def xz_queen_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """
     Registered dispatcher for XZ queen moves.

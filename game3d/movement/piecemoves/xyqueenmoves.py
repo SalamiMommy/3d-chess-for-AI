@@ -36,7 +36,7 @@ def generate_xy_queen_with_king_moves(state: GameState, x: int, y: int, z: int) 
     return combined_moves
 
 
-@register(PieceType.XY_QUEEN)
+@register(PieceType.XYQUEEN)
 def xy_queen_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """
     Registered dispatcher for XY queen moves.

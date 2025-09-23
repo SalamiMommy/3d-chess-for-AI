@@ -12,7 +12,7 @@ from game3d.movement.movetypes.edgerookmovement import generate_edge_rook_moves
 __all__ = ['generate_edge_rook_moves']
 
 
-@register(PieceType.EDGE_ROOK)
+@register(PieceType.EDGEROOK)
 def edge_rook_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """
     Registered dispatcher for edge-rook moves.

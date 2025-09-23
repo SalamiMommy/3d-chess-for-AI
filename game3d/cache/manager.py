@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Optional, Set
 import torch
 from pieces.enums import Color, PieceType
-from game.move import Move
+from game3d.game.move import Move
 from game3d.board.board import Board
 from game3d.cache.movecache import MoveCache, init_cache as _init_move
 from game3d.cache.occupancycache import OccupancyCache, init_occupancy_cache, get_occupancy_cache
@@ -43,44 +43,26 @@ class CacheManager:
     def _rebuild_occupancy(self) -> None:
         self.occupancy.rebuild(self.board)
 
-    # ----------------------------------------------------------
-    # make / undo – single entry point for GameState
-    # ----------------------------------------------------------
-    def apply_move(self, mv: Move, mover: Color) -> None:
+    def apply_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
         self.board.apply_move(mv)
-        self._rebuild_occupancy()          # *** ONE scan ***
-        self.move.apply_move(mv, mover)    # incremental
+        self._rebuild_occupancy()
+        self.move.apply_move(mv, mover)
         for cache in self._effect.values():
-            cache.apply_move(mv, mover, self.occupancy)  # pass view
-        self._effect["movement_debuff"].apply_move(mv, mover)
-        self._effect["movement_buff"].apply_move(mv, mover)
-        self._effect["freeze"].apply_move(mv, mover)
-        self._effect["black_hole_suck"].apply_move(mv, mover)
-        self._effect["white_hole_push"].apply_move(mv, mover)
-        self._effect["trailblaze"].apply_move(mv, mover)
-        self._effect["geomancy"].apply_move(mv, mover, current_ply)
-        self._effect["archery"].apply_move(mv, mover)
-        self._effect["armoured"].apply_move(mv, mover)
-        self._effect["share_square"].apply_move(mv, mover)
-        self._effect["capture_from_behind"].apply_move(mv, mover)
+            # Only pass current_ply to geomancy cache
+            if isinstance(cache, GeomancyCache):
+                cache.apply_move(mv, mover, current_ply)
+            else:
+                cache.apply_move(mv, mover)
 
-    def undo_move(self, mv: Move, mover: Color) -> None:
+    def undo_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
         self.board.undo_move(mv)
         self._rebuild_occupancy()
         self.move.undo_move(mv, mover)
         for cache in self._effect.values():
-            cache.undo_move(mv, mover, self.occupancy)
-        self._effect["movement_debuff"].apply_move(mv, mover)
-        self._effect["movement_buff"].apply_move(mv, mover)
-        self._effect["freeze"].apply_move(mv, mover)
-        self._effect["black_hole_suck"].undo_move(mv, mover)
-        self._effect["white_hole_push"].undo_move(mv, mover)
-        self._effect["trailblaze"].undo_move(mv, mover)
-        self._effect["geomancy"].undo_move(mv, mover, current_ply)
-        self._effect["archery"].undo_move(mv, mover)
-        self._effect["armoured"].undo_move(mv, mover)
-        self._effect["share_square"].undo_move(mv, mover)
-        self._effect["capture_from_behind"].undo_move(mv, mover)
+            if isinstance(cache, GeomancyCache):
+                cache.undo_move(mv, mover, current_ply)
+            else:
+                cache.undo_move(mv, mover)
 
     def legal_moves(self, color: Color) -> List[Move]:
         return self.move.legal_moves(color)
@@ -126,9 +108,7 @@ class CacheManager:
 
     def top_piece(self, sq: Tuple[int, int, int]) -> Optional['Piece']:
         return self._effect["share_square"].top_piece(sq)
-# ------------------------------------------------------------------
-# module-level singleton
-# ------------------------------------------------------------------
+
 _manager: Optional[CacheManager] = None
 
 def init_cache_manager(board: Board) -> None:
@@ -140,7 +120,6 @@ def get_cache_manager() -> CacheManager:
         raise RuntimeError("CacheManager not initialised")
     return _manager
 
-# Effect cache direct accessors (for use by board, etc.)
 def get_share_square_cache() -> ShareSquareCache:
     return get_cache_manager()._effect["share_square"]
 

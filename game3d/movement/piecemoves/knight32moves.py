@@ -7,7 +7,7 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.knight32movement import generate_knight32_moves
 
 
-@register(PieceType.KNIGHT32)
+@register(PieceType._KNIGHT32)
 def knight32_dispatcher(state: GameState, x: int, y, z: int) -> List[Move]:
     return generate_knight32_moves(state, x, y, z)
 
