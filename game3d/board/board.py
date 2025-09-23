@@ -5,7 +5,7 @@ game3d/board/board.py
 from __future__ import annotations
 import torch
 import numpy as np
-from typing import Optional, Tuple, Iterable
+from typing import Optional, Tuple, Iterable, List
 from common import (
     SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_TOTAL_PLANES,
     N_COLOR_PLANES, N_PLANES_PER_SIDE, X, Y, Z,
@@ -15,13 +15,6 @@ from common import (
 from pieces.enums import Color, PieceType
 from pieces.piece import Piece
 
-# ------------------------------------------------------------------
-# Internal layout of the 4-D tensor (C, D, H, W)
-# ------------------------------------------------------------------
-# channel 0..39      : white pieces (one-hot PieceType)
-# channel 40..79     : black pieces (one-hot PieceType)
-# channel 80         : current player plane (1 = white, 0 = black)
-# ------------------------------------------------------------------
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
 CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
@@ -31,9 +24,6 @@ class Board:
 
     __slots__ = ("_tensor", "_hash")
 
-    # --------------------------------------------------------------
-    # construction
-    # --------------------------------------------------------------
     def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
         if tensor is None:
             self._tensor = torch.zeros(N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X, dtype=torch.float32)
@@ -43,38 +33,25 @@ class Board:
             self._tensor = tensor
         self._hash: Optional[int] = None
 
-    # --------------------------------------------------------------
-    # fast factories
-    # --------------------------------------------------------------
     @staticmethod
     def empty() -> Board:
         return Board()
 
     @staticmethod
     def from_fen(fen: str) -> Board:
-        """Placeholder – parses custom 9×9×9 FEN later."""
         # TODO: implement when you have a FEN spec
         return Board.empty()
 
-    # --------------------------------------------------------------
-    # raw tensor access (zero-copy)
-    # --------------------------------------------------------------
     def tensor(self) -> torch.Tensor:
-        """Return contiguous tensor (C,9,9,9) – ready for Conv3d."""
         return self._tensor.contiguous()
 
     def byte_hash(self) -> int:
-        """Fast hash for LRU caches."""
         if self._hash is None:
             self._hash = hash_board_tensor(self._tensor)
         return self._hash
 
-    # --------------------------------------------------------------
-    # piece-level API (still O(1) because we index a view)
-    # --------------------------------------------------------------
     def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
         x, y, z = c
-        # zero both colour slices first
         self._tensor[WHITE_SLICE, z, y, x] = 0.0
         self._tensor[BLACK_SLICE, z, y, x] = 0.0
         if p is not None:
@@ -96,54 +73,103 @@ class Board:
         return None
 
     def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        """Share-Square aware – returns **all** pieces on square."""
         from game3d.cache.manager import get_share_square_cache
         return get_share_square_cache().pieces_at(sq)
-    # --------------------------------------------------------------
-    # bulk operations – fully vectorised
-    # --------------------------------------------------------------
+
     def mirror_z(self) -> Board:
-        """Return a new board flipped along z (for data aug)."""
         return Board(self._tensor.flip(dims=(1,)))
 
     def rotate_90(self, k: int = 1) -> Board:
-        """Rotate x-y plane 90° k times (z unchanged)."""
-        # rotate dims 2,3
         t = torch.rot90(self._tensor, k, dims=(2, 3))
         return Board(t)
 
     def apply_player_plane(self, color: Color) -> None:
-        """Fill auxiliary plane in-place (1 = white, 0 = black)."""
         self._tensor[CURRENT_SLICE] = float(color)
 
-    # --------------------------------------------------------------
-    # numpy / python iteration helpers (only for move gen, not training)
-    # --------------------------------------------------------------
     def occupancy_mask(self) -> torch.Tensor:
-        """Boolean mask (9,9,9) True if square occupied."""
         return (self._tensor[WHITE_SLICE].sum(axis=0) +
                 self._tensor[BLACK_SLICE].sum(axis=0)).bool()
 
     def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
         occ = self.occupancy_mask()
-        indices = torch.argwhere(occ)          # (N, 3) tensor
+        indices = torch.argwhere(occ)
         for z, y, x in indices.tolist():
             c = (x, y, z)
             yield c, self.piece_at(c)
 
-    # --------------------------------------------------------------
-    # dataloader integration – zero-copy batch builder
-    # --------------------------------------------------------------
     def clone(self) -> Board:
         return Board(self._tensor.clone())
 
     def share_memory_(self) -> Board:
-        """Call before sending to worker processes."""
         self._tensor.share_memory_()
         return self
 
-    # --------------------------------------------------------------
-    # repr / debug
-    # --------------------------------------------------------------
-    def __repr__(self) -> str:  # pragma: no cover
+    def __repr__(self) -> str:
         return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
+
+    # --------------------------------------------------------------
+    # Move execution (NEW)
+    # --------------------------------------------------------------
+    def apply_move(self, mv) -> None:
+        """
+        Apply the move to the tensor.
+        mv: Move object with from_coord, to_coord, is_capture, is_promotion, etc.
+        """
+        from_coord = mv.from_coord
+        to_coord = mv.to_coord
+        piece = self.piece_at(from_coord)
+        if piece is None:
+            raise ValueError(f"No piece to move at {from_coord}")
+
+        # Handle capture: remove target piece at to_coord
+        if mv.is_capture:
+            self.set_piece(to_coord, None)
+
+        # Handle promotion (if applicable)
+        if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
+            promoted_piece = Piece(piece.color, mv.promotion_type)
+            self.set_piece(from_coord, None)
+            self.set_piece(to_coord, promoted_piece)
+        else:
+            self.set_piece(from_coord, None)
+            self.set_piece(to_coord, piece)
+
+        # En passant, castling, etc. can be handled here if implemented
+
+        self._hash = None
+
+    def undo_move(self, mv) -> None:
+        """
+        Undo the move on the tensor.
+        mv: Move object with from_coord, to_coord, is_capture, etc.
+        """
+        from_coord = mv.from_coord
+        to_coord = mv.to_coord
+
+        # Get the moved piece
+        piece = self.piece_at(to_coord)
+        if piece is None:
+            # If move was a promotion, the promoted piece would be here; revert to pawn
+            if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
+                original_piece = Piece(piece.color, PieceType.PAWN)
+                self.set_piece(from_coord, original_piece)
+                self.set_piece(to_coord, None)
+                return
+            raise ValueError(f"No piece to undo move at {to_coord}")
+
+        # Revert promotion
+        if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
+            original_piece = Piece(piece.color, PieceType.PAWN)
+            self.set_piece(from_coord, original_piece)
+            self.set_piece(to_coord, None)
+        else:
+            self.set_piece(from_coord, piece)
+            # Restore captured piece (if any)
+            if hasattr(mv, "captured_piece") and mv.captured_piece:
+                captured_color = piece.color.opposite()
+                captured_piece = Piece(captured_color, mv.captured_piece)
+                self.set_piece(to_coord, captured_piece)
+            else:
+                self.set_piece(to_coord, None)
+
+        self._hash = None

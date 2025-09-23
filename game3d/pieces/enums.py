@@ -29,7 +29,7 @@ class PieceType(IntEnum):
     XYQUEEN             = 16  # queen in XY plane only
     XZQUEEN             = 17  # queen in XZ plane only
     YZQUEEN             = 18  # queen in YZ plane only
-    VECTOSLIDER         = 19  # vector-slider (placeholder)
+    VECTORSLIDER        = 19  # vector-slider (placeholder)
     CONESLIDER          = 20  # cone-slider (placeholder)
     MIRROR              = 21  # mirror teleport
     FREEZER             = 22  # freeze aura
