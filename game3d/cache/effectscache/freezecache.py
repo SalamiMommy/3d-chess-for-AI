@@ -1,56 +1,45 @@
 """Incremental cache for frozen enemy squares."""
-
+#game3d/effects/freezcache.py
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional
-from pieces.enums import Color
+from game3d.pieces.enums import Color
 from game3d.board.board import Board
 from game3d.effects.auras.freeze import frozen_squares
-
+from game3d.movement.movepiece import Move
 
 class FreezeCache:
-    __slots__ = ("_frozen", "_board")
+    __slots__ = ("_frozen",)
 
-    def __init__(self, board: Board) -> None:
-        self._board = board
+    def __init__(self) -> None:
         self._frozen: Dict[Color, Set[Tuple[int, int, int]]] = {
             Color.WHITE: set(),
             Color.BLACK: set(),
         }
-        self._rebuild()
 
-    # ----------------------------------------------------------
-    # public
-    # ----------------------------------------------------------
+    # ---------- public ----------
     def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
         return sq in self._frozen[victim]
 
-    def apply_move(self, mv: Move, mover: Color) -> None:
-        """Update cache after move (full rebuild for now – O(V) but V=729)."""
-        self._board.apply_move(mv)
-        self._rebuild()
+    def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    def undo_move(self, mv: Move, mover: Color) -> None:
-        self._board.undo_move(mv)
-        self._rebuild()
+    def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    # ----------------------------------------------------------
-    # internals
-    # ----------------------------------------------------------
-    def _rebuild(self) -> None:
-        self._frozen[Color.WHITE] = frozen_squares(self._board, Color.BLACK)
-        self._frozen[Color.BLACK] = frozen_squares(self._board, Color.WHITE)
+    # ---------- internals ----------
+    def _rebuild(self, board: Board) -> None:
+        self._frozen[Color.WHITE] = frozen_squares(board, Color.BLACK)
+        self._frozen[Color.BLACK] = frozen_squares(board, Color.WHITE)
 
 
 # ------------------------------------------------------------------
-# module-level singleton
+# singleton
 # ------------------------------------------------------------------
 _freeze_cache: Optional[FreezeCache] = None
 
-
-def init_freeze_cache(board: Board) -> None:
+def init_freeze_cache() -> None:
     global _freeze_cache
-    _freeze_cache = FreezeCache(board)
-
+    _freeze_cache = FreezeCache()
 
 def get_freeze_cache() -> FreezeCache:
     if _freeze_cache is None:

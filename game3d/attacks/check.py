@@ -1,8 +1,8 @@
 """Check detector for 9×9×9: king is attacked AND all priests dead."""
-
+#game3d/attacks/check.py
 from __future__ import annotations
 from typing import Protocol, Optional, runtime_checkable
-from pieces.enums import PieceType, Color
+from game3d.pieces.enums import PieceType, Color
 
 
 @runtime_checkable
@@ -30,7 +30,7 @@ def square_attacked_by(
     """Is `square` under attack by any piece of `attacker_color`?"""
     # local import → breaks cycle
     from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
-    from game.state import GameState   # only used transiently
+    from game3d.game.gamestate import GameState   # only used transiently
 
     # build minimal state-like object for the generator
     # (you can also refactor pseudo_legal to accept a lighter protocol)
@@ -38,7 +38,7 @@ def square_attacked_by(
     tmp_state.board = board
     tmp_state.current = attacker_color
 
-    for mv in generate_pseudo_legal_moves(tmp_state):
+    for mv in generate_pseudo_legal_moves(board, attacker_color):
         if mv.to_coord == square:
             return True
     return False

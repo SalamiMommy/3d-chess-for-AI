@@ -1,16 +1,16 @@
 """Exports Friendly-Swap + king moves (combined) and registers them."""
 
 from typing import List
-from pieces.enums import PieceType
-from game.state import GameState
+from game3d.pieces.enums import PieceType
+from game3d.game.gamestate import GameState
 from game3d.movement.registry import register
 from game3d.movement.movetypes.friendlyswapmovement import generate_friendly_swap_moves
 from game3d.movement.movetypes.kingmovement import generate_king_moves
+from game3d.movement.movepiece import Move
 
-
-def generate_friendly_swap_with_king_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """Combine friendly-swap moves + 1-step king moves, deduplicated."""
-    swap_moves = generate_friendly_swap_moves(state, x, y, z)
+def generate_friendly_swap_with_king_moves(board, color, *coord, cache=None) -> List[Move]:
+def generate_friendly_swap_with_king_moves    from game3d.game.gamestate import GameState
+def generate_friendly_swap_with_king_moves    state = GameState(board, color, cache=cache)
     king_moves = generate_king_moves(state, x, y, z)
 
     seen = {m.to_coord for m in swap_moves}
@@ -22,8 +22,8 @@ def generate_friendly_swap_with_king_moves(state: GameState, x: int, y: int, z: 
     return combined
 
 
-@register(PieceType.FRIENDLY_SWAPPER)
-def friendly_swapper_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+@register(PieceType.SWAPPER)
+def friendly_swap_move_dispatcher(board, color, *coord, cache=None) -> List[Move]:
     """Registered dispatcher for Friendly-Swapper moves (now with king moves)."""
     return generate_friendly_swap_with_king_moves(state, x, y, z)
 

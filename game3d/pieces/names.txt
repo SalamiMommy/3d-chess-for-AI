@@ -1,42 +1,61 @@
-
-
 pawn
+
+vectorslider
+xyqueen
+infiltrator
 knight
 bishop
 rook
 queen
-king
 priest
-32knight
-31knight
+wall
+archer
+armour
+speeder
+slower
+geomancer
+freezer
 trigonalbishop
-hive
+blackhole
+whitehole
+
+king
+knight32
+knight31
 orbiter
 nebula
 echo
 panel
 edgerook
-xyqueen
 xzqueen
 yzqueen
-vectorslider
+hive
 coneslider
 mirror
-freezer
-wall
-archer
 bomb
 friendlyteleporter
-armour
-speeder
-slower
-geomancer
 swapper
 xzzigzag
 yzzigzag
 reflector
-blackhole
-whitehole
-infiltrator
 trailblazer
 spiral
+
+
+
+1st rank (z=1 for white and z=9 for black):
+reflector, coneslider, edgerook, echo, orbiter
+spiral, xzzigzag, xzqueen, xyqueen, trigonalbishop
+yzzigzag, friendlyteleporter, panel, hive, knight31
+bomb, swipper, nebula, knight32, friendlyteleporter
+orbiter, trigonalbishop, knight31, friendlyteleporter, king
+
+2nd rank (z=2 for white and z=8 for black):
+freezer, slower, blackhole, geomancer, bishop
+speeder, wall, wall, armour, triagonal bishop
+whitehole, wall, wall, priest, knight
+queen, archer, infiltrator, rook, xyqueen
+bishop, triagonal, knight, xyqueen, vectorslider
+
+3rd rank (z=3 for white and z=7 for black):
+pawns

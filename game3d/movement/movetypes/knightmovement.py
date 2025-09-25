@@ -1,11 +1,11 @@
 """3D Knight move generation logic — Share-Square aware."""
 
 from typing import List, Optional
-from pieces.enums import PieceType, Color
-from game.state import GameState
+from game3d.pieces.enums import PieceType, Color
+from game3d.game.gamestate import GameState
 from game3d.movement.pathvalidation import validate_piece_at, in_bounds, add_coords
 from game3d.cache.manager import get_cache_manager
-
+from game3d.movement.movepiece import Move
 KNIGHT_OFFSETS = [
     (1, 2, 0), (1, -2, 0), (-1, 2, 0), (-1, -2, 0),
     (2, 1, 0), (2, -1, 0), (-2, 1, 0), (-2, -1, 0),
@@ -44,7 +44,7 @@ def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move
         #    Capture only if landing on **enemy non-knight**
         enemy_non_knight = [
             p for p in occupants
-            if p.color != state.current and p.ptype != PieceType.KNIGHT
+            if p.color != state.color and p.ptype != PieceType.KNIGHT
         ]
         if enemy_non_knight:
             # capture the top non-knight enemy (cache handles removal order)

@@ -1,9 +1,9 @@
 """Network Teleporter — teleports to any empty square adjacent to any friendly piece."""
 
 from typing import List, Set, Tuple
-from game.state import GameState
-from game.move import Move
-from common import in_bounds, add_coords
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
+from game3d.common.common import in_bounds, add_coords
 
 
 def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
@@ -13,7 +13,7 @@ def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) ->
     """
     moves = []
     board = state.board
-    current_color = state.current
+    current_color = state.color
     self_pos = (x, y, z)
 
     # Verify this piece exists and belongs to current player
@@ -61,10 +61,7 @@ def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) ->
             from_coord=self_pos,
             to_coord=target,
             is_capture=False,
-            metadata={
-                "is_teleport": True,
-                "mechanic": "network_step"
-            }
+
         ))
 
     return moves

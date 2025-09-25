@@ -3,7 +3,7 @@
 """3D Edge-Rook move generation logic — moves along board edges, can turn freely."""
 
 from typing import List, Set, Tuple
-from pieces.enums import PieceType
+from game3d.pieces.enums import PieceType
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import (
@@ -11,7 +11,7 @@ from game3d.movement.pathvalidation import (
     is_path_blocked,
     validate_piece_at
 )
-from common import add_coords, in_bounds
+from game3d.common.common import add_coords, in_bounds
 
 def generate_edgerook_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     start = (x, y, z)
@@ -45,14 +45,14 @@ def generate_edgerook_moves(state: GameState, x: int, y: int, z: int) -> List[Mo
                 if not is_edge_square(*target, board_size=9):
                     break
                 target_piece = state.board.piece_at(target)
-                if target_piece and target_piece.color == state.current:
+                if target_piece and target_piece.color == state.color:
                     break
-                if target_piece is None or (target_piece and target_piece.color != state.current):
+                if target_piece is None or (target_piece and target_piece.color != state.color):
                     if target in path:
                         step += 1
                         continue
                     new_path = path + [target]
-                    is_capture = target_piece is not None and target_piece.color != state.current
+                    is_capture = target_piece is not None and target_piece.color != state.color
                     move = Move(
                         from_coord=start,
                         to_coord=target,
@@ -61,7 +61,7 @@ def generate_edgerook_moves(state: GameState, x: int, y: int, z: int) -> List[Mo
                     if target not in visited:
                         moves.append(move)
                         queue.append((target, new_path))
-                if target_piece and target_piece.color != state.current:
+                if target_piece and target_piece.color != state.color:
                     break
                 step += 1
     return moves

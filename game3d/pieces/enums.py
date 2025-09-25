@@ -5,6 +5,9 @@ class Color(IntEnum):
     WHITE = 0
     BLACK = 1
 
+    def opposite(self) -> "Color":
+        return Color.BLACK if self == Color.WHITE else Color.WHITE
+
 
 class PieceType(IntEnum):
     # Base orthodox set
@@ -17,8 +20,8 @@ class PieceType(IntEnum):
 
     # New 3-D / special pieces (40 total)
     PRIEST              = 6
-    _32KNIGHT           = 7   # 3,2 leaper
-    _31KNIGHT           = 8   # 3,1 leaper
+    KNIGHT32            = 7   # 3,2 leaper
+    KNIGHT31            = 8   # 3,1 leaper
     TRIGONALBISHOP      = 9   # diagonal in XY, XZ, YZ planes
     HIVE                = 10  # move every friendly Hive once per turn
     ORBITER             = 11  # orbital movement (placeholder)
@@ -53,3 +56,16 @@ class PieceType(IntEnum):
 
 # Convenience constant
 N_PIECE_TYPES = 40
+
+
+
+
+@unique
+class Result(IntEnum):
+    """Game result from the perspective of WHITE."""
+    WHITE_WON = 0
+    BLACK_WON = 1
+    DRAW = 2
+    IN_PROGRESS = 3  # optional, but useful if you want to avoid Optional[Result]
+
+

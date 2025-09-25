@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Dict
-from pieces.enums import Color, PieceType
+from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.aura import sphere_centre, BoardProto
-from game.move import Move
-from common import in_bounds
-
+from game3d.movement.movepiece import Move
+from game3d.common.common import in_bounds
 
 def detonate(board: BoardProto, trigger_sq: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
     """

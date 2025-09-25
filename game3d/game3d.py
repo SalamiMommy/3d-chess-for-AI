@@ -1,13 +1,13 @@
 """Game controller – turn order, move submission, outcome."""
-
+#game3d/game3d.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
-
-from pieces.enums import Color, Result
-from game.move import Move
+from game3d.pieces.enums import Color, Result, PieceType  # Added PieceType
+from game3d.movement.movepiece import Move
 from game3d.game.gamestate import GameState
-
+from game3d.cache.manager import CacheManager, init_cache_manager, get_cache_manager
+from game3d.board.board import Board
 
 @dataclass(slots=True, frozen=True)
 class MoveReceipt:
@@ -18,14 +18,33 @@ class MoveReceipt:
     result: Optional[Result] = None
     message: str = ""
 
-
 class Game3D:
-    """Minimal game controller."""
+    __slots__ = ("_state", "_cache")
 
-    __slots__ = ("_state",)
+    def __init__(self) -> None:
+        board = Board.startpos()
+        current_color = Color.WHITE
 
-    def __init__(self, start_state: Optional[GameState] = None) -> None:
-        self._state = start_state or GameState.empty()
+
+        init_cache_manager(board, current_color)
+        cache_manager = get_cache_manager()  # Get the initialized manager
+
+        # Now create GameState with cache
+        self._state = GameState(board, current_color, cache_manager)
+
+    # rebuild cache whenever we replace the board
+    def _rebuild_cache(self, board: Board) -> None:
+        self._cache.occupancy.rebuild(board)
+
+    # helper used inside submit_move, submit_archery_attack, …
+    def _make_next_state(self, board: Board, move: Move, mover: Color) -> GameState:
+        self._cache.apply_move(move, mover)          # incremental update
+        next_player = mover.opposite()
+        return GameState(
+            board=board,
+            color=next_player,
+            cache=self._cache,        # always the same instance
+        )
 
     # ----------------------------------------------------------
     # public read-only API
@@ -50,7 +69,17 @@ class Game3D:
     # ----------------------------------------------------------
     def submit_move(self, move: Move) -> MoveReceipt:
         """Attempt to play a move.  Always returns a fresh state."""
-        # 1. game already over → reject
+        # 0.  last-second physical validation
+        if self._state.board.piece_at(move.from_coord) is None:
+            return MoveReceipt(
+                new_state=self._state,
+                is_legal=False,
+                is_game_over=self.is_game_over(),
+                result=self.result(),
+                message=f"No piece at {move.from_coord}",
+            )
+
+        # 1.  game already over → reject
         if self.is_game_over():
             return MoveReceipt(
                 new_state=self._state,
@@ -60,12 +89,7 @@ class Game3D:
                 message="Game already finished.",
             )
 
-        # 2. not the mover's turn → reject
-        # (optional – you can remove if client enforces turn order)
-        # if move.color != self.current_player:
-        #     return MoveReceipt(..., message="Not your turn.")
-
-        # 3. legality test
+        # 2.  standard legality check
         if move not in self._state.legal_moves():
             return MoveReceipt(
                 new_state=self._state,
@@ -74,10 +98,20 @@ class Game3D:
                 message="Illegal move.",
             )
 
-        # 4. play and return
-        new_state = self._state.make_move(move)
-        self._state = new_state          # atomically update
+        # 3.  try to make the move – catch "piece disappeared" errors
+        try:
+            new_state = self._state.make_move(move)
+        except ValueError as e:
+            if "empty start square" in str(e):
+                return MoveReceipt(
+                    new_state=self._state,
+                    is_legal=False,
+                    is_game_over=False,
+                    message=str(e),
+                )
+            raise   # any other error is real – re-raise
 
+        self._state = new_state
         return MoveReceipt(
             new_state=new_state,
             is_legal=True,
@@ -88,42 +122,53 @@ class Game3D:
 
     def submit_archery_attack(self, target_sq: Tuple[int, int, int]) -> MoveReceipt:
         """Archer player fires at target_sq instead of moving a piece."""
-        if not self.state.current_player_controls_archer():   # you’ll add this helper
+        # Assuming there's a method to check if current player controls an archer
+        # You'll need to implement this helper in GameState
+        if not self._state.current_player_controls_archer():
             return MoveReceipt(
-                new_state=self.state,
+                new_state=self._state,
                 is_legal=False,
                 is_game_over=False,
                 message="No archer controlled.",
             )
-        if not get_cache_manager().is_valid_archery_attack(target_sq, self.state.current):
+
+        if not self._cache.is_valid_archery_attack(target_sq, self._state.current):
             return MoveReceipt(
-                new_state=self.state,
+                new_state=self._state,
                 is_legal=False,
                 is_game_over=False,
                 message="Invalid archery target.",
             )
 
-        # build a synthetic "move" that only captures
+        # Create an archery move
         archer_move = Move(
-            from_coord=target_sq,   # archer doesn't move – use target as from/to
+            from_coord=target_sq,
             to_coord=target_sq,
             is_capture=True,
             metadata={"is_archery": True},
         )
 
-        new_board = self.state.board.clone()
-        new_board.set_piece(target_sq, None)  # remove victim
-        new_hist = self.state.history.copy() + [archer_move]
+        # Apply the attack to the board
+        new_board = self._state.board.clone()
+        new_board.set_piece(target_sq, None)
 
-        # update caches (normal move semantics)
-        get_cache_manager().apply_move(archer_move, self.state.current)
+        # Update history
+        new_history = self._state.history + (archer_move,)  # Using tuple concatenation
 
+        # Apply move to cache
+        self._cache.apply_move(archer_move, self._state.current)
+
+        # Create new state
         new_state = GameState(
             board=new_board,
-            current=self.state.current.opposite(),
-            history=new_hist,
-            halfmove_clock=0,  # capture resets 50-move rule
+            color=self._state.current.opposite(),
+            cache=self._cache,
+            history=new_history,
+            halfmove_clock=self._state.halfmove_clock + 1,  # Increment clock
         )
+
+        # Update internal state
+        self._state = new_state
 
         return MoveReceipt(
             new_state=new_state,
@@ -133,48 +178,51 @@ class Game3D:
             message="Archery strike!",
         )
 
-    def submit_hive_turn(self, moves: List[Move]) -> MoveReceipt:
-        """
-        Player submits **any subset** of Hive moves (≥1, ≤all).
-        Must be **only** Hive pieces moved this turn.
-        """
+    def submit_hive_turn(self, moves: list) -> MoveReceipt:
         if not moves:
-            return MoveReceipt(self.state, False, False, message="No moves submitted.")
+            return MoveReceipt(self._state, False, False, message="No moves submitted.")
 
-        # 1. must be current player's turn
-        if self.state.current not in (m.metadata.get("color", self.state.current) for m in moves):
-            return MoveReceipt(self.state, False, False, message="Not your turn.")
+        # Check if it's the current player's turn
+        if not all(self._state.board.piece_at(mv.from_coord).color == self._state.current for mv in moves if self._state.board.piece_at(mv.from_coord)):
+            return MoveReceipt(self._state, False, False, message="Not your turn.")
 
-        # 2. every moved piece must be a Hive
+        # Check if all moves are Hive pieces
         for mv in moves:
-            p = self.state.board.piece_at(mv.from_coord)
-            if p is None or p.ptype != PieceType.HIVE or p.color != self.state.current:
-                return MoveReceipt(self.state, False, False, message="Only Hive pieces may move.")
+            p = self._state.board.piece_at(mv.from_coord)
+            if p is None or p.ptype != PieceType.HIVE or p.color != self._state.current:
+                return MoveReceipt(self._state, False, False, message="Only Hive pieces may move.")
 
-        # 3. no other piece type moved this ply
-        all_legal = self.state.legal_moves()
-        non_hive_moves = [m for m in all_legal if self.state.board.piece_at(m.from_coord).ptype != PieceType.HIVE]
+        # Get all legal moves and check if non-hive moves exist
+        all_legal = self._state.legal_moves()
+        non_hive_moves = [m for m in all_legal if self._state.board.piece_at(m.from_coord).ptype != PieceType.HIVE]
         if non_hive_moves:
-            return MoveReceipt(self.state, False, False, message="You must move **only** Hive pieces this turn.")
+            return MoveReceipt(self._state, False, False, message="You must move **only** Hive pieces this turn.")
 
-        # 4. every submitted move must be individually legal
+        # Validate each move
         for mv in moves:
             if mv not in all_legal:
-                return MoveReceipt(self.state, False, False, message=f"Illegal move: {mv}")
+                return MoveReceipt(self._state, False, False, message=f"Illegal move: {mv}")
 
-        # 5. apply all moves atomically
-        new_board = self.state.board.clone()
-        new_hist = self.state.history.copy()
+        # Apply all moves
+        new_board = self._state.board.clone()
+        new_history = list(self._state.history)  # Convert to list for modification
         for mv in moves:
             new_board.apply_move(mv)
-            new_hist.append(mv)
+            new_history.append(mv)
+
+        # Convert back to tuple
+        new_history = tuple(new_history)
 
         new_state = GameState(
             board=new_board,
-            current=self.state.current.opposite(),
-            history=new_hist,
-            halfmove_clock=0,  # any Hive move resets 50-move rule
+            color=self._state.current.opposite(),
+            cache=self._cache,
+            history=new_history,
+            halfmove_clock=0,
         )
+
+        # Update internal state
+        self._state = new_state
 
         return MoveReceipt(
             new_state=new_state,
@@ -183,12 +231,13 @@ class Game3D:
             result=new_state.result(),
             message="Hive turn completed.",
         )
-    # ----------------------------------------------------------
-    # utilities
-    # ----------------------------------------------------------
+
     def reset(self, start_state: Optional[GameState] = None) -> None:
         """Start a new game (or from custom position)."""
-        self._state = start_state or GameState.empty()
+        board = Board.startpos()
+        init_cache_manager(board)  # Reinitialize cache manager
+        self._cache = get_cache_manager()
+        self._state = start_state or GameState.start(cache=self._cache)
 
     def __repr__(self) -> str:
         return f"Game3D({self._state})"

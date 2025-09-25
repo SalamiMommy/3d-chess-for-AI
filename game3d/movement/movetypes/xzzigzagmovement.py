@@ -1,11 +1,11 @@
 """XZ-Zig-Zag Slider — zig-zag rays along Z-, X-, Y-axis normals (no king)."""
 
 from typing import List, Tuple
-from pieces.enums import PieceType
-from game.state import GameState
-from game.move import Move
+from game3d.pieces.enums import PieceType
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import validate_piece_at
-from common import in_bounds
+from game3d.common.common import in_bounds
 
 
 SEGMENT = 3          # steps before direction flip
@@ -24,7 +24,7 @@ def _zigzag_ray(
     moves: List[Move] = []
     x, y, z = start
     board = state.board
-    current_color = state.current
+    current_color = state.color
 
     # axis mapping
     if plane == 'XZ':           # Y fixed
@@ -60,7 +60,7 @@ def _zigzag_ray(
 def generate_xz_zigzag_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """Generate all zig-zag moves (no king)."""
     start = (x, y, z)
-    if not validate_piece_at(state, start, PieceType.XZ_ZIGZAG_SLIDER):
+    if not validate_piece_at(state, start, PieceType.XZZIGZAG):
         return []
 
     moves: List[Move] = []

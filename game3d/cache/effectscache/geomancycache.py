@@ -2,56 +2,44 @@
 
 from __future__ import annotations
 from typing import Dict, Tuple, Optional
-from pieces.enums import Color
+from game3d.pieces.enums import Color
 from game3d.board.board import Board
-from game3d.effects.auras.geomancy import block_candidates
-from game.move import Move
-
+from game3d.effects.geomancy import block_candidates
+from game3d.movement.movepiece import Move
 
 class GeomancyCache:
-    __slots__ = ("_blocks", "_board")  # _blocks: square -> expiry_ply
+    __slots__ = ("_blocks",)
 
-    def __init__(self, board: Board) -> None:
-        self._board = board
-        self._blocks: Dict[Tuple[int, int, int], int] = {}  # sq -> ply_when_expires
-        # initial state is empty (blocks added via submit_block)
+    def __init__(self) -> None:
+        self._blocks: Dict[Tuple[int, int, int], int] = {}  # sq -> expiry_ply
 
     # ---------- public ----------
     def is_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        """True if square is blocked **now**."""
         expiry = self._blocks.get(sq, 0)
         if expiry == 0:
             return False
         if current_ply >= expiry:
-            # auto-purge on read (lazy)
             del self._blocks[sq]
             return False
         return True
 
-    def block_square(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        """
-        Controller requests to block an unoccupied square.
-        Returns False if square is occupied or already blocked.
-        """
-        if self._board.piece_at(sq) is not None:
-            return False  # must be unoccupied
+    def block_square(self, sq: Tuple[int, int, int], current_ply: int, board: Board) -> bool:
+        if board.piece_at(sq) is not None:
+            return False
         if self.is_blocked(sq, current_ply):
-            return False  # already blocked
-        self._blocks[sq] = current_ply + 5  # 5 plies
+            return False
+        self._blocks[sq] = current_ply + 5
         return True
 
-    def apply_move(self, mv: Move, mover: Color, current_ply: int) -> None:
-        self._board.apply_move(mv)
-        self._purge_expired(current_ply)   # clean up old blocks
+    def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
+        self._purge_expired(current_ply)
 
-    def undo_move(self, mv: Move, mover: Color, current_ply: int) -> None:
-        self._board.undo_move(mv)
+    def undo_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
         self._purge_expired(current_ply)
 
     # ---------- internals ----------
     def _purge_expired(self, current_ply: int) -> None:
-        expired = [sq for sq, expiry in self._blocks.items() if current_ply >= expiry]
-        for sq in expired:
+        for sq in [sq for sq, ex in self._blocks.items() if current_ply >= ex]:
             del self._blocks[sq]
 
 
@@ -60,11 +48,9 @@ class GeomancyCache:
 # ------------------------------------------------------------------
 _geom_cache: Optional[GeomancyCache] = None
 
-
-def init_geomancy_cache(board: Board) -> None:
+def init_geomancy_cache() -> None:
     global _geom_cache
-    _geom_cache = GeomancyCache(board)
-
+    _geom_cache = GeomancyCache()
 
 def get_geomancy_cache() -> GeomancyCache:
     if _geom_cache is None:

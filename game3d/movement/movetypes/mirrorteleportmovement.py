@@ -1,8 +1,8 @@
 """Mirror Teleport Move — teleports piece to (8-x, 8-y, 8-z)."""
-
+#game3d/movement/movetypes/mirrorteleportmovement.py
 from typing import List
-from game.state import GameState
-from game.move import Move
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import is_path_blocked, validate_piece_at
 
 
@@ -40,16 +40,16 @@ def generate_mirror_teleport_move(state: GameState, x: int, y: int, z: int) -> L
     target_piece = state.board.piece_at(target)
 
     # If blocked by friendly → disallow
-    if target_piece is not None and target_piece.color == state.current:
+    if target_piece is not None and target_piece.color == state.color:
         return []
 
     # If blocked due to disallowed capture → shouldn't happen since we allow_capture=True
     # But still, if somehow blocked, skip
-    if blocked and not (target_piece and target_piece.color != state.current):
+    if blocked and not (target_piece and target_piece.color != state.color):
         return []
 
     # Determine if it's a capture
-    is_capture = target_piece is not None and target_piece.color != state.current
+    is_capture = target_piece is not None and target_piece.color != state.color
 
     # Create and return the move
     return [

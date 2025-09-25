@@ -1,11 +1,11 @@
 """Knight (3,2) leaper — 3-axis 3-D knight."""
 
 from typing import List, Tuple
-from pieces.enums import PieceType
-from game.state import GameState
-from game.move import Move
+from game3d.pieces.enums import PieceType
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import validate_piece_at
-from common import in_bounds, add_coords
+from game3d.common.common import in_bounds, add_coords
 
 
 VECTORS_32 = [
@@ -51,7 +51,7 @@ def generate_knight32_moves(state: GameState, x: int, y: int, z: int) -> List[Mo
 
     moves: List[Move] = []
     board = state.board
-    current_color = state.current
+    current_color = state.color
 
     for dx, dy, dz in VECTORS_32:
         target = add_coords(start, (dx, dy, dz))

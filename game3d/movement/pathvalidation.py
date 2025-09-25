@@ -12,9 +12,9 @@ Designed to be reused by all piece move generators.
 """
 
 from typing import List, Tuple, Optional, Callable
-from game.state import GameState
-from game.move import Move
-from common import in_bounds, add_coords
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
+from game3d.common.common import in_bounds, add_coords
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
 
@@ -48,7 +48,7 @@ def is_path_blocked(
     if piece is None:
         return False  # Open square — not blocked
 
-    current_color = state.current
+    current_color = state.color
 
     if piece.color == current_color:
         return not allow_self_block  # Blocked by self unless allowed
@@ -91,7 +91,7 @@ def slide_along_directions(
         List of legal Move objects.
     """
     moves = []
-    current_color = state.current
+    current_color = state.color
     board_size = 9  # or get from state if dynamic
 
     for dx, dy, dz in directions:
@@ -163,7 +163,7 @@ def jump_to_targets(
         List of legal Move objects.
     """
     moves = []
-    current_color = state.current
+    current_color = state.color
 
     for offset in offsets:
         target = add_coords(start, offset)
@@ -209,17 +209,12 @@ def jump_to_targets(
 def validate_piece_at(
     state: GameState,
     pos: Tuple[int, int, int],
-    expected_type: Optional[int] = None,  # PieceType enum value
+    expected_type: Optional[int] = None,
 ) -> bool:
-    """
-    Helper: Validate that a piece of correct color (and optionally type) exists at `pos`.
-
-    Used at start of move generators to short-circuit invalid calls.
-    """
     piece = state.board.piece_at(pos)
     if piece is None:
         return False
-    if piece.color != state.current:
+    if piece.color != state.color:          # ← changed current → color
         return False
     if expected_type is not None and piece.ptype != expected_type:
         return False

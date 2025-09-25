@@ -3,20 +3,23 @@
 """Exports YZ queen move generator (queen + king moves in YZ plane) and registers it."""
 
 from typing import List
-from pieces.enums import PieceType
-from game.state import GameState
+from game3d.pieces.enums import PieceType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                       # ← run-time no-op
+    from game3d.game.gamestate import GameState
 from game3d.movement.registry import register
 from game3d.movement.movetypes.yzqueenmovement import generate_yz_queen_moves
 from game3d.movement.movetypes.kingmovement import generate_king_moves
+from game3d.movement.movepiece import Move
 
-
-def generate_yz_queen_with_king_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_yz_queen_with_king_moves(board, color, *coord, cache=None) -> List[Move]:
     """
     Combines YZ queen sliding moves + 1-step king moves within YZ plane (X fixed).
     Deduplicates by target coordinate.
     """
-    queen_moves = generate_yz_queen_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    queen_moves = generate_yz_queen_moves(state, *coord)
+    king_moves = generate_king_moves(state, *coord)
 
     # Filter king moves to only those in YZ plane (dx = 0)
     in_plane_king_moves = [
@@ -36,12 +39,10 @@ def generate_yz_queen_with_king_moves(state: GameState, x: int, y: int, z: int) 
 
 
 @register(PieceType.YZQUEEN)
-def yz_queen_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Registered dispatcher for YZ queen moves.
-    Delegates to combined queen + king movement in YZ plane.
-    """
-    return generate_yz_queen_with_king_moves(state, x, y, z)
+def yz_queen_move_dispatcher(board, color, *coord, cache=None) -> List[Move]:
+    from game3d.game.gamestate import GameState
+    state = GameState(board, color, cache=cache)
+    return generate_yz_queen_with_king_moves(state, *coord)
 
 
 # Re-export for external use

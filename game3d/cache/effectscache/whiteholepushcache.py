@@ -2,40 +2,34 @@
 
 from __future__ import annotations
 from typing import Dict, Tuple, Optional
-from pieces.enums import Color
+from game3d.pieces.enums import Color
 from game3d.board.board import Board
 from game3d.effects.auras.whiteholepush import push_candidates
-from game.move import Move
-
+from game3d.movement.movepiece import Move
 
 class WhiteHolePushCache:
-    __slots__ = ("_push_map", "_board")
+    __slots__ = ("_push_map",)
 
-    def __init__(self, board: Board) -> None:
-        self._board = board
+    def __init__(self) -> None:
         self._push_map: Dict[Color, Dict[Tuple[int, int, int], Tuple[int, int, int]]] = {
             Color.WHITE: {},
             Color.BLACK: {},
         }
-        self._rebuild()
 
     # ---------- public ----------
     def push_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Return {enemy_square: push_target} for controller's turn-end."""
         return self._push_map[controller]
 
-    def apply_move(self, mv: Move, mover: Color) -> None:
-        self._board.apply_move(mv)
-        self._rebuild()
+    def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    def undo_move(self, mv: Move, mover: Color) -> None:
-        self._board.undo_move(mv)
-        self._rebuild()
+    def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
     # ---------- internals ----------
-    def _rebuild(self) -> None:
+    def _rebuild(self, board: Board) -> None:
         for col in (Color.WHITE, Color.BLACK):
-            self._push_map[col] = push_candidates(self._board, col)
+            self._push_map[col] = push_candidates(board, col)
 
 
 # ------------------------------------------------------------------
@@ -43,11 +37,9 @@ class WhiteHolePushCache:
 # ------------------------------------------------------------------
 _push_cache: Optional[WhiteHolePushCache] = None
 
-
-def init_white_hole_push_cache(board: Board) -> None:
+def init_white_hole_push_cache() -> None:
     global _push_cache
-    _push_cache = WhiteHolePushCache(board)
-
+    _push_cache = WhiteHolePushCache()
 
 def get_white_hole_push_cache() -> WhiteHolePushCache:
     if _push_cache is None:

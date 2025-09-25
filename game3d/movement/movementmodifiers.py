@@ -1,9 +1,9 @@
 """Central place to apply **all** movement buffs / debuffs to raw sliders."""
 
 from typing import List, Tuple
-from pieces.enums import Color, PieceType
+from game3d.pieces.enums import Color, PieceType
 from game3d.cache.manager import get_cache_manager
-from common import add_coords
+from game3d.common.common import add_coords
 
 def apply_movement_effects(
     state,

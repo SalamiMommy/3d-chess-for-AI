@@ -1,10 +1,10 @@
 """Central cache manager – owns movement + effects + occupancy view."""
-
+#game3d/cache/manager.py
 from __future__ import annotations
 from typing import Dict, List, Tuple, Optional, Set
 import torch
-from pieces.enums import Color, PieceType
-from game3d.game.move import Move
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move
 from game3d.board.board import Board
 from game3d.cache.movecache import MoveCache, init_cache as _init_move
 from game3d.cache.occupancycache import OccupancyCache, init_occupancy_cache, get_occupancy_cache
@@ -23,49 +23,125 @@ class CacheManager:
     def __init__(self, board: Board) -> None:
         self.board = board
         self.occupancy = OccupancyCache(board)
-        self.move = MoveCache(board, Color.WHITE)
+        self._effect: Dict[str, Any] = {}
         self._init_effects()
 
+        # create the object but do NOT rebuild yet
+        self._move_cache = MoveCache(board, Color.WHITE, self, _defer_rebuild=True)
+
+    def initialise(self, current: Color) -> None:
+        from game3d.cache.movecache import init_cache as init_move_cache
+        from game3d.cache.occupancycache import init_occupancy_cache
+        from game3d.cache.effectscache.freezecache import init_freeze_cache
+
+        # Initialize caches
+        init_occupancy_cache(self.board)
+        init_freeze_cache()  # ← No board argument
+        init_move_cache(self.board, current)
+
     def _init_effects(self) -> None:
-        self._effect: Dict[str, object] = {
-            "freeze":          FreezeCache(self.board),
-            "movement_buff":   MovementBuffCache(self.board),
-            "movement_debuff": MovementDebuffCache(self.board),
-            "black_hole_suck": BlackHoleSuckCache(self.board),
-            "white_hole_push": WhiteHolePushCache(self.board),
-            "trailblaze":      TrailblazeCache(self.board),
-            "geomancy":        GeomancyCache(self.board),
-            "archery":         ArcheryCache(self.board),
-            "armoured":        ArmouredCache(self.board),
-            "share_square":    ShareSquareCache(self.board),
+        self._effect = {
+            "freeze":          FreezeCache(),          # ← removed board
+            "movement_buff":   MovementBuffCache(),
+            "movement_debuff": MovementDebuffCache(),
+            "black_hole_suck": BlackHoleSuckCache(),
+            "white_hole_push": WhiteHolePushCache(),
+            "trailblaze":      TrailblazeCache(),
+            "armoured":        ArmouredCache(),
+            "geomancy":        GeomancyCache(),
+            "archery":         ArcheryCache(),
+            "share_square":    ShareSquareCache(),
         }
 
     def _rebuild_occupancy(self) -> None:
         self.occupancy.rebuild(self.board)
 
+    def sync_board(self, board: Board) -> None:
+        """Replace every cache’s internal board with a clone of *board*."""
+        self.board = board.clone()
+        for cache in self._effect.values():
+            if hasattr(cache, "_board"):   # every effect cache has its own mirror
+                cache._board = self.board.clone()
+
+    def replace_board(self, board: Board) -> None:
+        """Throw away the old tensor and adopt *board*."""
+        self.board = board.clone()          # authoritative source
+        self.occupancy.rebuild(self.board)  # occupancy view
+        # optional: force every effect cache to rebuild now
+        for cache in self._effect.values():
+            if hasattr(cache, "_rebuild"):
+                cache._rebuild(self.board)
+
     def apply_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
+        if self.board.piece_at(mv.from_coord) is None:
+            raise AssertionError(
+                f"Illegal move requested: {mv}  (square {mv.from_coord} empty)"
+            )
+        # 1.  single source of truth: mutate the shared tensor
         self.board.apply_move(mv)
         self._rebuild_occupancy()
-        self.move.apply_move(mv, mover)
-        for cache in self._effect.values():
-            # Only pass current_ply to geomancy cache
-            if isinstance(cache, GeomancyCache):
-                cache.apply_move(mv, mover, current_ply)
-            else:
+
+        # 2.  push change to every effect cache (board given explicitly)
+        for name, cache in self._effect.items():
+            if name == "geomancy":
+                cache.apply_move(mv, mover, current_ply, self.board)
+            elif name in ("archery", "black_hole_suck", "armoured", "freeze",
+                        "movement_buff", "movement_debuff", "share_square",
+                        "trailblaze", "white_hole_push"):
+                cache.apply_move(mv, mover, self.board)
+            else:                       # future caches
                 cache.apply_move(mv, mover)
 
+        # 3.  move cache (mirror already synced by caller)
+        self.move.apply_move(mv, mover)
+
+
     def undo_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
-        self.board.undo_move(mv)
+        """Authoritative board undo + incremental cache refresh."""
+        # 1.  manually reverse the move on the shared tensor
+        piece = self.board.piece_at(mv.to_coord)
+        if piece is not None:
+            self.board.set_piece(mv.from_coord, piece)
+            self.board.set_piece(mv.to_coord,   None)
+            if getattr(mv, "is_capture", False):
+                captured_type = getattr(mv, "captured_ptype", None)
+                if captured_type is not None:
+                    captured_color = piece.color.opposite()
+                    self.board.set_piece(
+                        mv.to_coord, Piece(captured_color, captured_type)
+                    )
+            if (getattr(mv, "is_promotion", False) and
+                getattr(mv, "promotion_type", None)):
+                self.board.set_piece(
+                    mv.from_coord, Piece(piece.color, PieceType.PAWN)
+                )
         self._rebuild_occupancy()
-        self.move.undo_move(mv, mover)
-        for cache in self._effect.values():
-            if isinstance(cache, GeomancyCache):
-                cache.undo_move(mv, mover, current_ply)
+
+        # 2.  propagate undo to every effect cache
+        for name, cache in self._effect.items():
+            if name == "geomancy":
+                cache.undo_move(mv, mover, current_ply, self.board)
+            elif name in ("archery", "black_hole_suck", "armoured", "freeze",
+                        "movement_buff", "movement_debuff", "share_square",
+                        "trailblaze", "white_hole_push"):
+                cache.undo_move(mv, mover, self.board)
             else:
                 cache.undo_move(mv, mover)
 
+        # 3.  move cache (mirror already synced by caller)
+        self.move.undo_move(mv, mover)
+
+    @property
+    def move(self) -> MoveCache:
+        """Guarantee that the move-cache is available."""
+        if self._move_cache is None:
+            raise RuntimeError(
+                "MoveCache not ready – forgot to call cache_manager.initialise() ?"
+            )
+        return self._move_cache
+
     def legal_moves(self, color: Color) -> List[Move]:
-        return self.move.legal_moves(color)
+        return self.move.legal_moves(color)   # now self.move is valid
 
     def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
         return self._effect["freeze"].is_frozen(sq, victim)
@@ -111,14 +187,7 @@ class CacheManager:
 
 _manager: Optional[CacheManager] = None
 
-def init_cache_manager(board: Board) -> None:
-    global _manager
-    _manager = CacheManager(board)
 
-def get_cache_manager() -> CacheManager:
-    if _manager is None:
-        raise RuntimeError("CacheManager not initialised")
-    return _manager
 
 def get_share_square_cache() -> ShareSquareCache:
     return get_cache_manager()._effect["share_square"]
@@ -149,3 +218,16 @@ def get_geomancy_cache() -> GeomancyCache:
 
 def get_archery_cache() -> ArcheryCache:
     return get_cache_manager()._effect["archery"]
+
+def init_cache_manager(board: Board, current: Color) -> None:
+    global _manager
+    if _manager is None:
+        _manager = CacheManager(board)
+    else:
+        _manager.replace_board(board)
+    _manager.initialise(current)  # ← pass current color
+
+def get_cache_manager() -> CacheManager:
+    if _manager is None:
+        raise RuntimeError("CacheManager not initialised")
+    return _manager

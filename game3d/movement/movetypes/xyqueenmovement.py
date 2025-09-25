@@ -3,7 +3,7 @@
 """3D XY-Queen movement logic — moves like 2D queen + 1-step king in XY-plane (Z fixed)."""
 
 from typing import List
-from pieces.enums import PieceType
+from game3d.pieces.enums import PieceType
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import (
@@ -11,7 +11,7 @@ from game3d.movement.pathvalidation import (
     validate_piece_at
 )
 
-def generate_xyqueen_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_xy_queen_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     start = (x, y, z)
     if not validate_piece_at(state, start, PieceType.XYQUEEN):
         return []

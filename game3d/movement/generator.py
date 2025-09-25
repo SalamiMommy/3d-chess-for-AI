@@ -1,9 +1,9 @@
-# generator.py  (keep the registrar, swap the implementation)
+#qame3d/movement/generator.py  (keep the registrar, swap the implementation)
 from __future__ import annotations
 from typing import Callable, List
-from pieces.enums import PieceType
-from game.state import GameState
-from game.move import Move
+from game3d.pieces.enums import PieceType
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves  # NEW
 from game3d.cache.manager import get_cache_manager
 

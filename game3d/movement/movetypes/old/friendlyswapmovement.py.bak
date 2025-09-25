@@ -1,9 +1,9 @@
 """Friendly Swapper — swaps position with any other friendly piece."""
 
 from typing import List, Tuple
-from pieces.enums import PieceType
-from game.state import GameState
-from game.move import Move
+from game3d.pieces.enums import PieceType
+from game3d.game.gamestate import GameState
+from game3d.movement.movepiece import Move
 
 
 def generate_friendly_swap_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:

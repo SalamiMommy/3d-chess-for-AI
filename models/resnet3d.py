@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from pieces.features import N_CHANNELS
-from common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES
+from game3d.pieces.features import N_CHANNELS
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES
 SIZE = 9
 
 def conv3x3x3(in_ch: int, out_ch: int, stride: int = 1) -> nn.Conv3d:

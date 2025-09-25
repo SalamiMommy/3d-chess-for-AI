@@ -2,42 +2,44 @@
 
 from __future__ import annotations
 from typing import Dict, Tuple, Optional
-from pieces.enums import Color
+from game3d.pieces.enums import Color
 from game3d.board.board import Board
 from game3d.effects.auras.blackholesuck import suck_candidates
-from game.move import Move
+from game3d.movement.movepiece import Move
 
 class BlackHoleSuckCache:
-    __slots__ = ("_pull_map", "_board")
+    __slots__ = ("_pull_map",)
 
-    def __init__(self, board: Board) -> None:
-        self._board = board
+    def __init__(self) -> None:
         self._pull_map: Dict[Color, Dict[Tuple[int, int, int], Tuple[int, int, int]]] = {
             Color.WHITE: {},
             Color.BLACK: {},
         }
-        self._rebuild()
 
+    # ---------- public ----------
     def pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
         return self._pull_map[controller]
 
-    def apply_move(self, mv: Move, mover: Color) -> None:
-        self._board.apply_move(mv)
-        self._rebuild()
+    def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    def undo_move(self, mv: Move, mover: Color) -> None:
-        self._board.undo_move(mv)
-        self._rebuild()
+    def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    def _rebuild(self) -> None:
+    # ---------- internals ----------
+    def _rebuild(self, board: Board) -> None:
         for col in (Color.WHITE, Color.BLACK):
-            self._pull_map[col] = suck_candidates(self._board, col)
+            self._pull_map[col] = suck_candidates(board, col)
 
+
+# ------------------------------------------------------------------
+# singleton
+# ------------------------------------------------------------------
 _suck_cache: Optional[BlackHoleSuckCache] = None
 
-def init_black_hole_suck_cache(board: Board) -> None:
+def init_black_hole_suck_cache() -> None:
     global _suck_cache
-    _suck_cache = BlackHoleSuckCache(board)
+    _suck_cache = BlackHoleSuckCache()
 
 def get_black_hole_suck_cache() -> BlackHoleSuckCache:
     if _suck_cache is None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Protocol
-from common import in_bounds, add_coords
+from game3d.common.common import in_bounds, add_coords
 
 
 class BoardProto(Protocol):

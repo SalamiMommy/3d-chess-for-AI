@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Optional
-from pieces.enums import Color, PieceType
-from game3d.board.board import BoardProto
-from pieces.piece import Piece
-
+from game3d.pieces.enums import Color, PieceType
+from game3d.common.protocols import BoardProto
+from game3d.pieces.piece import Piece
+from game3d.pieces.enums import PieceType
 
 def is_knight(p: Optional[Piece]) -> bool:
     return p is not None and p.ptype == PieceType.KNIGHT

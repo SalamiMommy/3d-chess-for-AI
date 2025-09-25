@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Set
-from pieces.enums import Color
+from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.aura import sphere_centre, BoardProto
 
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Dict
-from pieces.enums import Color
+from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.aura import sphere_centre, BoardProto
-from game.move import Move
-from common import add_coords, in_bounds
+from game3d.movement.movepiece import Move
+from game3d.common.common import add_coords, in_bounds
 
 
 def _toward(pos: Tuple[int, int, int], target: Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -26,7 +26,7 @@ def suck_candidates(board: BoardProto, controller: Color) -> Dict[Tuple[int, int
     out: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
     holes: List[Tuple[int, int, int]] = [
         coord for coord, p in board.list_occupied()
-        if p.color == controller and p.ptype == PieceType.BLACK_HOLE
+        if p.color == controller and p.ptype == PieceType.BLACKHOLE
     ]
     if not holes:
         return out

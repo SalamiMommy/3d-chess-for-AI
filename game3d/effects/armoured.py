@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 from typing import List, Tuple, Set
-from pieces.enums import Color, PieceType
-from game3d.board.board import BoardProto
-from common import add_coords
+from game3d.pieces.enums import Color, PieceType
+from game3d.common.protocols import BoardProto
+from game3d.common.common import add_coords
 
 
 def _opposite_half_space(centre: Tuple[int, int, int], wall_sq: Tuple[int, int, int]) -> Set[Tuple[int, int, int]]:

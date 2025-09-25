@@ -1,39 +1,35 @@
 """Incremental cache for Movement-Buff squares."""
 
 from __future__ import annotations
-from typing import Set, Tuple, Optional
-from pieces.enums import Color
+from typing import Set, Tuple, Optional, Dict
+from game3d.pieces.enums import Color
 from game3d.board.board import Board
 from game3d.effects.auras.movementbuff import buffed_squares
-
+from game3d.movement.movepiece import Move
 
 class MovementBuffCache:
-    __slots__ = ("_buffed", "_board")
+    __slots__ = ("_buffed",)
 
-    def __init__(self, board: Board) -> None:
-        self._board = board
+    def __init__(self) -> None:
         self._buffed: Dict[Color, Set[Tuple[int, int, int]]] = {
             Color.WHITE: set(),
             Color.BLACK: set(),
         }
-        self._rebuild()
 
     # ---------- public ----------
     def is_buffed(self, sq: Tuple[int, int, int], friendly_color: Color) -> bool:
         return sq in self._buffed[friendly_color]
 
-    def apply_move(self, mv: Move, mover: Color) -> None:
-        self._board.apply_move(mv)
-        self._rebuild()
+    def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
-    def undo_move(self, mv: Move, mover: Color) -> None:
-        self._board.undo_move(mv)
-        self._rebuild()
+    def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
+        self._rebuild(board)
 
     # ---------- internals ----------
-    def _rebuild(self) -> None:
-        self._buffed[Color.WHITE] = buffed_squares(self._board, Color.WHITE)
-        self._buffed[Color.BLACK] = buffed_squares(self._board, Color.BLACK)
+    def _rebuild(self, board: Board) -> None:
+        self._buffed[Color.WHITE] = buffed_squares(board, Color.WHITE)
+        self._buffed[Color.BLACK] = buffed_squares(board, Color.BLACK)
 
 
 # ------------------------------------------------------------------
@@ -41,11 +37,9 @@ class MovementBuffCache:
 # ------------------------------------------------------------------
 _buff_cache: Optional[MovementBuffCache] = None
 
-
-def init_movement_buff_cache(board: Board) -> None:
+def init_movement_buff_cache() -> None:
     global _buff_cache
-    _buff_cache = MovementBuffCache(board)
-
+    _buff_cache = MovementBuffCache()
 
 def get_movement_buff_cache() -> MovementBuffCache:
     if _buff_cache is None:

@@ -1,36 +1,28 @@
-"""
-Pseudo-legal move generator for 9×9×9 board.
-Does NOT validate king safety – only blocking & bounds.
-"""
+# game3d/movement/pseudo_legal.py
+from typing import List
 
-from typing import List, Dict, Tuple
-from pieces.enums import PieceType
-from game.state import GameState
-from game.move import Move
-from game3d.movement.registry import get_dispatcher
 from game3d.board.board import Board
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move
+from game3d.movement.registry import get_dispatcher
 
-
-def generate_pseudo_legal_moves(state: GameState) -> List[Move]:
-    """
-    All moves that ignore king-in-check.
-    Delegates to per-piece dispatchers registered in movement.registry.
-    """
-    board: Board = state.board
-    current_color = state.current
+def generate_pseudo_legal_moves(board: Board, color: Color) -> List[Move]:
     all_moves: List[Move] = []
 
-    # iterate only occupied squares (zero-copy tensor view)
     for coord, piece in board.list_occupied():
-        if piece.color != current_color:
+        if piece.color != color:
             continue
-
         dispatcher = get_dispatcher(piece.ptype)
-        if dispatcher is None:          # safety – should never happen
+        if dispatcher is None:
             continue
+        piece_moves = dispatcher(board, color, *coord)
 
-        # let the piece-specific module do the work
-        piece_moves = dispatcher(state, *coord)
-        all_moves.extend(piece_moves)
+        # 🔥 CRITICAL: Validate from_coord matches actual piece location
+        for mv in piece_moves:
+            if mv.from_coord != coord:
+                print(f"BUG: {piece.ptype} at {coord} generated move from {mv.from_coord}")
+                print(f"Board at {mv.from_coord}: {board.piece_at(mv.from_coord)}")
+                continue  # Skip invalid moves
+            all_moves.append(mv)
 
     return all_moves

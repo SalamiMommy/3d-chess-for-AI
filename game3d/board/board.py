@@ -6,14 +6,14 @@ from __future__ import annotations
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
-from common import (
+from game3d.common.common import (
     SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_TOTAL_PLANES,
     N_COLOR_PLANES, N_PLANES_PER_SIDE, X, Y, Z,
     Coord, in_bounds, coord_to_idx, idx_to_coord,
     tensor_cache, hash_board_tensor,
 )
-from pieces.enums import Color, PieceType
-from pieces.piece import Piece
+from game3d.pieces.enums import Color, PieceType
+from game3d.pieces.piece import Piece
 
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
@@ -37,10 +37,100 @@ class Board:
     def empty() -> Board:
         return Board()
 
-    @staticmethod
-    def from_fen(fen: str) -> Board:
-        # TODO: implement when you have a FEN spec
-        return Board.empty()
+    @classmethod
+    def startpos(cls) -> "Board":
+        """Return a board set up for the initial position."""
+        b = cls.empty()   # create an empty board
+        b.init_startpos() # fill it (existing instance method)
+        return b
+
+
+    def init_startpos(self) -> None:
+        """
+        Set up the initial position.
+        Ranks run along the Z-axis (z=0…8).
+        - z=1 and z=7: pawns
+        - z=2 and z=8: second-rank quadrant (given template)
+        - z=3 and z=7: first-rank quadrant (previous template) – shifted to z=3/7 so
+                    that the 5-deep block is centred in the 9-layer board.
+        All quadrants are centred in their X-Y planes:
+            X: centre 5 columns → base_x = 2
+            Y: centre 5 rows    → base_y = 2
+        """
+
+        # ------------------------------------------------------------------
+        # 1.  Quick name → PieceType lookup
+        # ------------------------------------------------------------------
+        name_to_pt = {pt.name.lower(): pt for pt in PieceType}
+
+        def parse(name: str) -> PieceType:
+            try:
+                return name_to_pt[name.lower()]
+            except KeyError as e:
+                raise ValueError(f"Unknown piece name in template: {name}") from e
+
+        # ------------------------------------------------------------------
+        # 2.  Quadrant geometry (centred 5×5 window)
+        # ------------------------------------------------------------------
+        BASE_X, BASE_Y = 2, 2          # top-left of the 5×5 block
+        QUAD_SIZE = 5
+
+        # ------------------------------------------------------------------
+        # 3.  Helper to place a piece
+        # ------------------------------------------------------------------
+        def put(x: int, y: int, z: int, pt: PieceType, color: Color) -> None:
+            self.set_piece((x, y, z), Piece(color, pt))
+
+        # ------------------------------------------------------------------
+        # 4.  First-rank quadrant (old template) → z=0 (white) / z=9 (black)
+        # ------------------------------------------------------------------
+        rank1_quad = [
+            ["reflector", "coneslider", "edgerook", "echo", "orbiter"],
+            ["spiral", "xzzigzag", "xzqueen", "xyqueen", "trigonalbishop"],
+            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31"],
+            ["bomb", "swapper", "nebula", "knight32", "friendlyteleporter"],
+            ["orbiter", "trigonalbishop", "knight31", "friendlyteleporter", "king"],
+        ]
+
+        for dy in range(QUAD_SIZE):
+            for dx in range(QUAD_SIZE):
+                x = BASE_X + dx
+                y = BASE_Y + dy
+                pt = parse(rank1_quad[dy][dx])
+                put(x, y, 0, pt, Color.WHITE)
+                put(x, y, 8, pt, Color.BLACK)
+
+        # ------------------------------------------------------------------
+        # 5.  Second-rank quadrant (new template) → z=1 (white) / z=8 (black)
+        # ------------------------------------------------------------------
+        rank2_quad = [
+            ["freezer", "slower", "blackhole", "geomancer", "bishop"],
+            ["speeder", "wall", "wall", "armour", "trigonalbishop"],
+            ["whitehole", "wall", "wall", "priest", "knight"],
+            ["queen", "archer", "infiltrator", "rook", "xyqueen"],
+            ["bishop", "trigonalbishop", "knight", "xyqueen", "vectorslider"],
+        ]
+
+        for dy in range(QUAD_SIZE):
+            for dx in range(QUAD_SIZE):
+                x = BASE_X + dx
+                y = BASE_Y + dy
+                pt = parse(rank2_quad[dy][dx])
+                put(x, y, 1, pt, Color.WHITE)
+                put(x, y, 7, pt, Color.BLACK)
+
+        # ------------------------------------------------------------------
+        # 6.  Pawns on third rank (z=2 white / z=7 black)
+        # ------------------------------------------------------------------
+        for x in range(SIZE_X):
+            for y in range(SIZE_Y):
+                self.set_piece((x, y, 2), Piece(Color.WHITE, PieceType.PAWN))
+                self.set_piece((x, y, 6), Piece(Color.BLACK, PieceType.PAWN))
+
+        # ------------------------------------------------------------------
+        # 7.  Leave z=3,4,5 empty – ready for play
+        # ------------------------------------------------------------------
+
 
     def tensor(self) -> torch.Tensor:
         return self._tensor.contiguous()
@@ -66,10 +156,15 @@ class Board:
         x, y, z = c
         white_plane = self._tensor[WHITE_SLICE, z, y, x]
         black_plane = self._tensor[BLACK_SLICE, z, y, x]
-        if white_plane.max() == 1.0:
+
+        w_max = white_plane.max().item()
+        if w_max > 0.5:
             return Piece(Color.WHITE, PieceType(int(white_plane.argmax())))
-        if black_plane.max() == 1.0:
+
+        b_max = black_plane.max().item()
+        if b_max > 0.5:
             return Piece(Color.BLACK, PieceType(int(black_plane.argmax())))
+
         return None
 
     def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
@@ -110,23 +205,24 @@ class Board:
     # --------------------------------------------------------------
     # Move execution (NEW)
     # --------------------------------------------------------------
-    def apply_move(self, mv) -> None:
+    def apply_move(self, mv: Move) -> bool:
         """
         Apply the move to the tensor.
-        mv: Move object with from_coord, to_coord, is_capture, is_promotion, etc.
+        Returns True  -> move was really executed
+               False -> move was ignored (empty square)
         """
         from_coord = mv.from_coord
-        to_coord = mv.to_coord
-        piece = self.piece_at(from_coord)
-        if piece is None:
-            raise ValueError(f"No piece to move at {from_coord}")
+        to_coord   = mv.to_coord
 
-        # Handle capture: remove target piece at to_coord
+        piece = self.piece_at(from_coord)
+        if piece is None:               # 🔥 guard
+            return False                # ← tell caller "nothing happened"
+
+        # ----------  original logic unchanged  ----------
         if mv.is_capture:
             self.set_piece(to_coord, None)
 
-        # Handle promotion (if applicable)
-        if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
+        if getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
             promoted_piece = Piece(piece.color, mv.promotion_type)
             self.set_piece(from_coord, None)
             self.set_piece(to_coord, promoted_piece)
@@ -134,42 +230,6 @@ class Board:
             self.set_piece(from_coord, None)
             self.set_piece(to_coord, piece)
 
-        # En passant, castling, etc. can be handled here if implemented
-
         self._hash = None
+        return True                     # ← success
 
-    def undo_move(self, mv) -> None:
-        """
-        Undo the move on the tensor.
-        mv: Move object with from_coord, to_coord, is_capture, etc.
-        """
-        from_coord = mv.from_coord
-        to_coord = mv.to_coord
-
-        # Get the moved piece
-        piece = self.piece_at(to_coord)
-        if piece is None:
-            # If move was a promotion, the promoted piece would be here; revert to pawn
-            if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
-                original_piece = Piece(piece.color, PieceType.PAWN)
-                self.set_piece(from_coord, original_piece)
-                self.set_piece(to_coord, None)
-                return
-            raise ValueError(f"No piece to undo move at {to_coord}")
-
-        # Revert promotion
-        if hasattr(mv, "is_promotion") and mv.is_promotion and hasattr(mv, "promotion_type") and mv.promotion_type:
-            original_piece = Piece(piece.color, PieceType.PAWN)
-            self.set_piece(from_coord, original_piece)
-            self.set_piece(to_coord, None)
-        else:
-            self.set_piece(from_coord, piece)
-            # Restore captured piece (if any)
-            if hasattr(mv, "captured_piece") and mv.captured_piece:
-                captured_color = piece.color.opposite()
-                captured_piece = Piece(captured_color, mv.captured_piece)
-                self.set_piece(to_coord, captured_piece)
-            else:
-                self.set_piece(to_coord, None)
-
-        self._hash = None

@@ -3,8 +3,8 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict, Set
 from collections import deque
-from pieces.enums import Color, PieceType
-from game3d.board.board import BoardProto
+from game3d.pieces.enums import Color, PieceType
+from game3d.common.protocols import BoardProto
 
 
 class TrailblazeRecorder:

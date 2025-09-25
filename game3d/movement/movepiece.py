@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 from typing import Optional, Tuple
-from pieces.enums import PieceType, Color
-from common import Coord
+from game3d.pieces.enums import PieceType, Color
+from game3d.common.common import Coord
 
 class Move:
     """

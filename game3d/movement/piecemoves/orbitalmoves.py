@@ -3,11 +3,14 @@
 """Exports orbital move generator and registers it with the dispatcher."""
 
 from typing import List
-from pieces.enums import PieceType
-from game.state import GameState
+from game3d.pieces.enums import PieceType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                       # ← run-time no-op
+    from game3d.game.gamestate import GameState
 from game3d.movement.registry import register
 from game3d.movement.movetypes.orbitalmovement import generate_orbital_moves
-
+from game3d.movement.movepiece import Move
 # Re-export core function and helpers for external use
 __all__ = [
     'generate_orbital_moves',
@@ -16,10 +19,8 @@ __all__ = [
 ]
 
 
-@register(PieceType.ORBITAL)
-def orbital_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Registered dispatcher for orbital moves.
-    Simply delegates to the core move generator.
-    """
-    return generate_orbital_moves(state, x, y, z)
+@register(PieceType.ORBITER)
+def orbital_move_dispatcher(board, color, *coord, cache=None) -> List[Move]:
+    from game3d.game.gamestate import GameState
+    state = GameState(board, color, cache=cache)
+    return generate_orbital_moves(state, *coord)

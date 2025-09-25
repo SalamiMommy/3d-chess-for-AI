@@ -1,5 +1,5 @@
 """Zero-copy occupancy cache – boolean mask (9,9,9)."""
-
+#game3d/cache/occupancycache.py
 from __future__ import annotations
 from typing import Tuple, Optional
 import torch
