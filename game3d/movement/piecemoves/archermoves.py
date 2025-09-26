@@ -1,22 +1,21 @@
-# game3d/movement/piecemoves/kingmoves.py
-
-"""Exports king move generator and registers it with the dispatcher."""
+# game3d/movement/piecemoves/archermoves.py
+"""Exports archer move generator and registers it with the dispatcher."""
 
 from typing import List
 from game3d.pieces.enums import PieceType
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:                       # ← run-time no-op
-    from game3d.game.gamestate import GameState
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move
+
 # Re-export the move generator for use by other modules (e.g., attacks, UI, AI)
-__all__ = ['generate_king_moves']
+__all__ = ['generate_archer_moves']
 
 
 @register(PieceType.ARCHER)
-def archer_move_dispatcher(board, color, *coord, cache=None) -> List[Move]:
-    from game3d.game.gamestate import GameState
-    state = GameState(board, color, cache=cache)
-    return generate_king_moves(state, *coord)
+def archer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    return generate_king_moves(state, x, y, z)
+
+
+def generate_archer_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    """Alias for king moves since Archer uses the same movement pattern."""
+    return generate_king_moves(state, x, y, z)

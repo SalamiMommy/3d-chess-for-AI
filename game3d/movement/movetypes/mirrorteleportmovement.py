@@ -57,6 +57,6 @@ def generate_mirror_teleport_move(state: GameState, x: int, y: int, z: int) -> L
             from_coord=start,
             to_coord=target,
             is_capture=is_capture,
-            metadata={"is_teleport": True}  # Optional for UI/effects
+            # metadata={"is_teleport": True}  # Optional for UI/effects
         )
     ]

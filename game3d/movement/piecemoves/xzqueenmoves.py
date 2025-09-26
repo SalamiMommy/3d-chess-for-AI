@@ -1,31 +1,20 @@
-# game3d/movement/piecemoves/xzqueenmoves.py
 """Exports XZ queen move generator (queen + king moves in XZ plane) and registers it."""
 
 from typing import List
 from game3d.pieces.enums import PieceType
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:                       # ← run-time no-op
-    from game3d.game.gamestate import GameState
 from game3d.movement.registry import register
 from game3d.movement.movetypes.xzqueenmovement import generate_xz_queen_moves
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move
 
-def generate_xz_queen_with_king_moves(board, color, *coord, cache=None) -> List[Move]:
+
+def generate_xz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """
     Combines XZ queen sliding moves + 1-step king moves within XZ plane (Y fixed).
     Deduplicates by target coordinate.
     """
-    # Create the state object that was missing
-    from game3d.game.gamestate import GameState
-    state = GameState(board, color, cache=cache)
-
-    queen_moves = generate_xz_queen_moves(state, *coord)
-    king_moves = generate_king_moves(state, *coord)
-
-    # Get the y coordinate from the input
-    x, y, z = coord
+    queen_moves = generate_xz_queen_moves(state, x, y, z)
+    king_moves = generate_king_moves(state, x, y, z)
 
     # Filter king moves to only those in XZ plane (dy = 0)
     in_plane_king_moves = [
@@ -45,8 +34,8 @@ def generate_xz_queen_with_king_moves(board, color, *coord, cache=None) -> List[
 
 
 @register(PieceType.XZQUEEN)
-def xz_queen_move_dispatcher(board, color, *coord, cache=None) -> List[Move]:
-    return generate_xz_queen_with_king_moves(board, color, *coord)
+def xz_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    return generate_xz_queen_with_king_moves(state, x, y, z)
 
 
 # Re-export for external use

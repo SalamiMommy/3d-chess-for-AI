@@ -26,39 +26,39 @@ def square_attacked_by(
     current_player: Color,
     square: tuple[int, int, int],
     attacker_color: Color,
+    cache=None  # Add cache parameter
 ) -> bool:
     """Is `square` under attack by any piece of `attacker_color`?"""
-    # local import → breaks cycle
     from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
-    from game3d.game.gamestate import GameState   # only used transiently
+    from game3d.game.gamestate import GameState
 
-    # build minimal state-like object for the generator
-    # (you can also refactor pseudo_legal to accept a lighter protocol)
     tmp_state = GameState.__new__(GameState)
     tmp_state.board = board
-    tmp_state.color = attacker_color  # <-- must be .color, not .current
+    tmp_state.color = attacker_color
+    tmp_state.cache = cache  # Use the provided cache
 
     for mv in generate_pseudo_legal_moves(tmp_state):
         if mv.to_coord == square:
             return True
+    return False
 
 
 def king_in_check(
     board: BoardProto,
     current_player: Color,
     king_color: Color,
+    cache=None  # Add cache parameter
 ) -> bool:
     """King of `king_color` is in check ⇔ attacked AND zero priests alive."""
     if _any_priest_alive(board, king_color):
         return False
 
-    # find king square
     king_pos: Optional[tuple[int, int, int]] = None
     for coord, piece in board.list_occupied():
         if piece.color == king_color and piece.ptype == PieceType.KING:
             king_pos = coord
             break
-    if king_pos is None:          # should never happen
+    if king_pos is None:
         return False
 
-    return square_attacked_by(board, current_player, king_pos, king_color.opposite())
+    return square_attacked_by(board, current_player, king_pos, king_color.opposite(), cache)

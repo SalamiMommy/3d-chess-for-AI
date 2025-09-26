@@ -70,39 +70,42 @@ def sample_pi(pi, legal_moves, state: GameState):
 # 4.  self-play loop – FULL rebuild before every move
 # ------------------------------------------------------------------
 def play_game(net, mcts_depth: int) -> list:
-    game = Game3D()
+    # Start with initial state
+    initial_state = GameState.start()
+    current_state = initial_state
     examples = []
 
-    while not game.is_game_over():
-        state = game.state
+    while not current_state.is_game_over():
+        board_hash_before = current_state.board.byte_hash()
+        print(f"Board hash: {board_hash_before:016x}")
 
-        # 🔧  make cache mirror the **current** board before rebuild
-        from game3d.cache.movecache import get_cache
-        get_cache()._resync_mirror()     # zero-copy mirror update
-
-        legal_moves = state.legal_moves()   # triggers _full_rebuild
+        legal_moves = current_state.legal_moves()
         if not legal_moves:
             break
 
-        pi = mcts_search(net, state, depth=mcts_depth)
-        move = sample_pi(pi, legal_moves, state)  # last-second board check
-        if move is None:                           # every square vacated
+        pi = mcts_search(net, current_state, depth=mcts_depth)
+        move = sample_pi(pi, legal_moves, current_state)
+        if move is None:
             break
 
-        # 🔍 DEBUG: Check if move is valid BEFORE submitting
-        if state.board.piece_at(move.from_coord) is None:
+        # Validate move before applying
+        if current_state.board.piece_at(move.from_coord) is None:
             print(f"CRITICAL: Selected move from empty square: {move}")
-            print(f"Legal moves count: {len(legal_moves)}")
-            print(f"First few legal moves: {legal_moves[:3]}")
-            raise AssertionError("Selected invalid move!")
+            break
 
-        examples.append((state.to_tensor(), pi, None))
-        receipt = game.submit_move(move)
+        examples.append((current_state.to_tensor(), pi, None))
+        piece_before = current_state.board.piece_at(move.from_coord)
+        print(f"Piece at {move.from_coord}: {piece_before}")
 
-        # 🔧  if move was refused, skip it and try again
-        if not receipt.is_legal:
-            print(f"[self-play] skipped illegal move: {receipt.message}")
-            continue   # ← stay in the same position and pick a new move
+        # Apply move to create NEW state
+        try:
+            new_state = current_state.make_move(move)
+            current_state = new_state  # Only update if successful
+        except Exception as e:
+            print(f"Move application failed: {e}")
+            print(f"Board hash after failed move: {current_state.board.byte_hash():016x}")
+            print(f"Piece at {move.from_coord} after: {current_state.board.piece_at(move.from_coord)}")
+            break
 
-    z = game.state.outcome()
+    z = current_state.outcome()
     return [(x, pi, z) for x, pi, _ in examples]

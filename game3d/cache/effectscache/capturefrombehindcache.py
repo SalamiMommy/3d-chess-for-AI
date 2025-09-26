@@ -1,7 +1,8 @@
+#game3d/cache/effectscache/capturefrombehindcache.py
 """Incremental cache for Armoured ‘behind’ squares per WALL."""
 
 from __future__ import annotations
-from typing import Dict, Set, Tuple, Optional
+from typing import Dict, Set, Tuple
 from game3d.pieces.enums import Color
 from game3d.board.board import Board
 from game3d.effects.capturefrombehind import from_behind_squares
@@ -11,14 +12,16 @@ class ArmouredCache:
     __slots__ = ("_behind",)
 
     def __init__(self) -> None:
-        self._behind: Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]] = {}
+        # _behind[color][wall_sq] = set of attacker squares that are "behind" that wall
+        self._behind: Dict[Color, Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]]] = {
+            Color.WHITE: {},
+            Color.BLACK: {},
+        }
 
-    # ---------- public ----------
     def can_capture(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
-        behind = self._behind.get(wall_sq)
-        if behind is None:
-            return True
-        return attacker_sq in behind
+        behind_map = self._behind[controller]
+        behind_set = behind_map.get(wall_sq)
+        return behind_set is not None and attacker_sq in behind_set
 
     def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
         self._rebuild(board)
@@ -26,22 +29,7 @@ class ArmouredCache:
     def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
         self._rebuild(board)
 
-    # ---------- internals ----------
     def _rebuild(self, board: Board) -> None:
-        self._behind = (from_behind_squares(board, Color.WHITE) |
-                        from_behind_squares(board, Color.BLACK))
+        for color in (Color.WHITE, Color.BLACK):
+            self._behind[color] = from_behind_squares(board, color)
 
-
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_arm_cache: Optional[ArmouredCache] = None
-
-def init_armoured_cache() -> None:
-    global _arm_cache
-    _arm_cache = ArmouredCache()
-
-def get_armoured_cache() -> ArmouredCache:
-    if _arm_cache is None:
-        raise RuntimeError("ArmouredCache not initialised")
-    return _arm_cache

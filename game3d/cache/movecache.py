@@ -11,19 +11,15 @@ from game3d.attacks.check import king_in_check
 from game3d.board.board import Board
 from game3d.pieces.piece import Piece
 
-# global singleton
-_move_cache: Optional[MoveCache] = None
-
-
 class MoveCache:
     __slots__ = (
-        "_board",
         "_current",
         "_cache",
-        "_legal_per_piece",      # Dict[Coord, List[Move]]
-        "_legal_by_color",       # Dict[Color, List[Move]]
-        "_king_pos",             # Dict[Color, Coord]
-        "_priest_count",         # Dict[Color, int]
+        "_legal_per_piece",
+        "_legal_by_color",
+        "_king_pos",
+        "_priest_count",
+        "_has_priest",  # ← This was missing!
     )
 
     def __init__(self,
@@ -32,9 +28,9 @@ class MoveCache:
                  cache: CacheManager,
                  *,
                  _defer_rebuild: bool = False) -> None:
-        self._board = board
         self._current = current
         self._cache = cache
+        self._has_priest = {Color.WHITE: False, Color.BLACK: False}
         self._legal_per_piece: Dict[Tuple[int, int, int], List[Move]] = {}
         self._legal_by_color: Dict[Color, List[Move]] = {
             Color.WHITE: [],
@@ -51,9 +47,14 @@ class MoveCache:
         if not _defer_rebuild:
             self._full_rebuild()
 
+    @property
+    def _board(self) -> Board:
+        """Always get the current board from the cache manager."""
+        return self._cache.board
+
     def _resync_mirror(self) -> None:
-        """Replace internal board with a clone of the **current** real board."""
-        self._board = self._cache.board.clone()
+        """No longer needed - we always use cache manager's board."""
+        pass
 
     # ----------------------------------------------------------
     # public API
@@ -176,6 +177,7 @@ class MoveCache:
 
     def _generate_piece_moves(self, coord: Tuple[int, int, int]) -> List[Move]:
         """Return *fully* legal moves for the piece on `coord`."""
+        from game3d.game.gamestate import GameState
         piece = self._board.piece_at(coord)
         if piece is None:                       # nothing here
             return []
@@ -184,7 +186,11 @@ class MoveCache:
         if dispatcher is None:                  # unknown piece
             return []
 
-        pseudo = dispatcher(self._board, piece.color, *coord)
+        tmp_state = GameState.__new__(GameState)
+        tmp_state.board = self._board
+        tmp_state.color = piece.color
+        tmp_state.cache = self._cache
+        pseudo = dispatcher(tmp_state, *coord)
         # 🔥  PARANOID:  drop dispatcher bugs
         pseudo = [m for m in pseudo if m.from_coord == coord]
 
@@ -193,8 +199,9 @@ class MoveCache:
 
         # king-safety check WITHOUT cloning – mutate real board temporarily
         legal = []
-        skip_check = self._priest_count[piece.color] > 0
-
+        skip_check = self._has_priest[piece.color]
+        if skip_check:
+            print(f"SKIPPING king check for {piece.color} (priests alive: {self._priest_count[piece.color]})")
         for mv in pseudo:
             # quick sanity: target square must not contain own piece
             victim = self._board.piece_at(mv.to_coord)
@@ -209,35 +216,6 @@ class MoveCache:
             safe = skip_check or not king_in_check(self._board, piece.color, piece.color)
 
             # undo the temporary move
-            self._board.set_piece(mv.from_coord, moving_piece)
-            self._board.set_piece(mv.to_coord, victim)
-
-            if safe:
-                legal.append(mv)
-
-        return legal
-
-        # ------------------------------------------------------------------
-        # King-safety check WITHOUT cloning – do it **once** on the real board
-        # ------------------------------------------------------------------
-        legal = []
-        skip_check = self._priest_count[piece.color] > 0
-
-        for mv in pseudo:
-            # 1.  quick sanity: target square must not contain own piece
-            victim = self._board.piece_at(mv.to_coord)
-            if victim is not None and victim.color == piece.color:
-                continue
-
-            # 2.  apply move temporarily
-            moving_piece = self._board.piece_at(mv.from_coord)
-            self._board.set_piece(mv.from_coord, None)
-            self._board.set_piece(mv.to_coord, moving_piece)
-
-            # 3.  king still safe?
-            safe = skip_check or not king_in_check(self._board, piece.color, piece.color)
-
-            # 4.  undo the temporary move
             self._board.set_piece(mv.from_coord, moving_piece)
             self._board.set_piece(mv.to_coord, victim)
 
@@ -279,6 +257,8 @@ class MoveCache:
                 self._priest_count[piece.color] += 1
             elif piece.ptype == PieceType.KING:
                 self._king_pos[piece.color] = coord
+        self._has_priest[Color.WHITE] = self._priest_count[Color.WHITE] > 0
+        self._has_priest[Color.BLACK] = self._priest_count[Color.BLACK] > 0
 
     def _rebuild_color_lists(self) -> None:
         """Rebuild color move lists from per-piece moves."""
@@ -298,16 +278,3 @@ class MoveCache:
         self._legal_by_color[Color.BLACK] = black_moves
 
 
-# ------------------------------------------------------------------
-# global singleton helpers
-# ------------------------------------------------------------------
-def init_cache(board: Board, current: Color) -> None:
-    global _move_cache
-    from game3d.cache.manager import get_cache_manager
-    _move_cache = MoveCache(board, current, get_cache_manager())
-
-
-def get_cache() -> MoveCache:
-    if _move_cache is None:
-        raise RuntimeError("MoveCache not initialized")
-    return _move_cache

@@ -46,91 +46,74 @@ class Board:
 
 
     def init_startpos(self) -> None:
-        """
-        Set up the initial position.
-        Ranks run along the Z-axis (z=0…8).
-        - z=1 and z=7: pawns
-        - z=2 and z=8: second-rank quadrant (given template)
-        - z=3 and z=7: first-rank quadrant (previous template) – shifted to z=3/7 so
-                    that the 5-deep block is centred in the 9-layer board.
-        All quadrants are centred in their X-Y planes:
-            X: centre 5 columns → base_x = 2
-            Y: centre 5 rows    → base_y = 2
-        """
+        """Set up the initial position with full 9x9 ranks."""
 
-        # ------------------------------------------------------------------
-        # 1.  Quick name → PieceType lookup
-        # ------------------------------------------------------------------
+        # Quick name → PieceType lookup
         name_to_pt = {pt.name.lower(): pt for pt in PieceType}
-
         def parse(name: str) -> PieceType:
             try:
                 return name_to_pt[name.lower()]
             except KeyError as e:
                 raise ValueError(f"Unknown piece name in template: {name}") from e
 
-        # ------------------------------------------------------------------
-        # 2.  Quadrant geometry (centred 5×5 window)
-        # ------------------------------------------------------------------
-        BASE_X, BASE_Y = 2, 2          # top-left of the 5×5 block
-        QUAD_SIZE = 5
-
-        # ------------------------------------------------------------------
-        # 3.  Helper to place a piece
-        # ------------------------------------------------------------------
+        # Helper to place a piece
         def put(x: int, y: int, z: int, pt: PieceType, color: Color) -> None:
             self.set_piece((x, y, z), Piece(color, pt))
 
         # ------------------------------------------------------------------
-        # 4.  First-rank quadrant (old template) → z=0 (white) / z=9 (black)
+        # 1st Rank (z=0 for White, z=8 for Black)
         # ------------------------------------------------------------------
-        rank1_quad = [
-            ["reflector", "coneslider", "edgerook", "echo", "orbiter"],
-            ["spiral", "xzzigzag", "xzqueen", "xyqueen", "trigonalbishop"],
-            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31"],
-            ["bomb", "swapper", "nebula", "knight32", "friendlyteleporter"],
-            ["orbiter", "trigonalbishop", "knight31", "friendlyteleporter", "king"],
+        rank1 = [
+            ["reflector", "coneslider", "edgerook", "echo", "orbiter", "echo", "edgerook", "coneslider", "reflector"],
+            ["spiral", "xzzigzag", "xzqueen", "yzqueen", "mirror", "yzqueen", "xzqueen", "xzzigzag", "spiral"],
+            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31", "hive", "panel", "friendlyteleporter", "yzzigzag"],
+            ["bomb", "swapper", "nebula", "knight32", "trailblazer", "knight32", "nebula", "swapper", "bomb"],
+            ["orbiter", "mirror", "knight31", "trailblazer", "king", "trailblazer", "knight31", "mirror", "orbiter"],
+            ["bomb", "swapper", "nebula", "knight32", "trailblazer", "knight32", "nebula", "swapper", "bomb"],
+            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31", "hive", "panel", "friendlyteleporter", "yzzigzag"],
+            ["spiral", "xzzigzag", "xzqueen", "yzqueen", "mirror", "yzqueen", "xzqueen", "xzzigzag", "spiral"],
+            ["reflector", "coneslider", "edgerook", "echo", "orbiter", "echo", "edgerook", "coneslider", "reflector"],
         ]
 
-        for dy in range(QUAD_SIZE):
-            for dx in range(QUAD_SIZE):
-                x = BASE_X + dx
-                y = BASE_Y + dy
-                pt = parse(rank1_quad[dy][dx])
+        for y in range(9):
+            for x in range(9):
+                pt = parse(rank1[y][x])
                 put(x, y, 0, pt, Color.WHITE)
                 put(x, y, 8, pt, Color.BLACK)
 
         # ------------------------------------------------------------------
-        # 5.  Second-rank quadrant (new template) → z=1 (white) / z=8 (black)
+        # 2nd Rank (z=1 for White, z=7 for Black)
         # ------------------------------------------------------------------
-        rank2_quad = [
-            ["freezer", "slower", "blackhole", "geomancer", "bishop"],
-            ["speeder", "wall", "wall", "armour", "trigonalbishop"],
-            ["whitehole", "wall", "wall", "priest", "knight"],
-            ["queen", "archer", "infiltrator", "rook", "xyqueen"],
-            ["bishop", "trigonalbishop", "knight", "xyqueen", "vectorslider"],
+        rank2 = [
+            ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
+            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
+            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
+            ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
+            ["bishop", "trigonalbishop", "knight", "xyqueen", "vectorslider", "xyqueen", "knight", "trigonalbishop", "bishop"],
+            ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
+            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
+            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
+            ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
         ]
 
-        for dy in range(QUAD_SIZE):
-            for dx in range(QUAD_SIZE):
-                x = BASE_X + dx
-                y = BASE_Y + dy
-                pt = parse(rank2_quad[dy][dx])
+        for y in range(9):
+            for x in range(9):
+                pt = parse(rank2[y][x])
                 put(x, y, 1, pt, Color.WHITE)
                 put(x, y, 7, pt, Color.BLACK)
 
         # ------------------------------------------------------------------
-        # 6.  Pawns on third rank (z=2 white / z=7 black)
+        # 3rd Rank - Pawns (z=2 for White, z=6 for Black)
         # ------------------------------------------------------------------
-        for x in range(SIZE_X):
-            for y in range(SIZE_Y):
-                self.set_piece((x, y, 2), Piece(Color.WHITE, PieceType.PAWN))
-                self.set_piece((x, y, 6), Piece(Color.BLACK, PieceType.PAWN))
+        for x in range(9):
+            for y in range(9):
+                put(x, y, 2, PieceType.PAWN, Color.WHITE)
+                put(x, y, 6, PieceType.PAWN, Color.BLACK)
 
         # ------------------------------------------------------------------
-        # 7.  Leave z=3,4,5 empty – ready for play
+        # z=3,4,5 remain empty
         # ------------------------------------------------------------------
-
+        assert self.validate_tensor(), "Board tensor is invalid after init!"
 
     def tensor(self) -> torch.Tensor:
         return self._tensor.contiguous()
@@ -142,6 +125,11 @@ class Board:
 
     def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
         x, y, z = c
+        # Optional: assert no piece is already present (for debugging)
+        # existing = self.piece_at(c)
+        # if existing is not None and p is not None:
+        #     print(f"WARNING: Overwriting piece {existing} at {c} with {p}")
+
         self._tensor[WHITE_SLICE, z, y, x] = 0.0
         self._tensor[BLACK_SLICE, z, y, x] = 0.0
         if p is not None:
@@ -157,13 +145,16 @@ class Board:
         white_plane = self._tensor[WHITE_SLICE, z, y, x]
         black_plane = self._tensor[BLACK_SLICE, z, y, x]
 
-        w_max = white_plane.max().item()
-        if w_max > 0.5:
-            return Piece(Color.WHITE, PieceType(int(white_plane.argmax())))
+        # Find indices where value is exactly 1.0 (since we only set 0.0 or 1.0)
+        white_one_mask = (white_plane == 1.0)
+        if white_one_mask.any():
+            idx = int(white_one_mask.nonzero(as_tuple=True)[0][0].item())
+            return Piece(Color.WHITE, PieceType(idx))
 
-        b_max = black_plane.max().item()
-        if b_max > 0.5:
-            return Piece(Color.BLACK, PieceType(int(black_plane.argmax())))
+        black_one_mask = (black_plane == 1.0)
+        if black_one_mask.any():
+            idx = int(black_one_mask.nonzero(as_tuple=True)[0][0].item())
+            return Piece(Color.BLACK, PieceType(idx))
 
         return None
 
@@ -233,3 +224,24 @@ class Board:
         self._hash = None
         return True                     # ← success
 
+    def validate_tensor(self) -> bool:
+        """Check that every (x,y,z) has at most one 1.0 in white/black planes."""
+        valid = True
+        for z in range(SIZE_Z):
+            for y in range(SIZE_Y):
+                for x in range(SIZE_X):
+                    white_vals = self._tensor[WHITE_SLICE, z, y, x]
+                    black_vals = self._tensor[BLACK_SLICE, z, y, x]
+                    total_ones = (white_vals == 1.0).sum().item() + (black_vals == 1.0).sum().item()
+                    if total_ones > 1:
+                        print(f"INVALID: Multiple pieces at {(x,y,z)}")
+                        print("White:", white_vals)
+                        print("Black:", black_vals)
+                        valid = False
+                    elif total_ones == 0:
+                        # empty is fine
+                        pass
+                    else:
+                        # exactly one piece
+                        pass
+        return valid

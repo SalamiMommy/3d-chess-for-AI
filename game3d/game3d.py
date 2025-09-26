@@ -97,7 +97,20 @@ class Game3D:
                 is_game_over=False,
                 message="Illegal move.",
             )
-
+        piece_check = self._state.board.piece_at(move.from_coord)
+        if piece_check is None:
+            print(f"PRE-APPLY: No piece at {move.from_coord}")
+            print(f"Board hash: {self._state.board.byte_hash():016x}")
+            # List nearby pieces
+            for dz in [-1,0,1]:
+                for dy in [-1,0,1]:
+                    for dx in [-1,0,1]:
+                        cx, cy, cz = move.from_coord[0]+dx, move.from_coord[1]+dy, move.from_coord[2]+dz
+                        if 0 <= cx < 9 and 0 <= cy < 9 and 0 <= cz < 9:
+                            p = self._state.board.piece_at((cx, cy, cz))
+                            if p:
+                                print(f"  Neighbor at {(cx,cy,cz)}: {p}")
+            raise AssertionError("Piece missing at submission time!")
         # 3.  try to make the move – catch "piece disappeared" errors
         try:
             new_state = self._state.make_move(move)

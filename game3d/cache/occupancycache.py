@@ -39,18 +39,3 @@ class OccupancyCache:
         self.mask = board.occupancy_mask()   # torch.bool (9,9,9)
 
 
-# ------------------------------------------------------------------
-# singleton helpers
-# ------------------------------------------------------------------
-_occupancy: Optional[OccupancyCache] = None
-
-
-def init_occupancy_cache(board: Board) -> None:
-    global _occupancy
-    _occupancy = OccupancyCache(board)
-
-
-def get_occupancy_cache() -> OccupancyCache:
-    if _occupancy is None:
-        raise RuntimeError("OccupancyCache not initialised")
-    return _occupancy

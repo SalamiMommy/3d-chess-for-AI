@@ -1,25 +1,27 @@
-# game3d/movement/pseudo_legal.py
-from typing import List
+from typing import List, Optional
 from game3d.game.gamestate import GameState
 from game3d.movement.registry import get_dispatcher
+from game3d.board.board import Board
+from game3d.pieces.enums import Color
+from game3d.movement.movepiece import Move
+from game3d.cache.manager import CacheManager
 
-def generate_pseudo_legal_moves(board: Board, color: Color) -> List[Move]:
+def generate_pseudo_legal_moves(state: GameState) -> List[Move]:
     all_moves: List[Move] = []
 
-    for coord, piece in board.list_occupied():
-        if piece.color != color:
+    for coord, piece in state.board.list_occupied():
+        if piece.color != state.color:
             continue
         dispatcher = get_dispatcher(piece.ptype)
         if dispatcher is None:
             continue
-        piece_moves = dispatcher(board, color, *coord)
 
-        # 🔥 CRITICAL: Validate from_coord matches actual piece location
+        piece_moves = dispatcher(state, *coord)
+
         for mv in piece_moves:
             if mv.from_coord != coord:
                 print(f"BUG: {piece.ptype} at {coord} generated move from {mv.from_coord}")
-                print(f"Board at {mv.from_coord}: {board.piece_at(mv.from_coord)}")
-                continue  # Skip invalid moves
+                continue
             all_moves.append(mv)
 
     return all_moves

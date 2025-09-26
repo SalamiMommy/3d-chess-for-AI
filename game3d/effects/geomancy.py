@@ -1,12 +1,11 @@
 """Geomancy – controller may block unoccupied squares within 3-sphere for 5 plies."""
 
 from __future__ import annotations
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 from game3d.pieces.enums import Color, PieceType
-from game3d.effects.auras.aura import sphere_centre, BoardProto
+from game3d.effects.auras.aura import sphere_centre
 
-
-def block_candidates(board: BoardProto, controller: Color) -> List[Tuple[int, int, int]]:
+def block_candidates(board, controller: Color) -> List[Tuple[int, int, int]]:
     """All unoccupied squares within 3-sphere of any friendly GEOMANCER."""
     out: List[Tuple[int, int, int]] = []
     centres = [

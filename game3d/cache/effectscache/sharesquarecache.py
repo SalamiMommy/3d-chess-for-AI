@@ -70,17 +70,3 @@ class ShareSquareCache:
         if mover_piece is not None and mover_piece.ptype == PieceType.KNIGHT:
             self.add_knight(from_sq, mover_piece)
 
-
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_share_cache: Optional[ShareSquareCache] = None
-
-def init_share_square_cache() -> None:
-    global _share_cache
-    _share_cache = ShareSquareCache()
-
-def get_share_square_cache() -> ShareSquareCache:
-    if _share_cache is None:
-        raise RuntimeError("ShareSquareCache not initialised")
-    return _share_cache

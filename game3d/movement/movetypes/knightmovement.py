@@ -23,7 +23,7 @@ def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move
     if not validate_piece_at(state, start, PieceType.KNIGHT):
         return []
 
-    mgr = get_cache_manager()
+    mgr = state.cache
     moves: List[Move] = []
 
     for dx, dy, dz in KNIGHT_OFFSETS:

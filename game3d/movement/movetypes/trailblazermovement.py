@@ -1,3 +1,4 @@
+#game3d/movement/movetypes/trailblazermovement.py
 """Trailblazer — rook moves capped at 3 squares per ray; marks full path for aura."""
 
 from typing import List, Set, Tuple
@@ -5,7 +6,6 @@ from game3d.pieces.enums import PieceType
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
-from game3d.cache.effectscache.trailblazecache import get_trailblaze_cache
 
 ROOK_DIRECTIONS_3D = [
     (1, 0, 0), (-1, 0, 0),
@@ -33,7 +33,7 @@ def generate_trailblazer_moves(state: GameState, x: int, y: int, z: int) -> List
     )
 
     # ---------- mark full slid path in aura cache ----------
-    cache = get_trailblaze_cache()
+    cache = state.cache._effect["trailblaze"]  # ← USE STATE'S CACHE INSTEAD!
     for mv in moves:
         # rebuild the entire ray for this move
         dx, dy, dz = mv.to_coord[0] - start[0], mv.to_coord[1] - start[1], mv.to_coord[2] - start[2]

@@ -24,8 +24,19 @@ class ArcheryCache:
         return sq in self._targets[controller]
 
     def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
-        """Board is already guaranteed to be current – just rebuild."""
+        # Only rebuild if the move affects relevant pieces
+        if not self._move_affects_cache(mv, board):
+            return
         self._rebuild(board)
+
+    def _move_affects_cache(self, mv: Move, board: Board) -> bool:
+        # Check if move involves pieces that affect this cache
+        # For archery: check if archers or potential targets moved
+        from_piece = board.piece_at(mv.from_coord)
+        to_piece = board.piece_at(mv.to_coord)
+        relevant_types = {PieceType.ARCHER, PieceType.KING, PieceType.PRIEST}  # etc.
+        return (from_piece and from_piece.ptype in relevant_types) or \
+            (to_piece and to_piece.ptype in relevant_types)
 
     def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
         """Board is already guaranteed to be current – just rebuild."""
@@ -35,13 +46,4 @@ class ArcheryCache:
         for col in (Color.WHITE, Color.BLACK):
             self._targets[col] = archery_targets(board, col)
 
-_arch_cache: Optional[ArcheryCache] = None
 
-def init_archery_cache() -> None:
-    global _arch_cache
-    _arch_cache = ArcheryCache()
-
-def get_archery_cache() -> ArcheryCache:
-    if _arch_cache is None:
-        raise RuntimeError("ArcheryCache not initialised")
-    return _arch_cache

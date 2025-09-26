@@ -1,3 +1,4 @@
+#game3d/cache/effectscache/blackholesuckccahe.py
 """Incremental cache for Black-Hole suck pull map."""
 
 from __future__ import annotations
@@ -30,18 +31,3 @@ class BlackHoleSuckCache:
     def _rebuild(self, board: Board) -> None:
         for col in (Color.WHITE, Color.BLACK):
             self._pull_map[col] = suck_candidates(board, col)
-
-
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_suck_cache: Optional[BlackHoleSuckCache] = None
-
-def init_black_hole_suck_cache() -> None:
-    global _suck_cache
-    _suck_cache = BlackHoleSuckCache()
-
-def get_black_hole_suck_cache() -> BlackHoleSuckCache:
-    if _suck_cache is None:
-        raise RuntimeError("BlackHoleSuckCache not initialised")
-    return _suck_cache

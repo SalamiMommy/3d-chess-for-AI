@@ -19,7 +19,7 @@ def generate_yz_queen_moves(state: GameState, x: int, y: int, z: int) -> List[Mo
     """
     start = (x, y, z)
 
-    if not validate_piece_at(state, start, expected_type=PieceType.YZ_QUEEN):
+    if not validate_piece_at(state, start, expected_type=PieceType.YZQUEEN):
         return []
 
     # Define 8 YZ-plane directions (dx = 0 always)

@@ -32,16 +32,3 @@ class MovementBuffCache:
         self._buffed[Color.BLACK] = buffed_squares(board, Color.BLACK)
 
 
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_buff_cache: Optional[MovementBuffCache] = None
-
-def init_movement_buff_cache() -> None:
-    global _buff_cache
-    _buff_cache = MovementBuffCache()
-
-def get_movement_buff_cache() -> MovementBuffCache:
-    if _buff_cache is None:
-        raise RuntimeError("MovementBuffCache not initialised")
-    return _buff_cache

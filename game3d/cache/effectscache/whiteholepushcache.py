@@ -31,17 +31,3 @@ class WhiteHolePushCache:
         for col in (Color.WHITE, Color.BLACK):
             self._push_map[col] = push_candidates(board, col)
 
-
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_push_cache: Optional[WhiteHolePushCache] = None
-
-def init_white_hole_push_cache() -> None:
-    global _push_cache
-    _push_cache = WhiteHolePushCache()
-
-def get_white_hole_push_cache() -> WhiteHolePushCache:
-    if _push_cache is None:
-        raise RuntimeError("WhiteHolePushCache not initialised")
-    return _push_cache

@@ -1,5 +1,5 @@
 """Incremental cache for frozen enemy squares."""
-#game3d/effects/freezcache.py
+#game3d/cache/effects/freezcache.py
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional
 from game3d.pieces.enums import Color
@@ -32,16 +32,3 @@ class FreezeCache:
         self._frozen[Color.BLACK] = frozen_squares(board, Color.WHITE)
 
 
-# ------------------------------------------------------------------
-# singleton
-# ------------------------------------------------------------------
-_freeze_cache: Optional[FreezeCache] = None
-
-def init_freeze_cache() -> None:
-    global _freeze_cache
-    _freeze_cache = FreezeCache()
-
-def get_freeze_cache() -> FreezeCache:
-    if _freeze_cache is None:
-        raise RuntimeError("FreezeCache not initialised")
-    return _freeze_cache
