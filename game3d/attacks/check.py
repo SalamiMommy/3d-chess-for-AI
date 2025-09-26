@@ -34,14 +34,13 @@ def square_attacked_by(
 
     # build minimal state-like object for the generator
     # (you can also refactor pseudo_legal to accept a lighter protocol)
-    tmp_state = GameState.__new__(GameState)  # bypass __init__
+    tmp_state = GameState.__new__(GameState)
     tmp_state.board = board
-    tmp_state.current = attacker_color
+    tmp_state.color = attacker_color  # <-- must be .color, not .current
 
-    for mv in generate_pseudo_legal_moves(board, attacker_color):
+    for mv in generate_pseudo_legal_moves(tmp_state):
         if mv.to_coord == square:
             return True
-    return False
 
 
 def king_in_check(

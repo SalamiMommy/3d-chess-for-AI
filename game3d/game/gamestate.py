@@ -145,10 +145,16 @@ class GameState:
         player_t = torch.full((1, 9, 9, 9), float(self.color))
         return torch.cat([board_t, player_t], dim=0)
 
-    # In game3d/game/gamestate.py
     def legal_moves(self) -> List[Move]:
         from game3d.cache.movecache import get_cache
-        return get_cache().legal_moves(self.color)
+        moves = get_cache().legal_moves(self.color)
+        # Filter: only moves whose from_coord is currently occupied by a piece of the right color
+        filtered = []
+        for m in moves:
+            piece = self.board.piece_at(m.from_coord)
+            if piece is not None and piece.color == self.color:
+                filtered.append(m)
+        return filtered
 
     def pseudo_legal_moves(self) -> List[Move]:
         from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
