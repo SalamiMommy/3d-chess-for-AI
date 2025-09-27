@@ -12,4 +12,4 @@ __all__ = ['generate_knight_moves']
 
 @register(PieceType.KNIGHT)
 def knight_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_knight_moves(state, x, y, z)
+    return generate_knight_moves(state.board, state.color, x, y, z)

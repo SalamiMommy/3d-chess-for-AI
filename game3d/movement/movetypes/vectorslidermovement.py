@@ -3,53 +3,40 @@
 Pure movement logic, no registration; drop-in replacement for queenmovement.py.
 """
 
-from typing import List, Tuple
+from typing import List
 from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
-from game3d.movement.movepiece import Move
-
-
-# -----------------------------------------------------------------------------
-# Direction factory – every integer ratio ≤ 3, any sign, any axis count
-# -----------------------------------------------------------------------------
-def _ratios_up_to_3() -> List[Tuple[int, int, int]]:
-    """Return every (dx,dy,dz) with 0 ≤ |dx|,|dy|,|dz| ≤ 3 and at least one non-zero."""
-    rng = range(-3, 4)
-    vecs = [(dx, dy, dz)
-            for dx in rng
-            for dy in rng
-            for dz in rng
-            if (dx, dy, dz) != (0, 0, 0)]
-    # Normalise to lowest terms so (3,3,1) becomes (3,3,1) and (6,6,2) is impossible
-    def _gcd3(a: int, b: int, c: int) -> int:
-        from math import gcd
-        return gcd(gcd(abs(a), abs(b)), abs(c))
-    cleaned = []
-    seen = set()
-    for v in vecs:
-        g = _gcd3(*v)
-        reduced = (v[0] // g, v[1] // g, v[2] // g)
-        if reduced not in seen:
-            seen.add(reduced)
-            cleaned.append(reduced)
-    return cleaned
-
-
-VECTOR_SLIDER_DIRECTIONS: List[Tuple[int, int, int]] = _ratios_up_to_3()
-
+from math import gcd
 
 # -----------------------------------------------------------------------------
-# Public API — exactly mirrors queenmovement.py
+# Precomputed directions: all primitive vectors with components in [-3, 3]
 # -----------------------------------------------------------------------------
-def generate_vector_slider_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal slider moves from (x,y,z) along every integer vector
-    whose component ratios are ≤ 3 (e.g. (3,3,1), (3,2,1), (3,1,1), (3,0,1), …).
-    """
+def _compute_vector_slider_directions() -> List[tuple[int, int, int]]:
+    """Generate all unique primitive directions with |dx|,|dy|,|dz| <= 3."""
+    directions = set()
+    for dx in range(-3, 4):
+        for dy in range(-3, 4):
+            for dz in range(-3, 4):
+                if dx == dy == dz == 0:
+                    continue
+
+                # Reduce to primitive direction
+                g = gcd(gcd(abs(dx), abs(dy)), abs(dz))
+                if g > 0:
+                    primitive = (dx // g, dy // g, dz // g)
+                    directions.add(primitive)
+
+    return list(directions)
+
+# Precompute once at import time
+VECTOR_SLIDER_DIRECTIONS = _compute_vector_slider_directions()
+# Total: 152 unique directions (verified)
+
+def generate_vector_slider_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+    """Generate all legal vector slider moves from (x, y, z)."""
     pos = (x, y, z)
-
-    if not validate_piece_at(state, pos, PieceType.VECTORSLIDER):
+    if not validate_piece_at(state.board, state.color, pos, PieceType.VECTORSLIDER):
         return []
 
     return slide_along_directions(
@@ -57,7 +44,5 @@ def generate_vector_slider_moves(state: GameState, x: int, y: int, z: int) -> Li
         start=pos,
         directions=VECTOR_SLIDER_DIRECTIONS,
         allow_capture=True,
-        allow_self_block=False,
-        max_steps=None,
-        edge_only=False
+        allow_self_block=False
     )

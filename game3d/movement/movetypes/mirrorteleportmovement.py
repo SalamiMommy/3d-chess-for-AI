@@ -1,62 +1,47 @@
 """Mirror Teleport Move — teleports piece to (8-x, 8-y, 8-z)."""
-#game3d/movement/movetypes/mirrorteleportmovement.py
+
 from typing import List
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import is_path_blocked, validate_piece_at
+from game3d.movement.pathvalidation import validate_piece_at
 
-
-def generate_mirror_teleport_move(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_mirror_teleport_move(
+    board,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
     """
     Generate a single teleport move to mirrored coordinates: (8-x, 8-y, 8-z).
-    Uses centralized blocking logic. Only allowed if:
-      - Target is not self (optional),
-      - Target is empty or contains enemy (capture allowed),
-      - Not blocked by friendly piece.
+
+    Rules:
+    - Cannot teleport to own square (e.g., center (4,4,4))
+    - Can land on empty squares or capture enemy pieces
+    - Cannot land on friendly pieces
     """
     start = (x, y, z)
 
-    # Validate piece exists and belongs to current player
-    if not validate_piece_at(state, start):
+    if not validate_piece_at(board, color, start, PieceType.MIRROR):
         return []
 
-    # Compute mirrored position
     target = (8 - x, 8 - y, 8 - z)
 
-    # Optional: prevent no-op teleport (if at center (4,4,4))
+    # Prevent no-op teleport
     if start == target:
         return []
 
-    # ✅ Use centralized blocking logic
-    # - allow_capture=True → enemy capture allowed
-    # - allow_self_block=False → cannot land on friendly
-    blocked = is_path_blocked(
-        state=state,
-        target=target,
-        allow_capture=True,
-        allow_self_block=False
-    )
+    target_piece = board.piece_at(target)
 
-    target_piece = state.board.piece_at(target)
-
-    # If blocked by friendly → disallow
-    if target_piece is not None and target_piece.color == state.color:
+    # Cannot land on friendly pieces
+    if target_piece is not None and target_piece.color == color:
         return []
 
-    # If blocked due to disallowed capture → shouldn't happen since we allow_capture=True
-    # But still, if somehow blocked, skip
-    if blocked and not (target_piece and target_piece.color != state.color):
-        return []
+    # Capture if enemy piece
+    is_capture = target_piece is not None and target_piece.color != color
 
-    # Determine if it's a capture
-    is_capture = target_piece is not None and target_piece.color != state.color
-
-    # Create and return the move
     return [
         Move(
             from_coord=start,
             to_coord=target,
-            is_capture=is_capture,
-            # metadata={"is_teleport": True}  # Optional for UI/effects
+            is_capture=is_capture
         )
     ]

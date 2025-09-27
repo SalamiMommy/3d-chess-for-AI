@@ -12,9 +12,9 @@ __all__ = ['generate_armour_moves']
 
 @register(PieceType.ARMOUR)
 def armour_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_king_moves(state, x, y, z)
+    return generate_king_moves(state.board, state.color, x, y, z)
 
 
 def generate_armour_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """Alias for king moves since Armour uses the same movement pattern."""
-    return generate_king_moves(state, x, y, z)
+    return generate_king_moves(state.board, state.color, x, y, z)

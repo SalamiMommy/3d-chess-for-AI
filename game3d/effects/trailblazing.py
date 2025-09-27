@@ -24,12 +24,3 @@ class TrailblazeRecorder:
         for s in self._history:
             out.update(s)
         return out
-
-
-def squares_to_mark(board: BoardProto, controller: Color) -> Dict[Tuple[int, int, int], TrailblazeRecorder]:
-    """Return {trailblazer_coord: its recorder} for all friendly Trailblazers."""
-    out: Dict[Tuple[int, int, int], TrailblazeRecorder] = {}
-    for coord, piece in board.list_occupied():
-        if piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
-            out[coord] = TrailblazeRecorder()
-    return out

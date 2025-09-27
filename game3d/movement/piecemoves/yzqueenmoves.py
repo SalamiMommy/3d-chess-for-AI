@@ -10,8 +10,8 @@ from game3d.movement.movepiece import Move
 
 
 def generate_yz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    queen_moves = generate_yz_queen_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    queen_moves = generate_yz_queen_moves(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
     in_plane_king_moves = [
         move for move in king_moves
@@ -31,7 +31,7 @@ def generate_yz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
 
 @register(PieceType.YZQUEEN)
 def yz_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_yz_queen_with_king_moves(state, x, y, z)
+    return generate_yz_queen_with_king_moves(state.board, state.color, x, y, z)
 
 
 __all__ = ['generate_yz_queen_with_king_moves']

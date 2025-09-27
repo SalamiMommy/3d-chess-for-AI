@@ -1,0 +1,47 @@
+from typing import List, TYPE_CHECKING
+from game3d.pieces.enums import PieceType
+from game3d.movement.registry import register
+from game3d.movement.movetypes.pawnfrontteleportmovement import generate_pawn_front_teleport_moves
+from game3d.movement.movetypes.kingmovement import generate_king_moves
+from game3d.movement.movepiece import Move
+
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
+
+# ------------------------------------------------------------------
+# Core logic (already state-first)
+# ------------------------------------------------------------------
+def generate_pawn_front_teleport_with_king_moves(
+    state: 'GameState',
+    x: int,
+    y: int,
+    z: int
+) -> List[Move]:
+    """Combine pawn-front teleport moves + 1-step king moves, deduplicated."""
+    teleport_moves = generate_pawn_front_teleport_moves(state.board, state.cache, state.color, x, y, z)
+    king_moves     = generate_king_moves(state.board, state.cache, state.color, x, y, z)
+
+    seen = {m.to_coord for m in teleport_moves}
+    combined = teleport_moves[:]
+    for m in king_moves:
+        if m.to_coord not in seen:
+            combined.append(m)
+            seen.add(m.to_coord)
+    return combined
+
+# ------------------------------------------------------------------
+# Dispatcher – now state-first like every other module
+# ------------------------------------------------------------------
+@register(PieceType.INFILTRATOR)
+def pawn_front_teleport_move_dispatcher(
+    state: 'GameState',
+    x: int,
+    y: int,
+    z: int
+) -> List[Move]:
+    return generate_pawn_front_teleport_with_king_moves(state.board, state.cache, state.color, x, y, z)
+
+# ------------------------------------------------------------------
+# Public API
+# ------------------------------------------------------------------
+__all__ = ['generate_pawn_front_teleport_with_king_moves']

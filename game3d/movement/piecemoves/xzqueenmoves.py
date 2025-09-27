@@ -13,8 +13,8 @@ def generate_xz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
     Combines XZ queen sliding moves + 1-step king moves within XZ plane (Y fixed).
     Deduplicates by target coordinate.
     """
-    queen_moves = generate_xz_queen_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    queen_moves = generate_xz_queen_moves(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
     # Filter king moves to only those in XZ plane (dy = 0)
     in_plane_king_moves = [
@@ -35,7 +35,7 @@ def generate_xz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
 
 @register(PieceType.XZQUEEN)
 def xz_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_xz_queen_with_king_moves(state, x, y, z)
+    return generate_xz_queen_with_king_moves(state.board, state.color, x, y, z)
 
 
 # Re-export for external use

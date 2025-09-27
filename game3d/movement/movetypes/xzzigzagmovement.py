@@ -1,80 +1,99 @@
-"""XZ-Zig-Zag Slider — zig-zag rays along Z-, X-, Y-axis normals (no king)."""
+"""XZ-Zig-Zag Slider — zig-zag rays along coordinate planes."""
 
-from typing import List, Tuple
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from typing import List
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import validate_piece_at
-from game3d.common.common import in_bounds
 
-
-SEGMENT = 3          # steps before direction flip
-DIRECTIONS = [(1, -1), (-1, 1)]   # (primary, flip) pairs
-
+SEGMENT_LENGTH = 3
 
 def _zigzag_ray(
-    state: GameState,
-    start: Tuple[int, int, int],
-    plane: str,                # 'XZ' | 'XY' | 'YZ'
-    primary: int,              # +1 or –1 for first 3-step leg
-    secondary: int,            # +1 or –1 for second 3-step leg
-    fixed: int                 # coordinate that stays constant
-) -> List[Move]:
-    """Cast one zig-zag ray in the chosen plane until blocked or edge."""
-    moves: List[Move] = []
+    board,
+    color: Color,
+    start: tuple[int, int, int],
+    plane: str,      # 'XZ', 'XY', 'YZ'
+    primary_dir: int,    # +1 or -1 for first axis
+    secondary_dir: int,  # +1 or -1 for second axis
+    fixed_coord: int
+) -> List['Move']:
+    """Generate one zig-zag ray in the specified plane."""
     x, y, z = start
-    board = state.board
-    current_color = state.color
+    current_color = color
+    moves: List['Move'] = []
 
-    # axis mapping
-    if plane == 'XZ':           # Y fixed
-        idx_a, idx_b = 0, 2
-        get_coord = lambda a, b: (a, fixed, b)
-    elif plane == 'XY':         # Z fixed
-        idx_a, idx_b = 0, 1
-        get_coord = lambda a, b: (a, b, fixed)
-    else:                       # 'YZ'  X fixed
-        idx_a, idx_b = 1, 2
-        get_coord = lambda a, b: (fixed, a, b)
+    # Determine which coordinates are variable
+    if plane == 'XZ':  # Y fixed
+        var1, var2 = x, z
+        axis1, axis2 = 'x', 'z'
+    elif plane == 'XY':  # Z fixed
+        var1, var2 = x, y
+        axis1, axis2 = 'x', 'y'
+    else:  # 'YZ' - X fixed
+        var1, var2 = y, z
+        axis1, axis2 = 'y', 'z'
 
-    coords = [x, y, z]
-    a, b = coords[idx_a], coords[idx_b]
+    # Track current position
+    curr1, curr2 = var1, var2
+    move_axis_1 = True  # Start by moving along first axis
 
-    flip = False
     while True:
-        step = secondary if flip else primary
-        for _ in range(SEGMENT):
-            a += step
-            target = get_coord(a, b)
-            if not in_bounds(target):
+        direction = primary_dir if move_axis_1 else secondary_dir
+        steps_taken = 0
+
+        while steps_taken < SEGMENT_LENGTH:
+            # Move along current axis
+            if move_axis_1:
+                curr1 += direction
+            else:
+                curr2 += direction
+
+            # Build target coordinate
+            if plane == 'XZ':
+                target = (curr1, fixed_coord, curr2)
+            elif plane == 'XY':
+                target = (curr1, curr2, fixed_coord)
+            else:  # YZ
+                target = (fixed_coord, curr1, curr2)
+
+            # Bounds check
+            if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
                 return moves
+
             occupant = board.piece_at(target)
             if occupant is not None:
-                if occupant.color != current_color:   # capture
-                    moves.append(Move(start, target, is_capture=True))
+                if occupant.color != current_color:
+                    moves.append(Move(from_coord=start, to_coord=target, is_capture=True))
                 return moves
-            moves.append(Move(start, target, is_capture=False))
-        flip = not flip
 
+            moves.append(Move(from_coord=start, to_coord=target, is_capture=False))
+            steps_taken += 1
 
-def generate_xz_zigzag_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """Generate all zig-zag moves (no king)."""
+        # Switch axis for next segment
+        move_axis_1 = not move_axis_1
+
+def generate_xz_zigzag_moves(
+    board,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
+    """Generate all zig-zag moves in XZ, XY, and YZ planes."""
     start = (x, y, z)
-    if not validate_piece_at(state, start, PieceType.XZZIGZAG):
+    if not validate_piece_at(board, color, start, PieceType.XZZIGZAG):
         return []
 
-    moves: List[Move] = []
+    moves: List['Move'] = []
+    directions = [(1, -1), (-1, 1)]
 
-    # Y-normal faces  →  Y fixed  →  XZ plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'XZ', pri, sec, y))
+    # XZ plane (Y fixed)
+    for pri, sec in directions:
+        moves.extend(_zigzag_ray(board, color, start, 'XZ', pri, sec, y))
 
-    # X-normal faces  →  X fixed  →  YZ plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'YZ', pri, sec, x))
+    # XY plane (Z fixed)
+    for pri, sec in directions:
+        moves.extend(_zigzag_ray(board, color, start, 'XY', pri, sec, z))
 
-    # Z-normal faces  →  Z fixed  →  XY plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'XY', pri, sec, z))
+    # YZ plane (X fixed)
+    for pri, sec in directions:
+        moves.extend(_zigzag_ray(board, color, start, 'YZ', pri, sec, x))
 
     return moves

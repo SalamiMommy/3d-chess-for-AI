@@ -18,8 +18,8 @@ def generate_network_teleport_with_king_moves(state: 'GameState', x: int, y: int
     Combines network-teleport moves + 1-step king moves.
     Deduplicates by target coordinate.
     """
-    teleport_moves = generate_network_teleport_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    teleport_moves = generate_network_teleport_moves(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
     seen_targets = {move.to_coord for move in teleport_moves}
     combined_moves = teleport_moves[:]

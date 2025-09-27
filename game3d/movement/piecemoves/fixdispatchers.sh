@@ -1,64 +1,46 @@
 #!/bin/bash
 
-# Check if a directory is provided as argument
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <directory>"
-    exit 1
-fi
+# replace_moves_state.sh
+# Replace moves(state, calls with moves(state.board, state.cache, state.color,
 
-DIRECTORY="$1"
+set -e  # Exit immediately if a command exits with a non-zero status
+
+# Default directory is current directory, but you can pass one as argument
+TARGET_DIR="${1:-.}"
 
 # Check if directory exists
-if [ ! -d "$DIRECTORY" ]; then
-    echo "Directory $DIRECTORY does not exist"
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "Error: Directory '$TARGET_DIR' does not exist."
+    echo "Usage: $0 [directory_path]"
     exit 1
 fi
 
-# Find all Python files in the directory
-find "$DIRECTORY" -name "*.py" -type f | while read -r file; do
-    echo "Processing $file..."
+echo "Searching and replacing in directory: $TARGET_DIR"
+echo "----------------------------------------"
 
-    # Create a temporary file
-    temp_file=$(mktemp)
-
-    # Process the file
-    awk '
-    BEGIN {
-        in_function = 0
-        processed = 0
-    }
-    {
-        # Check if this line contains the function signature we want to replace
-        if (match($0, /\(state: GameState, x: int, y: int, z: int\) -> List\[Move\]:/)) {
-            # Extract the indentation
-            indent = substr($0, 1, RSTART - 1)
-
-            # Print the new function signature with the same indentation
-            print indent "(board, color, *coord, cache=None) -> List[Move]:"
-
-            # Add the import statement after the function signature
-            print indent "    from game3d.game.gamestate import GameState"
-            print indent "    state = GameState(board, color, cache=cache)"
-
-            in_function = 2  # We need to skip the next line too if it exists
-            processed = 1
-        } else {
-            if (in_function > 0) {
-                in_function--
-            } else {
-                print $0
-            }
-        }
-    }
-    END {
-        if (processed) {
-            # If we made changes, the exit status should indicate success for this file
-            exit 0
-        }
-    }' "$file" > "$temp_file"
-
-    # Move the temporary file to the original file
-    mv "$temp_file" "$file"
+# Create backup of files that will be modified
+echo "Creating backups (with .bak extension)..."
+find "$TARGET_DIR" -type f -name "*.py" -exec grep -l "moves(state," {} \; | while read -r file; do
+    if [ -f "$file" ]; then
+        cp "$file" "$file.bak"
+        echo "Backup created: $file.bak"
+    fi
 done
 
-echo "Processing complete!"
+# Perform the replacement
+echo "Performing replacement: moves(state, → moves(state.board, state.cache, state.color,"
+
+# Replace moves(state, calls
+find "$TARGET_DIR" -type f -name "*.py" -exec sed -i 's/moves(state,/moves(state.board, state.cache, state.color,/g' {} +
+
+echo "----------------------------------------"
+echo "Replacement completed successfully!"
+
+# Show which files were modified
+echo "Files that were modified:"
+find "$TARGET_DIR" -type f -name "*.py" -exec grep -l "moves(state.board, state.cache, state.color," {} \;
+
+echo ""
+echo "Note: Original files have been backed up with .bak extension"
+echo "To restore: rename .bak files back to original names"
+echo "To clean up backups: find . -name \"*.bak\" -delete"

@@ -16,4 +16,4 @@ __all__ = ['generate_vector_slider_moves']
 
 @register(PieceType.VECTORSLIDER)
 def vectorslider_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_vector_slider_moves(state, x, y, z)
+    return generate_vector_slider_moves(state.board, state.color, x, y, z)

@@ -1,5 +1,5 @@
 #game3d/cache/effectscache/capturefrombehindcache.py
-"""Incremental cache for Armoured ‘behind’ squares per WALL."""
+"""Incremental cache for ‘behind’ squares per WALL."""
 
 from __future__ import annotations
 from typing import Dict, Set, Tuple
@@ -8,7 +8,7 @@ from game3d.board.board import Board
 from game3d.effects.capturefrombehind import from_behind_squares
 from game3d.movement.movepiece import Move
 
-class ArmouredCache:
+class BehindCache:
     __slots__ = ("_behind",)
 
     def __init__(self) -> None:
@@ -24,12 +24,16 @@ class ArmouredCache:
         return behind_set is not None and attacker_sq in behind_set
 
     def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
-        self._rebuild(board)
+        """Only rebuild the moving player's behind map."""
+        self._behind[mover] = from_behind_squares(board, mover)
 
     def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
-        self._rebuild(board)
+        """Rebuild the moving player's behind map (since undo affects their pieces)."""
+        # Note: After undo, the mover is the player who originally moved
+        self._behind[mover] = from_behind_squares(board, mover)
 
-    def _rebuild(self, board: Board) -> None:
+    # Optional: Add method to rebuild both if needed (e.g., after complex effects)
+    def rebuild_all(self, board: Board) -> None:
         for color in (Color.WHITE, Color.BLACK):
             self._behind[color] = from_behind_squares(board, color)
 

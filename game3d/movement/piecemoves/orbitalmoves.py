@@ -19,7 +19,7 @@ from game3d.movement.movepiece import Move
 
 @register(PieceType.ORBITER)
 def orbital_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_orbital_moves(state, x, y, z)
+    return generate_orbital_moves(state.board, state.color, x, y, z)
 
 
 # Re-export core function and helpers for external use

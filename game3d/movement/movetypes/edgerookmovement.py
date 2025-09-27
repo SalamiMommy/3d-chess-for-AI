@@ -1,67 +1,86 @@
-# game3d/movement/movetypes/edgerookmovement.py
+"""3D Edge-Rook (Edge-Walker) move generation — traverses entire edge network."""
 
-"""3D Edge-Rook move generation logic — moves along board edges, can turn freely."""
-
-from typing import List, Set, Tuple
+from typing import List, Set
 from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
+from game3d.movement.pathvalidation import is_edge_square, validate_piece_at
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import (
-    is_edge_square,
-    is_path_blocked,
-    validate_piece_at
-)
-from game3d.common.common import add_coords, in_bounds
+from collections import deque
 
-def generate_edgerook_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+# Precomputed edge adjacency graph: {coord: [neighbor_coords]}
+_EDGE_GRAPH: dict[tuple, list[tuple]] = {}
+
+def _build_edge_graph(board_size: int = 9) -> None:
+    """Build the edge graph once at import time."""
+    if _EDGE_GRAPH:
+        return  # already built
+
+    directions = [(1,0,0), (-1,0,0), (0,1,0), (0,-1,0), (0,0,1), (0,0,-1)]
+
+    for x in range(board_size):
+        for y in range(board_size):
+            for z in range(board_size):
+                if is_edge_square(x, y, z, board_size):
+                    neighbors = []
+                    for dx, dy, dz in directions:
+                        nx, ny, nz = x + dx, y + dy, z + dz
+                        if (0 <= nx < board_size and
+                            0 <= ny < board_size and
+                            0 <= nz < board_size):
+                            if is_edge_square(nx, ny, nz, board_size):
+                                neighbors.append((nx, ny, nz))
+                    _EDGE_GRAPH[(x, y, z)] = neighbors
+
+# Build the graph immediately when module is imported
+_build_edge_graph()
+
+def generate_edgerook_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+    """
+    Generate legal Edge-Rook moves from (x, y, z) using precomputed edge graph.
+
+    Rules:
+    - Must start on an edge square.
+    - Can move to any edge square reachable via unoccupied edge squares.
+    - Can capture on destination (enemy), but cannot pass through occupied squares.
+    - Cannot land on friendly pieces.
+    """
     start = (x, y, z)
 
-    if not validate_piece_at(state, start, PieceType.EDGEROOK):
+    if not validate_piece_at(state, start, pos, PieceType.EDGEROOK):
         return []
 
-    if not is_edge_square(x, y, z, board_size=9):
-        return []
+    if start not in _EDGE_GRAPH:
+        return []  # not on edge
 
+    current_color = state.color
     moves: List[Move] = []
-    visited: Set[Tuple[int, int, int]] = set()
-    queue: List[Tuple[Tuple[int, int, int], List[Tuple[int, int, int]]]] = [(start, [start])]
-    directions = [
-        (1, 0, 0), (-1, 0, 0),
-        (0, 1, 0), (0, -1, 0),
-        (0, 0, 1), (0, 0, -1)
-    ]
+    visited: set = set()
+    queue = deque([start])
+    visited.add(start)
+
     while queue:
-        current, path = queue.pop(0)
-        if current in visited:
-            continue
-        visited.add(current)
-        for dx, dy, dz in directions:
-            step = 1
-            while True:
-                offset = (dx * step, dy * step, dz * step)
-                target = add_coords(current, offset)
-                if not in_bounds(target):
-                    break
-                if not is_edge_square(*target, board_size=9):
-                    break
-                target_piece = state.board.piece_at(target)
-                if target_piece and target_piece.color == state.color:
-                    break
-                if target_piece is None or (target_piece and target_piece.color != state.color):
-                    if target in path:
-                        step += 1
-                        continue
-                    new_path = path + [target]
-                    is_capture = target_piece is not None and target_piece.color != state.color
-                    move = Move(
-                        from_coord=start,
-                        to_coord=target,
-                        is_capture=is_capture
-                    )
-                    if target not in visited:
-                        moves.append(move)
-                        queue.append((target, new_path))
-                if target_piece and target_piece.color != state.color:
-                    break
-                step += 1
+        current = queue.popleft()
+
+        # Get precomputed neighbors (only edge squares)
+        for neighbor in _EDGE_GRAPH.get(current, []):
+            if neighbor in visited:
+                continue
+
+            piece = state.board.piece_at(neighbor)
+
+            if piece is None:
+                # Empty square: can traverse and move here
+                visited.add(neighbor)
+                queue.append(neighbor)
+                moves.append(Move(from_coord=start, to_coord=neighbor, is_capture=False))
+            elif piece.color != current_color:
+                # Enemy piece: capture allowed, but don't traverse further
+                visited.add(neighbor)
+                moves.append(Move(from_coord=start, to_coord=neighbor, is_capture=True))
+                # Note: do NOT append to queue (can't move through enemy)
+            else:
+                # Friendly piece: block this square (can't land or traverse)
+                visited.add(neighbor)
+                # Do nothing else
+
     return moves

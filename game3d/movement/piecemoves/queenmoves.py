@@ -13,4 +13,4 @@ __all__ = ['generate_queen_moves']
 
 @register(PieceType.QUEEN)
 def queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_queen_moves(state, x, y, z)
+    return generate_queen_moves(state.board, state.color, x, y, z)

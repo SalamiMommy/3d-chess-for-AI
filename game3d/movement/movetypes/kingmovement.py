@@ -4,7 +4,7 @@
 
 from typing import List
 from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
 
@@ -17,8 +17,7 @@ KING_DIRECTIONS_3D = [
     if not (dx == 0 and dy == 0 and dz == 0)  # exclude (0,0,0)
 ]
 
-
-def generate_king_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_king_moves(board, color: Color, x: int, y: int, z: int) -> List[Move]:
     """
     Generate all legal king moves from (x, y, z).
     King = single-step queen → 26 directions, max 1 step.
@@ -28,7 +27,7 @@ def generate_king_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     pos = (x, y, z)
 
     # Validate piece exists and is correct type/color
-    if not validate_piece_at(state, pos, PieceType.KING):
+    if not validate_piece_at(state.board, state.color, pos, PieceType.KING):
         return []
 
     # Reuse slide logic — but limit to 1 step

@@ -2,7 +2,7 @@
 # main.py  (COMPLETE FILE)
 # ---------------------------------------------------------
 import argparse
-from models.resnet3d import ResNet3D
+from models.resnet3d import OptimizedResNet3D as ResNet3D
 from training.optim_train import load_or_init_model, train_model
 from training.self_play import play_game
 

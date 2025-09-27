@@ -19,4 +19,4 @@ __all__ = ['generate_priest_moves']
 
 @register(PieceType.PRIEST)
 def priest_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_priest_moves(state, x, y, z)
+    return generate_priest_moves(state.board, state.color, x, y, z)

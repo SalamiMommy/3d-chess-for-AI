@@ -1,9 +1,6 @@
+"""Incremental cache for Geomancy blocked squares (5-ply expiry)."""
+
 from __future__ import annotations
-"""Incremental cache for Geomancy blocked squares (5-ply expiry)."""
-#game3d/cache/effects/geomancycache.py
-"""Incremental cache for Geomancy blocked squares (5-ply expiry)."""
-
-
 from typing import Dict, Tuple
 from game3d.pieces.enums import Color
 from game3d.board.board import Board
@@ -17,6 +14,7 @@ class GeomancyCache:
         self._blocks: Dict[Tuple[int, int, int], int] = {}
 
     def is_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
+        """Check if square is blocked and clean up expired entries."""
         expiry = self._blocks.get(sq, 0)
         if expiry == 0 or current_ply >= expiry:
             self._blocks.pop(sq, None)
@@ -24,6 +22,7 @@ class GeomancyCache:
         return True
 
     def block_square(self, sq: Tuple[int, int, int], current_ply: int, board: Board) -> bool:
+        """Manually block a square if empty and not already blocked."""
         if board.piece_at(sq) is not None:
             return False
         if self.is_blocked(sq, current_ply):
@@ -32,12 +31,26 @@ class GeomancyCache:
         return True
 
     def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
-        current_controller = mover.opposite()
-        for sq in block_candidates(board, current_controller):
+        """Apply geomancy blocking for the player who just moved."""
+        # ← FIX: Use mover, not mover.opposite()
+        for sq in block_candidates(board, mover):
             if not self.is_blocked(sq, current_ply):
                 self._blocks[sq] = current_ply + 5
 
+        # Optional: Clean up some expired blocks to prevent memory growth
+        # (Only if performance allows - this is O(n))
+        if current_ply % 10 == 0:  # Every 10 plies
+            self._cleanup_expired(current_ply)
+
     def undo_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
-        # Optional: purge blocks with expiry > current_ply
-        # For simplicity, do nothing — expired blocks cleaned on access
-        pass
+        """Optional: Clean up expired blocks."""
+        # For simplicity, we rely on is_blocked() to clean on access
+        # But periodic cleanup helps with memory
+        if current_ply % 10 == 0:
+            self._cleanup_expired(current_ply)
+
+    def _cleanup_expired(self, current_ply: int) -> None:
+        """Remove all expired blocks to prevent memory leaks."""
+        expired_squares = [sq for sq, expiry in self._blocks.items() if current_ply >= expiry]
+        for sq in expired_squares:
+            del self._blocks[sq]

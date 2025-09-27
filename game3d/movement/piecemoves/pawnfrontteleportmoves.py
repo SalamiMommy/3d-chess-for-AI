@@ -18,8 +18,8 @@ def generate_pawn_front_teleport_with_king_moves(
     z: int
 ) -> List[Move]:
     """Combine pawn-front teleport moves + 1-step king moves, deduplicated."""
-    teleport_moves = generate_pawn_front_teleport_moves(state, x, y, z)
-    king_moves     = generate_king_moves(state, x, y, z)
+    teleport_moves = generate_pawn_front_teleport_moves(state.board, state.color, x, y, z)
+    king_moves     = generate_king_moves(state.board, state.color, x, y, z)
 
     seen = {m.to_coord for m in teleport_moves}
     combined = teleport_moves[:]
@@ -39,7 +39,7 @@ def pawn_front_teleport_move_dispatcher(
     y: int,
     z: int
 ) -> List[Move]:
-    return generate_pawn_front_teleport_with_king_moves(state, x, y, z)
+    return generate_pawn_front_teleport_with_king_moves(state.board, state.color, x, y, z)
 
 # ------------------------------------------------------------------
 # Public API

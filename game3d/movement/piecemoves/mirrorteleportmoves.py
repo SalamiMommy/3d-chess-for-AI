@@ -1,6 +1,4 @@
 """Exports Mirror-Teleport + king moves (combined) and registers them."""
-#game3d/movement/piecemoves/mirrorteleportmoves.py
-"""Exports Mirror-Teleport + king moves (combined) and registers them."""
 
 from typing import List
 from game3d.pieces.enums import PieceType
@@ -15,9 +13,10 @@ def generate_mirror_teleport_with_king_moves(state: 'GameState', x: int, y: int,
     Combines mirror teleport moves + king moves.
     Deduplicates by target coordinate.
     """
-    # Both functions must accept (state, x, y, z)
-    teleport_moves = generate_mirror_teleport_move(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    # Both functions must accept (state, x, y, z) - but they don't!
+    # Instead, call them with the correct parameters
+    teleport_moves = generate_mirror_teleport_move(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
     seen_targets = {move.to_coord for move in teleport_moves}
     combined_moves = list(teleport_moves)

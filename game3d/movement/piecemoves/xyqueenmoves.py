@@ -15,8 +15,8 @@ def generate_xy_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
     Deduplicates by target coordinate.
     """
     # use the state that was passed in
-    queen_moves = generate_xy_queen_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    queen_moves = generate_xy_queen_moves(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
     # Filter king moves to only those in XY plane (dz = 0)
     in_plane_king_moves = [
@@ -38,7 +38,7 @@ def generate_xy_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
 
 @register(PieceType.XYQUEEN)
 def xy_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_xy_queen_with_king_moves(state, x, y, z)
+    return generate_xy_queen_with_king_moves(state.board, state.color, x, y, z)
 
 
 # Re-export for external use

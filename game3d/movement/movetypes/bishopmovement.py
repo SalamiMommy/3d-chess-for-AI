@@ -1,42 +1,40 @@
 # game3d/movement/movetypes/bishopmovement.py
-
 """3D Bishop move generation logic — pure movement rules, no registration."""
 
 from typing import List
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.pieces.enums import PieceType, Color
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-# Define all 3D diagonal directions for bishop
+from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+
+# Precomputed constant: 20 unique 3D diagonal directions
 BISHOP_DIRECTIONS = [
-    # Diagonals in XY plane (dz=0)
-    *( (dx, dy, 0) for dx in (-1, 1) for dy in (-1, 1) ),
-    # Diagonals in XZ plane (dy=0)
-    *( (dx, 0, dz) for dx in (-1, 1) for dz in (-1, 1) ),
-    # Diagonals in YZ plane (dx=0)
-    *( (0, dy, dz) for dy in (-1, 1) for dz in (-1, 1) ),
-    # Full 3D diagonals (all axes non-zero)
-    *( (dx, dy, dz) for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1) ),
+    # XY plane diagonals (z fixed)
+    (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0),
+    # XZ plane diagonals (y fixed)
+    (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1),
+    # YZ plane diagonals (x fixed)
+    (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1),
+    # Full 3D space diagonals
+    (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1),
+    (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1),
 ]
 
-
-def generate_bishop_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal bishop moves from (x, y, z).
-    Uses centralized sliding logic from pathvalidation.py.
-    Returns empty list if no valid bishop is at start position.
-    """
+def generate_bishop_moves(
+    board,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
+    """Generate all legal bishop moves from (x, y, z)."""
     pos = (x, y, z)
-
-    # Validate piece exists and is correct type/color
-    if not validate_piece_at(state, pos, PieceType.BISHOP):
+    if not validate_piece_at(board, color, pos, pos, PieceType.BISHOP):
         return []
 
-    # Delegate to shared sliding logic — bishops can capture and cannot self-block
     return slide_along_directions(
-        state,
+        board,
+        color,
         start=pos,
         directions=BISHOP_DIRECTIONS,
-        allow_capture=True,      # Bishops can capture
-        allow_self_block=False   # Bishops cannot move through or onto friendly pieces
+        allow_capture=True,
+        allow_self_block=False
     )

@@ -1,67 +1,50 @@
 """Network Teleporter — teleports to any empty square adjacent to any friendly piece."""
 
-from typing import List, Set, Tuple
-from game3d.game.gamestate import GameState
+from typing import List, Set
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds, add_coords
 
+# Precomputed 26 3D neighbor directions
+_NEIGHBOR_DIRECTIONS = [
+    (dx, dy, dz)
+    for dx in (-1, 0, 1)
+    for dy in (-1, 0, 1)
+    for dz in (-1, 0, 1)
+    if not (dx == dy == dz == 0)
+]
 
-def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_network_teleport_moves(
+    board,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
     """
     Generate all teleport moves to empty squares adjacent to ANY friendly piece.
-    Does NOT require the teleporter itself to be near anyone — it can be isolated!
+    Includes squares adjacent to the teleporter itself.
     """
-    moves = []
-    board = state.board
-    current_color = state.color
     self_pos = (x, y, z)
+    current_color = color
 
-    # Verify this piece exists and belongs to current player
+    # Validate piece
     piece = board.piece_at(self_pos)
-    if piece is None or piece.color != current_color:
-        return moves
+    if piece is None or piece.color != current_color or piece.ptype != PieceType.FRIENDLYTELEPORTER:
+        return []
 
-    # We will collect all candidate target squares
-    candidate_targets: Set[Tuple[int, int, int]] = set()
+    candidate_targets: Set[tuple] = set()
 
-    # Directions for 3D adjacency (26 neighbors)
-    directions = [
-        (dx, dy, dz)
-        for dx in (-1, 0, 1)
-        for dy in (-1, 0, 1)
-        for dz in (-1, 0, 1)
-        if not (dx == dy == dz == 0)
+    # ✅ Only iterate over occupied squares (not entire board!)
+    for pos, other_piece in board.list_occupied():
+        if other_piece.color == current_color:  # friendly piece
+            for dx, dy, dz in _NEIGHBOR_DIRECTIONS:
+                target = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
+                if not in_bounds(target):
+                    continue
+                if board.piece_at(target) is None:  # only empty squares
+                    candidate_targets.add(target)
+
+    # Create moves
+    return [
+        Move(from_coord=self_pos, to_coord=target, is_capture=False)
+        for target in candidate_targets
     ]
-
-    # Scan ENTIRE BOARD for friendly pieces
-    for check_x in range(9):
-        for check_y in range(9):
-            for check_z in range(9):
-                check_pos = (check_x, check_y, check_z)
-                neighbor_piece = board.piece_at(check_pos)
-
-                # If it's a friendly piece (any, including self)
-                if neighbor_piece is not None and neighbor_piece.color == current_color:
-                    # Add all its adjacent EMPTY squares
-                    for dx, dy, dz in directions:
-                        target = add_coords(check_pos, (dx, dy, dz))
-
-                        if not in_bounds(target):
-                            continue
-
-                        # Only allow teleport to EMPTY squares
-                        if board.piece_at(target) is not None:
-                            continue
-
-                        candidate_targets.add(target)
-
-    # Create teleport move for each unique target
-    for target in candidate_targets:
-        moves.append(Move(
-            from_coord=self_pos,
-            to_coord=target,
-            is_capture=False,
-
-        ))
-
-    return moves

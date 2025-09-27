@@ -13,4 +13,4 @@ __all__ = ['generate_edgerook_moves']
 
 @register(PieceType.EDGEROOK)
 def edgerook_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_edgerook_moves(state, x, y, z)
+    return generate_edgerook_moves(state.board, state.color, x, y, z)

@@ -14,12 +14,12 @@ __all__ = ['generate_swapper_moves']
 
 @register(PieceType.SWAPPER)
 def swapper_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_swapper_moves(state, x, y, z)
+    return generate_swapper_moves(state.board, state.color, x, y, z)
 
 
 def generate_swapper_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """Combines king moves and swap moves for the Swapper piece."""
     moves: List[Move] = []
-    moves.extend(generate_king_moves(state, x, y, z))
-    moves.extend(generate_swap_moves(state, x, y, z))
+    moves.extend(generate_king_moves(state.board, state.color, x, y, z))
+    moves.extend(generate_swap_moves(state.board, state.color, x, y, z))
     return moves

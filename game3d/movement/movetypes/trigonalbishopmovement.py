@@ -3,10 +3,10 @@
 
 from typing import List
 from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
-from game3d.movement.movepiece import Move
-# Only the four true 3-D diagonals (equal step on every axis)
+
+# 8 true 3D space diagonals (equal step on all three axes)
 TRIGONAL_BISHOP_DIRECTIONS = [
     ( 1,  1,  1),
     ( 1,  1, -1),
@@ -18,16 +18,10 @@ TRIGONAL_BISHOP_DIRECTIONS = [
     (-1, -1, -1),
 ]
 
-
-def generate_trigonal_bishop_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal trigonal-bishop moves from (x, y, z).
-    Uses centralized sliding logic from pathvalidation.py.
-    Returns empty list if no valid trigonal-bishop is at start position.
-    """
+def generate_trigonal_bishop_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+    """Generate all legal trigonal-bishop moves from (x, y, z)."""
     pos = (x, y, z)
-
-    if not validate_piece_at(state, pos, PieceType.TRIGONALBISHOP):   # or reuse BISHOP if you prefer
+    if not validate_piece_at(state.board, state.color, pos, PieceType.TRIGONALBISHOP):
         return []
 
     return slide_along_directions(

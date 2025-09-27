@@ -1,8 +1,9 @@
+from __future__ import annotations
 """
 game3d/board/board.py
 9×9×9 board – tensor-first, zero-copy, training-ready."""
 
-from __future__ import annotations
+
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
@@ -10,10 +11,11 @@ from game3d.common.common import (
     SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_TOTAL_PLANES,
     N_COLOR_PLANES, N_PLANES_PER_SIDE, X, Y, Z,
     Coord, in_bounds, coord_to_idx, idx_to_coord,
-    tensor_cache, hash_board_tensor,
+    hash_board_tensor
 )
 from game3d.pieces.enums import Color, PieceType
 from game3d.pieces.piece import Piece
+from game3d.board.symmetry import SymmetryManager
 
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
@@ -32,6 +34,19 @@ class Board:
                 raise ValueError("Board tensor must be (C,9,9,9)")
             self._tensor = tensor
         self._hash: Optional[int] = None
+        self.symmetry_manager = SymmetryManager()
+
+    def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
+        """Get all symmetric variants of current board position."""
+        return self.symmetry_manager.get_symmetric_boards(self)
+
+    def get_canonical_form(self) -> Tuple['Board', str]:
+        """Get canonical (normalized) form of board position."""
+        return self.symmetry_manager.get_canonical_form(self)
+
+    def is_symmetric_to(self, other: 'Board') -> bool:
+        """Check if this board is symmetrically equivalent to another."""
+        return self.symmetry_manager.is_symmetric_position(self, other)
 
     @staticmethod
     def empty() -> Board:
@@ -234,9 +249,7 @@ class Board:
                     black_vals = self._tensor[BLACK_SLICE, z, y, x]
                     total_ones = (white_vals == 1.0).sum().item() + (black_vals == 1.0).sum().item()
                     if total_ones > 1:
-                        print(f"INVALID: Multiple pieces at {(x,y,z)}")
-                        print("White:", white_vals)
-                        print("Black:", black_vals)
+                        raise ValueError(f"INVALID: Multiple pieces at {(x,y,z)}\nWhite: {white_vals}\nBlack: {black_vals}")
                         valid = False
                     elif total_ones == 0:
                         # empty is fine
@@ -245,3 +258,7 @@ class Board:
                         # exactly one piece
                         pass
         return valid
+
+
+
+
