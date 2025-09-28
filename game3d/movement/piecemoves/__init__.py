@@ -42,5 +42,4 @@ from game3d.movement.piecemoves.armourmoves import armour_move_dispatcher
 from game3d.movement.piecemoves.reflectingbishopmoves import reflecting_bishop_move_dispatcher
 from game3d.movement.piecemoves.mirrorteleportmoves import mirror_teleport_move_dispatcher
 from game3d.movement.piecemoves.networkteleportmoves import network_teleport_move_dispatcher
-from game3d.movement.piecemoves.swappermoves import swapper_move_dispatcher
 from game3d.movement.piecemoves.pawnfrontteleportmoves import pawn_front_teleport_move_dispatcher

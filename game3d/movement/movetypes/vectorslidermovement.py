@@ -3,10 +3,11 @@
 Pure movement logic, no registration; drop-in replacement for queenmovement.py.
 """
 
+import numpy as np
 from typing import List
-from game3d.pieces.enums import PieceType
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.movement.movepiece import Move  # Ensure Move is available
 from math import gcd
 
 # -----------------------------------------------------------------------------
@@ -29,20 +30,24 @@ def _compute_vector_slider_directions() -> List[tuple[int, int, int]]:
 
     return list(directions)
 
-# Precompute once at import time
-VECTOR_SLIDER_DIRECTIONS = _compute_vector_slider_directions()
+# Precompute once at import time — as NumPy array
+VECTOR_SLIDER_DIRECTIONS = np.array(_compute_vector_slider_directions())
 # Total: 152 unique directions (verified)
 
 def generate_vector_slider_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
     """Generate all legal vector slider moves from (x, y, z)."""
     pos = (x, y, z)
-    if not validate_piece_at(state.board, state.color, pos, PieceType.VECTORSLIDER):
+
+    # Validate piece at starting position
+    if not validate_piece_at(board, color, pos, PieceType.VECTORSLIDER):
         return []
 
     return slide_along_directions(
-        state,
+        board=board,
+        color=color,
         start=pos,
         directions=VECTOR_SLIDER_DIRECTIONS,
         allow_capture=True,
         allow_self_block=False
     )
+

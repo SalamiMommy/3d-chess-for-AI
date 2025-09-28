@@ -132,12 +132,12 @@ class OptimizedMovementBuffCache:
     def _move_affects_buff_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects buff sources (piece moved, captured, or near buff sources)."""
         # Check if moved piece is a buff source
-        moved_piece = board.piece_at(mv.from_coord)
+        moved_piece = cache.piece_cache.get(mv.from_coord)
         if moved_piece and self._is_buff_source(moved_piece):
             return True
 
         # Check if destination had a buff source (captured)
-        dest_piece = board.piece_at(mv.to_coord)
+        dest_piece = cache.piece_cache.get(mv.to_coord)
         if dest_piece and self._is_buff_source(dest_piece):
             return True
 

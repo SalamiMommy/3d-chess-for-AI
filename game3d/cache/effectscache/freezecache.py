@@ -133,12 +133,12 @@ class OptimizedFreezeCache:
     def _move_affects_freeze_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects freeze sources (piece moved, captured, or near freeze sources)."""
         # Check if moved piece is a freeze source
-        moved_piece = board.piece_at(mv.from_coord)
+        moved_piece = cache.piece_cache.get(mv.from_coord)
         if moved_piece and self._is_freeze_source(moved_piece):
             return True
 
         # Check if destination had a freeze source (captured)
-        dest_piece = board.piece_at(mv.to_coord)
+        dest_piece = cache.piece_cache.get(mv.to_coord)
         if dest_piece and self._is_freeze_source(dest_piece):
             return True
 

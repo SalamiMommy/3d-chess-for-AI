@@ -59,7 +59,7 @@ def _zigzag_ray(
             if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
                 return moves
 
-            occupant = board.piece_at(target)
+            occupant = cache.piece_cache.get(target)
             if occupant is not None:
                 if occupant.color != current_color:
                     moves.append(Move(from_coord=start, to_coord=target, is_capture=True))

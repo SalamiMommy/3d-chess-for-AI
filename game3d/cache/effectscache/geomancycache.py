@@ -23,7 +23,7 @@ class GeomancyCache:
 
     def block_square(self, sq: Tuple[int, int, int], current_ply: int, board: Board) -> bool:
         """Manually block a square if empty and not already blocked."""
-        if board.piece_at(sq) is not None:
+        if cache.piece_cache.get(sq) is not None:
             return False
         if self.is_blocked(sq, current_ply):
             return False

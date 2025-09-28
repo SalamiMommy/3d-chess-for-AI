@@ -5,7 +5,6 @@
 
 from typing import List, Set
 from game3d.pieces.enums import PieceType, Color
-from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds
 
@@ -17,21 +16,19 @@ def generate_pawn_front_teleport_moves(board, color: Color, x: int, y: int, z: i
       - Black pawns: front = (x, y, z-1)
     """
     self_pos = (x, y, z)
-    current_color = state.color
 
-    # Validate piece
-    piece = state.board.piece_at(self_pos)
-    if piece is None or piece.color != current_color:
+    # Validate piece at start (optional, but consistent)
+    piece = cache.piece_cache.get(self_pos)
+    if piece is None or piece.color != color:
         return []
 
     candidate_targets: Set[tuple] = set()
-    board = state.board
 
-    # ✅ Only iterate over occupied squares (not entire board!)
+    # Iterate over occupied squares to find enemy pawns
     for pos, other_piece in board.list_occupied():
         if other_piece.ptype != PieceType.PAWN:
             continue
-        if other_piece.color == current_color:
+        if other_piece.color == color:
             continue  # must be enemy pawn
 
         # Determine front square based on enemy pawn's color
@@ -43,7 +40,7 @@ def generate_pawn_front_teleport_moves(board, color: Color, x: int, y: int, z: i
 
         if not in_bounds(front):
             continue
-        if board.piece_at(front) is not None:
+        if cache.piece_cache.get(front) is not None:
             continue  # must be empty
 
         candidate_targets.add(front)

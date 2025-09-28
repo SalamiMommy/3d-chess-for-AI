@@ -9,11 +9,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 
 from game3d.movement.registry import register
-from game3d.movement.movetypes.orbitalmovement import (
-    generate_orbital_moves,
-    get_orbital_offsets,
-    count_valid_orbital_moves_from
-)
+from game3d.movement.movetypes.orbitalmovement import generate_orbital_moves
 from game3d.movement.movepiece import Move
 
 

@@ -82,7 +82,7 @@ def compute_zobrist(board: Board, color: Color) -> int:
     for x in range(SIZE_X):
         for y in range(SIZE_Y):
             for z in range(SIZE_Z):
-                piece = board.piece_at((x, y, z))
+                piece = cache.piece_cache.get((x, y, z))
                 if piece is not None:
                     zkey ^= _PIECE_KEYS[(piece.ptype, piece.color, (x, y, z))]
 
@@ -150,13 +150,16 @@ class GameState:
     _undo_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
     def __init__(self, board: Board, color: Color, cache: OptimizedCacheManager,
-                 history: Tuple[Move, ...] = (), halfmove_clock: int = 0):
+                history: Tuple[Move, ...] = (), halfmove_clock: int = 0):
         self.board = board
         self.color = color
         self.cache = cache
         self.history = history
         self.halfmove_clock = halfmove_clock
         self._zkey = compute_zobrist(board, color)
+
+        # 👇 ADD THIS LINE
+        self._metrics = PerformanceMetrics()
 
         # Initialize caches
         self._clear_caches()
@@ -243,7 +246,7 @@ class GameState:
         valid_moves = []
 
         for move in moves:
-            piece = self.board.piece_at(move.from_coord)
+            piece = self.cache.piece_cache.get(move.from_coord)
             if piece is None:
                 continue  # Skip instead of raise to avoid crash, but log
             # Additional validation
@@ -289,75 +292,73 @@ class GameState:
             setattr(self._metrics, metric_attr, getattr(self._metrics, metric_attr) + duration)
 
     def make_move(self, mv: Move) -> GameState:
-        """Fixed move making with proper cache invalidation."""
-        if self.board.piece_at(mv.from_coord) is None:
+        """Fixed move making with proper cache invalidation and trailblaze support."""
+        if self.cache.piece_cache.get(mv.from_coord) is None:
             raise ValueError(f"make_move: no piece at {mv.from_coord}")
 
         with self._track_operation_time('total_make_move_time'):
             self._metrics.make_move_calls += 1
 
-            # CRITICAL: Validate move before any board changes
-            moving_piece = self.board.piece_at(mv.from_coord)
+            # Validate move before any changes
+            moving_piece = self.cache.piece_cache.get(mv.from_coord)
             if moving_piece is None:
                 raise ValueError(f"Cannot move from empty square: {mv.from_coord}")
-
-            # Ensure piece color matches current player
             if moving_piece.color != self.color:
                 raise ValueError(f"Cannot move opponent's piece: {mv.from_coord}")
-            moving_piece = self.board.piece_at(mv.from_coord)
-            if moving_piece and moving_piece.ptype == PieceType.TRAILBLAZER:
-                # Reconstruct the actual path from the executed move
-                path = _reconstruct_trailblazer_path(mv.from_coord, mv.to_coord)
 
-                # Tell cache to record this path
-                trail_cache = new_cache._effect["trailblaze"]
-                trail_cache.record_trail(mv.from_coord, path)
-            # Clone board efficiently
+            # Clone board
             new_board = Board(self.board.tensor().clone())
 
-            # Pre-compute undo information BEFORE any changes
-            undo_info = self._compute_undo_info(mv, moving_piece,
-                                            self.board.piece_at(mv.to_coord))
+            # Pre-compute undo info
+            captured_piece = self.cache.piece_cache.get(mv.to_coord)
+            undo_info = self._compute_undo_info(mv, moving_piece, captured_piece)
 
             # Apply move to board
             if not new_board.apply_move(mv):
                 raise ValueError(f"Board refused move: {mv}")
 
-            # CRITICAL: Clear all caches immediately after board change
+            # Clear current state's caches (optional, since we're creating new state)
             self._clear_caches()
 
-            # Initialize collections for side effects
+            # Initialize side-effect collections
             removed_pieces: List[Tuple[Coord, Piece]] = []
             moved_pieces: List[Tuple[Coord, Coord, Piece]] = []
             enemy_color = self.color.opposite()
             is_self_detonate = False
 
-            # Apply special effects efficiently
+            # Apply special effects
             self._apply_hole_effects(new_board, moved_pieces, enemy_color)
-            self._apply_bomb_effects(new_board, mv, moving_piece,
-                                self.board.piece_at(mv.to_coord),
-                                removed_pieces, is_self_detonate)
+            self._apply_bomb_effects(new_board, mv, moving_piece, captured_piece,
+                                   removed_pieces, is_self_detonate)
             self._apply_trailblaze_effect(new_board, mv, enemy_color, removed_pieces)
 
-            # Update game clock efficiently
+            # Update halfmove clock
             is_pawn = moving_piece.ptype == PieceType.PAWN
-            is_capture = self.board.piece_at(mv.to_coord) is not None
+            is_capture = captured_piece is not None
             new_clock = 0 if (is_pawn or is_capture) else self.halfmove_clock + 1
 
-            # Build enriched move with undo information
-            enriched_move = self._create_enriched_move(mv, removed_pieces,
-                                                    moved_pieces, is_self_detonate,
-                                                    undo_info)
+            # Create enriched move
+            enriched_move = self._create_enriched_move(
+                mv, removed_pieces, moved_pieces, is_self_detonate, undo_info
+            )
 
-            # Compute incremental Zobrist hash
+            # Create NEW cache for new state (critical for mutable effects like trailblaze)
+            new_cache = get_cache_manager(new_board, self.color.opposite())
+
+            # Handle Trailblazer path recording in the NEW cache
+            if moving_piece.ptype == PieceType.TRAILBLAZER:
+                path = _reconstruct_trailblazer_path(mv.from_coord, mv.to_coord)
+                trail_cache = new_cache._effect["trailblaze"]
+                trail_cache.record_trail(mv.from_coord, path)
+
+            # Compute new state
             new_color = self.color.opposite()
             new_key = compute_zobrist(new_board, new_color)
 
-            # Build new state efficiently
             new_state = GameState(
                 board=new_board,
                 color=new_color,
-                cache=self.cache,  # Share cache if it's immutable
+                cache=new_cache,  # ✅ Fresh cache
                 history=self.history + (enriched_move,),
                 halfmove_clock=new_clock,
             )
@@ -385,7 +386,7 @@ class GameState:
         all_hole_moves = {**pull_map, **push_map}
 
         for from_sq, to_sq in all_hole_moves.items():
-            piece = board.piece_at(from_sq)
+            piece = cache.piece_cache.get(from_sq)
             if piece and piece.color == enemy_color:
                 moved_pieces.append((from_sq, to_sq, piece))
                 board.set_piece(to_sq, piece)
@@ -400,7 +401,7 @@ class GameState:
         # Handle captured bomb explosion
         if captured_piece and captured_piece.ptype == PieceType.BOMB and captured_piece.color == enemy_color:
             for sq in detonate(board, mv.to_coord):
-                piece = board.piece_at(sq)
+                piece = cache.piece_cache.get(sq)
                 if piece:
                     removed_pieces.append((sq, piece))
                 board.set_piece(sq, None)
@@ -409,7 +410,7 @@ class GameState:
         if (moving_piece.ptype == PieceType.BOMB and
             getattr(mv, 'is_self_detonate', False)):
             for sq in detonate(board, mv.to_coord):
-                piece = board.piece_at(sq)
+                piece = cache.piece_cache.get(sq)
                 if piece:
                     removed_pieces.append((sq, piece))
                 board.set_piece(sq, None)
@@ -424,7 +425,7 @@ class GameState:
 
         for sq in squares_to_check:
             if trail_cache.increment_counter(sq, enemy_color, board):
-                victim = board.piece_at(sq)
+                victim = cache.piece_cache.get(sq)
                 if victim:
                     # Kings only removed if no priest alive
                     if victim.ptype == PieceType.KING:
@@ -451,7 +452,7 @@ class GameState:
             removed_pieces=removed_pieces,
             moved_pieces=moved_pieces,
             is_self_detonate=is_self_detonate,
-            _undo_info=undo_info,  # Store for fast undo
+            # _undo_info=undo_info,   # ← REMOVE or store elsewhere
         )
 
     # ------------------------------------------------------------------
@@ -465,7 +466,7 @@ class GameState:
         new_board = self.board.clone()
 
         # Restore moving piece
-        moving_piece = self.board.piece_at(last_move.to_coord)
+        moving_piece = self.cache.piece_cache.get(last_move.to_coord)
         if moving_piece is None:
             raise RuntimeError("Corrupt state: moving piece missing on undo")
 
@@ -772,7 +773,7 @@ class GameState:
         # Check each legal move
         empty_square_moves = []
         for i, move in enumerate(legal_moves):
-            piece = self.board.piece_at(move.from_coord)
+            piece = self.cache.piece_cache.get(move.from_coord)
             if piece is None:
                 empty_square_moves.append((i, move))
 
@@ -796,6 +797,57 @@ class GameState:
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================
+def _reconstruct_trailblazer_path(from_coord: Tuple[int, int, int], to_coord: Tuple[int, int, int]) -> Set[Tuple[int, int, int]]:
+    """
+    Reconstruct the set of coordinates traversed by a trailblazer moving in a straight line
+    from `from_coord` to `to_coord` in 3D space.
+
+    Assumes movement is along a straight line (orthogonal, diagonal, or 3D-diagonal).
+    Returns all intermediate squares, including the destination but excluding the origin.
+    """
+    fx, fy, fz = from_coord
+    tx, ty, tz = to_coord
+
+    # If same square, return empty path
+    if from_coord == to_coord:
+        return set()
+
+    # Compute deltas
+    dx = tx - fx
+    dy = ty - fy
+    dz = tz - fz
+
+    # Determine step directions (signs)
+    step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+    step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+    step_z = 0 if dz == 0 else (1 if dz > 0 else -1)
+
+    # Compute max number of steps (for non-orthogonal moves)
+    max_steps = max(abs(dx), abs(dy), abs(dz))
+
+    # Validate that it's a straight line
+    # All non-zero deltas must have the same absolute value (for diagonal) or one non-zero (orthogonal)
+    non_zero_deltas = [d for d in (dx, dy, dz) if d != 0]
+    if non_zero_deltas:
+        abs_vals = [abs(d) for d in non_zero_deltas]
+        if len(set(abs_vals)) != 1:
+            # Not a valid straight-line move (e.g., knight-like). Trailblazer shouldn't do this.
+            # For safety, just return the destination only.
+            return {to_coord}
+
+    path = set()
+    x, y, z = fx, fy, fz
+
+    for _ in range(max_steps):
+        x += step_x
+        y += step_y
+        z += step_z
+        path.add((x, y, z))
+        if (x, y, z) == to_coord:
+            break
+
+    return path
+
 
 def extract_enemy_slid_path(mv: Move) -> List[Tuple[int, int, int]]:
     """Extract enemy sliding path for trailblaze effect."""

@@ -12,7 +12,7 @@ def debuffed_squares(board: BoardProto, debuffer_colour: Color) -> Set[Tuple[int
     for coord, piece in board.list_occupied():
         if piece.color == debuffer_colour and piece.ptype == PieceType.SLOWER:
             for sq in sphere_centre(board, coord, radius=2):
-                target = board.piece_at(sq)
+                target = cache.piece_cache.get(sq)
                 if target is not None and target.color != debuffer_colour:
                     debuffed.add(sq)
     return debuffed

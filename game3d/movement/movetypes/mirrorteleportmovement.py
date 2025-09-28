@@ -29,7 +29,7 @@ def generate_mirror_teleport_move(
     if start == target:
         return []
 
-    target_piece = board.piece_at(target)
+    target_piece = cache.piece_cache.get(target)
 
     # Cannot land on friendly pieces
     if target_piece is not None and target_piece.color == color:

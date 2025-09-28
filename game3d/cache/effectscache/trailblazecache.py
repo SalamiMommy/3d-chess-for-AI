@@ -1,5 +1,8 @@
 from __future__ import annotations
-from typing import Dict, Tuple, Set
+from typing import Dict, Set
+from game3d.common.common import Coord  # Assuming Coord is Tuple[int, int, int]
+from game3d.common.protocols import BoardProto  # If needed for type checking
+from game3d.effects.trailblazing import TrailblazeRecorder
 from game3d.pieces.enums import Color, PieceType
 from game3d.board.board import Board
 from game3d.movement.movepiece import Move
@@ -17,9 +20,9 @@ class TrailblazeCache:
 
     def current_trail_squares(self, controller: Color, board: Board) -> Set[Coord]:
         """Get all squares in trails of friendly trailblazers."""
-        result = set()
+        result: Set[Coord] = set()
         for coord, recorder in self._recorders.items():
-            piece = board.piece_at(coord)
+            piece = cache.piece_cache.get(coord)
             if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
                 result.update(recorder.current_trail())
         return result
@@ -37,10 +40,7 @@ class TrailblazeCache:
 
     def _sync_recorders_with_board(self, board: Board) -> None:
         """Remove recorders for trailblazers that no longer exist."""
-        existing_coords = set()
-        for coord, piece in board.list_occupied():
-            if piece.ptype == PieceType.TRAILBLAZER:
-                existing_coords.add(coord)
+        existing_coords = {coord for coord, piece in board.list_occupied() if piece.ptype == PieceType.TRAILBLAZER}
 
         # Keep only recorders for trailblazers that still exist
         self._recorders = {

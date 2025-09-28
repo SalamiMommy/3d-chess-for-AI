@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from game3d.pieces.features import N_CHANNELS
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_CHANNELS
 from typing import Optional, Tuple
 SIZE = 9
 
@@ -307,23 +306,14 @@ class OptimizedResNet3D(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """Forward pass with feature extraction and heads."""
-        # Initial feature extraction
-        x = self.relu(self.bn1(self.in_conv(x)))
-        x = self.maxpool(x)
-
-        # Residual processing
-        x = self.layer1(x)
-
-        # Global attention
-        x = self.global_attention(x)
-
-        # Policy and value heads
-        policy = self.policy_head(x)
-        value, uncertainty = self.value_head(x)
-
-        return policy, value, uncertainty
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+            x = self.relu(self.bn1(self.in_conv(x)))
+            x = self.maxpool(x)
+            x = self.layer1(x)
+            x = self.global_attention(x)
+            policy = self.policy_head(x)
+            value, uncertainty = self.value_head(x)
+            return policy, value, uncertainty  # uncertainty can be ignored
 
 # ==============================================================================
 # LIGHTWEIGHT VERSION FOR FASTER INFERENCE

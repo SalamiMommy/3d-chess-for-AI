@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import random
 import struct
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
@@ -19,55 +20,11 @@ from game3d.movement.registry import get_dispatcher
 from game3d.attacks.check import king_in_check
 from game3d.board.board import Board
 from game3d.pieces.piece import Piece
+from game3d.board.symmetry import SymmetryManager
+from game3d.cache.symmetry_tt import SymmetryAwareTranspositionTable
+from game3d.cache.transposition import CompactMove, TTEntry, TranspositionTable
+from game3d.common.common import in_bounds
 
-# ==============================================================================
-# ADVANCED CACHING DATA STRUCTURES
-# ==============================================================================
-
-@dataclass
-class CompactMove:
-    """Ultra-compact move representation using bit packing."""
-    data: int = 0
-
-    def __init__(self, from_coord: Tuple[int, int, int], to_coord: Tuple[int, int, int],
-                 piece_type: PieceType, is_capture: bool = False,
-                 captured_type: Optional[PieceType] = None,
-                 is_promotion: bool = False):
-
-        from_index = from_coord[0] * 81 + from_coord[1] * 9 + from_coord[2]
-        to_index = to_coord[0] * 81 + to_coord[1] * 9 + to_coord[2]
-
-        self.data = (from_index & 0x1FFFFF) | \
-                   ((to_index & 0x1FFFFF) << 21) | \
-                   ((piece_type.value & 0x3F) << 42) | \
-                   ((captured_type.value & 0x3F) << 48 if captured_type else 0) | \
-                   (1 << 54 if is_capture else 0) | \
-                   (1 << 55 if is_promotion else 0)
-
-    def unpack(self) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], bool, bool]:
-        """Unpack move data."""
-        from_index = self.data & 0x1FFFFF
-        to_index = (self.data >> 21) & 0x1FFFFF
-        is_capture = bool(self.data & (1 << 54))
-        is_promotion = bool(self.data & (1 << 55))
-
-        from_coord = (from_index // 81, (from_index % 81) // 9, from_index % 9)
-        to_coord = (to_index // 81, (to_index % 81) // 9, to_index % 9)
-
-        return from_coord, to_coord, is_capture, is_promotion
-
-class TTEntry:
-    """Transposition table entry with optimized memory layout."""
-    __slots__ = ('hash_key', 'depth', 'score', 'node_type', 'best_move', 'age')
-
-    def __init__(self, hash_key: int, depth: int, score: int, node_type: int,
-                 best_move: Optional[CompactMove], age: int):
-        self.hash_key = hash_key
-        self.depth = depth
-        self.score = score
-        self.node_type = node_type  # 0=exact, 1=lower, 2=upper
-        self.best_move = best_move
-        self.age = age
 
 # ==============================================================================
 # ZOBRIST HASHING SYSTEM
@@ -128,42 +85,6 @@ class ZobristHashing:
 
         return hash_value
 
-# ==============================================================================
-# TRANSPOSITION TABLE
-# ==============================================================================
-
-class TranspositionTable:
-    """High-performance transposition table with advanced replacement strategy."""
-
-    def __init__(self, size_mb: int = 256):
-        # Size should be power of 2 for efficient masking
-        self.size = (size_mb * 1024 * 1024) // 32  # 32 bytes per entry
-        self.table: List[Optional[TTEntry]] = [None] * self.size
-        self.mask = self.size - 1
-        self.age_counter = 0
-
-    def probe(self, hash_value: int) -> Optional[TTEntry]:
-        """Look up cached evaluation for this position."""
-        index = hash_value & self.mask
-        entry = self.table[index]
-
-        if entry is not None and entry.hash_key == hash_value:
-            return entry
-        return None
-
-    def store(self, hash_value: int, depth: int, score: int, node_type: int,
-              best_move: Optional[CompactMove], age: int) -> None:
-        """Store evaluation with advanced replacement strategy."""
-        index = hash_value & self.mask
-        existing_entry = self.table[index]
-
-        # Replacement strategy: always replace if deeper, or if old entry is too old
-        should_replace = (existing_entry is None or
-                         existing_entry.depth <= depth or
-                         existing_entry.age < age - 4)
-
-        if should_replace:
-            self.table[index] = TTEntry(hash_value, depth, score, node_type, best_move, age)
 
 # ==============================================================================
 # BITBOARD CACHE KEYS
@@ -243,15 +164,17 @@ class ParallelMoveGenerator:
         return all_moves
 
     def _generate_moves_sequential(self, board: Board, color: Color,
-                                  positions: List[Tuple[int, int, int]],
-                                  cache_manager: CacheManager) -> List[Move]:
+                                positions: List[Tuple[int, int, int]],
+                                cache_manager: CacheManager) -> List[Move]:
         """Sequential move generation for small sets."""
         moves = []
         for pos in positions:
-            piece = board.piece_at(pos)
+            piece = cache_manager.piece_cache.get(pos)
             if piece and piece.color == color:
                 dispatcher = get_dispatcher(piece.ptype)
                 if dispatcher:
+                    # Local import to avoid circular dependency
+                    from game3d.game.gamestate import GameState
                     tmp_state = GameState.__new__(GameState)
                     tmp_state.board = board
                     tmp_state.color = color
@@ -261,15 +184,17 @@ class ParallelMoveGenerator:
         return moves
 
     def _generate_chunk_moves(self, board: Board, color: Color,
-                             positions: List[Tuple[int, int, int]],
-                             cache_manager: CacheManager) -> List[Move]:
+                            positions: List[Tuple[int, int, int]],
+                            cache_manager: CacheManager) -> List[Move]:
         """Generate moves for a chunk of piece positions."""
         chunk_moves = []
         for pos in positions:
-            piece = board.piece_at(pos)
+            piece = cache_manager.piece_cache.get(pos)
             if piece and piece.color == color:
                 dispatcher = get_dispatcher(piece.ptype)
                 if dispatcher:
+                    # Local import to avoid circular dependency
+                    from game3d.game.gamestate import GameState
                     tmp_state = GameState.__new__(GameState)
                     tmp_state.board = board
                     tmp_state.color = color
@@ -290,7 +215,7 @@ class OptimizedMoveCache:
         "_king_pos", "_priest_count", "_has_priest", "_zobrist",
         "_transposition_table", "_bitboard_keys", "_parallel_generator",
         "_dependency_graph", "_zobrist_hash", "_move_cache", "_age_counter",
-        "_simple_move_cache", "_vectorized_cache"
+        "_simple_move_cache", "_vectorized_cache", "symmetry_manager", "symmetry_tt"
     )
 
     def __init__(self, board: Board, current: Color, cache_manager: CacheManager):
@@ -336,11 +261,11 @@ class OptimizedMoveCache:
     def _build_dependency_graph(self) -> Dict[PieceType, Set[PieceType]]:
         """Build dependency graph for piece interactions."""
         return {
-            PieceType.FREEZE_AURA: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
+            PieceType.FREEZER: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
                                    PieceType.ROOK, PieceType.QUEEN, PieceType.KING},
-            PieceType.BLACK_HOLE: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
+            PieceType.BLACKHOLE: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
                                   PieceType.ROOK, PieceType.QUEEN},
-            PieceType.WHITE_HOLE: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
+            PieceType.WHITEHOLE: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
                                   PieceType.ROOK, PieceType.QUEEN},
             PieceType.GEOMANCER: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
                                  PieceType.ROOK, PieceType.QUEEN},
@@ -354,7 +279,7 @@ class OptimizedMoveCache:
                                PieceType.ROOK, PieceType.QUEEN},
             PieceType.SLOWER: {PieceType.PAWN, PieceType.KNIGHT, PieceType.BISHOP,
                               PieceType.ROOK, PieceType.QUEEN},
-            PieceType.SHARE_SQUARE: {PieceType.KNIGHT}
+            PieceType.KNIGHT: {PieceType.KNIGHT}
         }
 
     # --------------------------------------------------------------------------
@@ -410,23 +335,45 @@ class OptimizedMoveCache:
 
     def undo_move(self, mv: Move, color: Color) -> None:
         """Optimized undo with hash restoration."""
-        # Restore Zobrist hash (XOR is its own inverse)
+        # Get piece that was moved
         piece = self._board.piece_at(mv.to_coord)
         captured_piece = None
+
         if getattr(mv, 'is_capture', False):
             captured_type = getattr(mv, 'captured_ptype', None)
             if captured_type is not None:
                 captured_piece = Piece(color.opposite(), captured_type)
 
-        self._zobrist_hash = self._zobrist.update_hash_move(self._zobrist_hash, mv, piece, captured_piece)
+        # Restore Zobrist hash (XOR is its own inverse)
+        if piece:
+            self._zobrist_hash = self._zobrist.update_hash_move(self._zobrist_hash, mv, piece, captured_piece)
 
         # Apply undo to board
         self._undo_move_optimized(mv, color)
         self._current = color
         self._age_counter += 1
 
-        # Optimized incremental undo
+        # Fast incremental update for undo
         self._optimized_incremental_undo(mv, color)
+
+    def _undo_move_optimized(self, mv: Move, color: Color) -> None:
+        """Proper undo implementation."""
+        # Restore captured piece if any
+        if getattr(mv, "is_capture", False):
+            captured_type = getattr(mv, "captured_ptype", None)
+            if captured_type is not None:
+                captured_color = color.opposite()
+                self._board.set_piece(mv.to_coord, Piece(captured_color, captured_type))
+
+        # Move piece back to original position
+        piece = self._board.piece_at(mv.to_coord)
+        if piece:
+            self._board.set_piece(mv.from_coord, piece)
+            self._board.set_piece(mv.to_coord, None)
+
+        # Handle demotion from promotion
+        if getattr(mv, "is_promotion", False) and piece:
+            self._board.set_piece(mv.from_coord, Piece(piece.color, PieceType.PAWN))
 
     # --------------------------------------------------------------------------
     # OPTIMIZED INTERNAL METHODS
@@ -636,23 +583,28 @@ class OptimizedMoveCache:
         return stop, can_land
 
     def _filter_king_safe_moves(self, moves: List[Move], piece: Piece) -> List[Move]:
-        """Branchless king safety checking."""
-        # Restore Zobrist hash
-        piece = self._board.piece_at(mv.to_coord)
-        captured_piece = None
-        if getattr(mv, 'is_capture', False):
-            captured_type = getattr(mv, 'captured_ptype', None)
-            if captured_type is not None:
-                captured_piece = Piece(color.opposite(), captured_type)
+        """Fast king safety check for moves."""
+        from game3d.attacks.check import king_in_check
 
-        self._zobrist_hash = self._zobrist.update_hash_move(self._zobrist_hash, mv, piece, captured_piece)
+        legal_moves = []
+        for mv in moves:
+            # Make move temporarily
+            moving_piece = self._board.piece_at(mv.from_coord)
+            victim_piece = self._board.piece_at(mv.to_coord)
 
-        # Apply undo to board
-        self._board.apply_move(mv)  # This should handle undo internally
-        self._current = color
+            self._board.set_piece(mv.from_coord, None)
+            self._board.set_piece(mv.to_coord, moving_piece)
 
-        # Fast incremental update for undo
-        self._optimized_incremental_undo(mv, color)
+            try:
+                # Check if king is safe
+                if not king_in_check(self._board, piece.color, piece.color.opposite(), self._cache):
+                    legal_moves.append(mv)
+            finally:
+                # Restore board
+                self._board.set_piece(mv.from_coord, moving_piece)
+                self._board.set_piece(mv.to_coord, victim_piece)
+
+        return legal_moves
 
     def get_stats(self) -> Dict[str, Any]:
         """Get cache performance statistics."""
@@ -778,45 +730,35 @@ class OptimizedMoveCache:
         self._legal_by_color[color] = old_moves + new_moves
 
     def _generate_piece_moves(self, coord: Tuple[int, int, int]) -> List[Move]:
-        """Ultra-optimized piece move generation."""
+        """Generate moves for a single piece."""
         from game3d.game.gamestate import GameState
 
         piece = self._board.piece_at(coord)
         if not piece:
             return []
 
-        # Check simple move cache first
-        cache_key = (coord, piece.color)
-        if cache_key in self._simple_move_cache:
-            return self._simple_move_cache[cache_key]
-
         dispatcher = get_dispatcher(piece.ptype)
         if not dispatcher:
             return []
 
-        # Create minimal game state
+        # Create temporary state
         tmp_state = GameState.__new__(GameState)
         tmp_state.board = self._board
         tmp_state.color = piece.color
         tmp_state.cache = self._cache
 
-        # Generate moves
+        # Generate pseudo-legal moves
         pseudo = dispatcher(tmp_state, *coord)
-        pseudo = [m for m in pseudo if m.from_coord == coord]  # Paranoid filter
 
-        # Apply effect filters
-        if self._cache.is_frozen(coord, piece.color):
-            pseudo = []
+        # Filter for valid moves from this position
+        pseudo = [m for m in pseudo if m.from_coord == coord]
 
-        # King safety check with priest optimization
-        if not self._has_priest[piece.color]:
-            pseudo = self._filter_legal_moves(pseudo, piece.color)
+        # Fast path if priests are present
+        if self._has_priest[piece.color]:
+            return pseudo
 
-        # Cache result for simple moves
-        if len(pseudo) > 0 and self._is_simple_position():
-            self._simple_move_cache[cache_key] = pseudo
-
-        return pseudo
+        # Otherwise filter for king safety
+        return self._filter_king_safe_moves(pseudo, piece)
 
     def _filter_legal_moves(self, moves: List[Move], color: Color) -> List[Move]:
         """Filter moves for king safety without full board cloning."""
@@ -1019,7 +961,6 @@ class CachePerformanceMonitor:
         stats = self.move_cache.get_stats()
         self.cache_hits.append(stats['tt_hits'])
         self.cache_misses.append(stats['tt_misses'])
-
     def get_performance_report(self) -> Dict[str, Any]:
         """Generate performance report with optimization suggestions."""
         stats = self.move_cache.get_stats()

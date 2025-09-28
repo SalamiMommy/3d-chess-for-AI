@@ -9,11 +9,11 @@ import struct
 import time
 import math  # Added import
 import re  # Moved to top
-
+from math import gcd
 from game3d.pieces.enums import PieceType, Color
 from game3d.common.common import Coord
 from game3d.pieces.piece import Piece
-
+from game3d.cache.transposition import CompactMove
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -405,39 +405,6 @@ class Move:
             self._move_type = MoveType.CAPTURE
         else:
             self._move_type = MoveType.NORMAL
-
-# ==============================================================================
-# COMPACT MOVE CLASS FOR ML/TRAINING
-# ==============================================================================
-
-class CompactMove:
-    """Ultra-compact move representation for ML and high-performance scenarios."""
-
-    __slots__ = ('_data',)
-
-    def __init__(self, from_coord: Coord, to_coord: Coord, flags: int = 0):
-        """Create compact move with packed data."""
-        from_packed = Move._pack_coord(from_coord)
-        to_packed = Move._pack_coord(to_coord)
-        self._data = (from_packed << 32) | (to_packed << 8) | (flags & 0xFF)
-
-    @property
-    def from_coord(self) -> Coord:
-        return Move._unpack_coord(self._data >> 32)
-
-    @property
-    def to_coord(self) -> Coord:
-        return Move._unpack_coord((self._data >> 8) & 0xFFFFFF)
-
-    @property
-    def flags(self) -> int:
-        return self._data & 0xFF
-
-    def __hash__(self) -> int:
-        return hash(self._data)
-
-    def __eq__(self, other: Any) -> bool:
-        return isinstance(other, CompactMove) and self._data == other._data
 
 # ==============================================================================
 # MOVE FACTORY FUNCTIONS

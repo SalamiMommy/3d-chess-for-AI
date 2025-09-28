@@ -183,7 +183,6 @@ class SymmetryManager:
         R_tensor = torch.tensor(R, dtype=torch.float32, device=tensor.device)
 
         # Create coordinate grid for SPATIAL dimensions (Z, Y, X)
-        # Note: tensor shape is (C, Z, Y, X)
         coords = torch.stack(torch.meshgrid(
             torch.arange(self.size_z, device=tensor.device),  # Z dimension
             torch.arange(self.size_y, device=tensor.device),  # Y dimension
@@ -193,46 +192,26 @@ class SymmetryManager:
 
         # Center coordinates
         center = torch.tensor([(self.size_z-1)/2, (self.size_y-1)/2, (self.size_x-1)/2],
-                             device=tensor.device)
+                            device=tensor.device)
         centered_coords = coords - center
 
-        # Apply rotation: rotated_coords[z,y,x] = R @ centered_coords[z,y,x]
+        # Apply rotation
         rotated_coords = torch.einsum('ij,zyxj->zyxi', R_tensor, centered_coords)
         new_coords = rotated_coords + center
 
         # Round to nearest integer and clamp to bounds
         new_coords = torch.round(new_coords).long()
         new_coords = torch.clamp(new_coords, 0, torch.tensor([self.size_z-1, self.size_y-1, self.size_x-1],
-                                                           device=tensor.device))
+                                                        device=tensor.device))
 
         # Create new tensor by gathering from original
-        channels = tensor.shape[0]  # N_TOTAL_PLANES
+        channels = tensor.shape[0]
         result = torch.zeros_like(tensor)
 
-        # Flatten indices for efficient gathering
-        z_idx = new_coords[..., 0].flatten()  # New Z coordinates
-        y_idx = new_coords[..., 1].flatten()  # New Y coordinates
-        x_idx = new_coords[..., 2].flatten()  # New X coordinates
-
-        # Original flat indices
-        z_orig, y_orig, x_orig = torch.meshgrid(
-            torch.arange(self.size_z, device=tensor.device),
-            torch.arange(self.size_y, device=tensor.device),
-            torch.arange(self.size_x, device=tensor.device),
-            indexing='ij'
-        )
-
-        # Calculate flat indices for original and new positions
-        flat_indices = z_idx * (self.size_y * self.size_x) + y_idx * self.size_x + x_idx
-        original_flat_indices = (z_orig * (self.size_y * self.size_x) + y_orig * self.size_x + x_orig).flatten()
-
-        # For each channel, gather the values using the mapping
+        # For each channel, gather values from rotated coordinates
         for c in range(channels):
-            original_slice = tensor[c].flatten()  # Flatten (Z, Y, X) to 1D
-            # Gather values using the rotation mapping
-            rotated_flat = original_slice[flat_indices]
-            # Reshape back to (Z, Y, X)
-            result[c] = rotated_flat.reshape(self.size_z, self.size_y, self.size_x)
+            # Use advanced indexing to remap values
+            result[c] = tensor[c, new_coords[..., 0], new_coords[..., 1], new_coords[..., 2]]
 
         return result
 
@@ -252,7 +231,7 @@ class SymmetryManager:
             if transformation.name == "identity":
                 continue
 
-            cache_key = (tensor.data_ptr(), transformation.name)
+            cache_key = (hash(tensor.tobytes()), transformation.name)
             if cache_key in self.canonical_cache:
                 sym_board = self.canonical_cache[cache_key]
                 symmetric_boards.append((transformation.name, sym_board))
@@ -311,7 +290,7 @@ class SymmetryManager:
         """Convert board to comparable representation."""
         tensor = board.tensor()
         flat_tensor = tensor.flatten()
-        first_elements = tuple(flat_tensor[:100].tolist())
+        first_elements = tuple(int(val) for val in flat_tensor[:100].tolist())  # Use int for better comparison
         total_sum = float(tensor.sum())
         non_zero_count = int((tensor != 0).sum())
         return (first_elements, total_sum, non_zero_count)

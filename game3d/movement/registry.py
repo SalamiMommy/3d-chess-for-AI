@@ -1,22 +1,28 @@
 # game3d/movement/registry.py
-from typing import Dict, Callable, Optional, List
+from __future__ import annotations
+from typing import Callable, List, Dict, TYPE_CHECKING
 from game3d.pieces.enums import PieceType
-from game3d.movement.movepiece import Move
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState   # noqa: F401
 
-# Registry mapping PieceType to move generation functions
-_move_dispatchers: Dict[PieceType, Callable[["GameState", int, int, int], List[Move]]] = {}
+_REGISTRY: Dict[PieceType, Callable[["GameState", int, int, int], List]] = {}
 
-def register(piece_type: PieceType):
-    """Decorator to register a move generator for a piece type."""
-    def decorator(func: Callable[["GameState", int, int, int], List[Move]]) -> Callable:
-        _move_dispatchers[piece_type] = func
-        return func
-    return decorator
+def register(pt: PieceType):
+    """Decorator that stores a move-generator for a piece-type."""
+    def _decorator(fn):
+        if pt in _REGISTRY:
+            raise ValueError(f"Dispatcher for {pt} already registered.")
+        _REGISTRY[pt] = fn
+        return fn
+    return _decorator
 
-def get_dispatcher(piece_type: PieceType) -> Optional[Callable[["GameState", int, int, int], List[Move]]]:
-    """Get the move generator for a piece type, or None if not registered."""
-    return _move_dispatchers.get(piece_type)
+def get_dispatcher(pt: PieceType):
+    """Return the move-generator function registered for *pt*."""
+    try:
+        return _REGISTRY[pt]
+    except KeyError:
+        raise ValueError(f"No dispatcher registered for {pt}.") from None
 
-def get_all_dispatchers() -> Dict[PieceType, Callable[["GameState", int, int, int], List[Move]]]:
-    """Get all registered dispatchers."""
-    return _move_dispatchers.copy()
+def get_all_dispatchers() -> Dict[PieceType, Callable]:
+    """Return a shallow copy of the whole registry."""
+    return _REGISTRY.copy()

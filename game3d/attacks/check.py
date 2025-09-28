@@ -5,7 +5,11 @@ from typing import Protocol, Optional, runtime_checkable, Dict, Set, Tuple, List
 from dataclasses import dataclass
 from enum import Enum
 import weakref
-
+from typing import Iterable
+from game3d.common.common import Coord, N_PLANES_PER_SIDE, in_bounds
+from game3d.pieces.piece import Piece
+from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+from game3d.board.board import Board
 from game3d.pieces.enums import PieceType, Color
 
 # ==============================================================================
@@ -14,7 +18,8 @@ from game3d.pieces.enums import PieceType, Color
 
 @runtime_checkable
 class BoardProto(Protocol):
-    def list_occupied(self): ...
+    def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]: ...
+    def piece_at(self, coord: Coord) -> Optional[Piece]: ...
 
 @dataclass(slots=True)
 class CheckCache:
@@ -39,18 +44,20 @@ class CheckStatus(Enum):
 # ==============================================================================
 # OPTIMIZED CHECK DETECTION
 # ==============================================================================
+def _any_priest_alive(board: Board, king_color: Color = None, cache=None) -> bool:
+    """Fast check if any priest is alive using tensor sums."""
+    priest_idx = PieceType.PRIEST.value
+    white_priests = board._tensor[priest_idx].sum().item()
+    black_priests = board._tensor[N_PLANES_PER_SIDE + priest_idx].sum().item()
 
-def _any_priest_alive(board: BoardProto, color: Color, cache=None) -> bool:
-    """Fast priest scan with optional caching."""
-    if cache and hasattr(cache, 'priest_positions'):
-        priest_cache = cache.get_priest_positions(color)
-        return len(priest_cache) > 0
+    if king_color is not None:
+        # Check only for specific color's priests
+        if king_color == Color.WHITE:
+            return white_priests > 0
+        else:
+            return black_priests > 0
 
-    # Fast scan – returns True on first priest found
-    for _, piece in board.list_occupied():
-        if piece.color == color and piece.ptype == PieceType.PRIEST:
-            return True
-    return False
+    return (white_priests + black_priests) > 0
 
 def _find_king_position(board: BoardProto, king_color: Color, cache=None) -> Optional[Tuple[int, int, int]]:
     """Find king position with caching."""
@@ -84,32 +91,31 @@ def _calculate_attacked_squares(
     cache=None
 ) -> Set[Tuple[int, int, int]]:
     """Calculate all squares under attack by attacker_color."""
-    from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+    # Fallback cache
+    if cache is None:
+        from game3d.cache.manager import get_cache_manager
+        tmp_cache = get_cache_manager(board, attacker_color)
+    else:
+        tmp_cache = cache
+
+    # 👇 Import GameState ONLY when needed
     from game3d.game.gamestate import GameState
-
-    attacked = set()
-
-    tmp_state = GameState.__new__(GameState)
-    tmp_state.board = board
-    tmp_state.color = attacker_color
-    tmp_state.cache = cache
+    tmp_state = GameState(board, attacker_color, tmp_cache)
 
     try:
-        for mv in generate_pseudo_legal_moves(tmp_state):
-            attacked.add(mv.to_coord)
+        from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+        pseudo_moves = generate_pseudo_legal_moves(tmp_state)
     except Exception:
-        # Fallback: direct calculation if cache issues
-        for coord, piece in board.list_occupied():
-            if piece.color == attacker_color:
-                # Add basic attack patterns based on piece type
-                if piece.ptype == PieceType.ARCHER:
-                    # Add archery attack patterns
-                    attacked.update(_get_archery_attack_squares(coord, board, attacker_color, cache))
-                elif piece.ptype == PieceType.KING:
-                    # Add king attack patterns (1-step in all directions)
-                    attacked.update(_get_king_attack_squares(coord))
-                # Add other piece types as needed
+        pseudo_moves = []
 
+    attacked = set()
+    for move in pseudo_moves:
+        attacked.add(move.to_coord)
+
+    if cache and hasattr(cache, 'store_attacked_squares'):
+        cache.store_attacked_squares(attacker_color, attacked)
+
+    _stats.attack_calculations += 1
     return attacked
 
 def _get_archery_attack_squares(

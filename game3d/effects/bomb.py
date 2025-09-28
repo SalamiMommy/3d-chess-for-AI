@@ -14,7 +14,7 @@ def detonate(board: BoardProto, trigger_sq: Tuple[int, int, int], current_color:
     """
     cleared: List[Tuple[int, int, int]] = []
     for sq in sphere_centre(board, trigger_sq, radius=2):
-        victim = board.piece_at(sq)
+        victim = cache.piece_cache.get(sq)
         if victim is None or victim.color == current_color:  # skip friendly / empty
             continue
         if victim.ptype == PieceType.KING:                    # kings immune

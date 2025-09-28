@@ -1,8 +1,8 @@
 from __future__ import annotations
 """
 game3d/board/board.py
-9×9×9 board – tensor-first, zero-copy, training-ready."""
-
+9×9×9 board – tensor-first, zero-copy, training-ready.
+"""
 
 import torch
 import numpy as np
@@ -16,6 +16,7 @@ from game3d.common.common import (
 from game3d.pieces.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
+from game3d.movement.movepiece import Move
 
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
@@ -24,7 +25,7 @@ CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
 class Board:
     """Thin wrapper around a single tensor of shape (N_TOTAL_PLANES, 9, 9, 9)."""
 
-    __slots__ = ("_tensor", "_hash")
+    __slots__ = ("_tensor", "_hash", "symmetry_manager", "_occupancy_mask", "_occupied_list")
 
     def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
         if tensor is None:
@@ -35,6 +36,8 @@ class Board:
             self._tensor = tensor
         self._hash: Optional[int] = None
         self.symmetry_manager = SymmetryManager()
+        self._occupancy_mask: Optional[torch.Tensor] = None
+        self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
 
     def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
         """Get all symmetric variants of current board position."""
@@ -140,36 +143,31 @@ class Board:
 
     def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
         x, y, z = c
-        # Optional: assert no piece is already present (for debugging)
-        # existing = self.piece_at(c)
-        # if existing is not None and p is not None:
-        #     print(f"WARNING: Overwriting piece {existing} at {c} with {p}")
-
         self._tensor[WHITE_SLICE, z, y, x] = 0.0
         self._tensor[BLACK_SLICE, z, y, x] = 0.0
         if p is not None:
-            idx = p.ptype
+            idx = p.ptype.value  # Fix: Use .value for IntEnum
             if p.color == Color.WHITE:
                 self._tensor[idx, z, y, x] = 1.0
             else:
                 self._tensor[N_PLANES_PER_SIDE + idx, z, y, x] = 1.0
         self._hash = None
+        self._occupancy_mask = None  # Invalidate cache
+        self._occupied_list = None   # Invalidate cache
 
     def piece_at(self, c: Coord) -> Optional[Piece]:
         x, y, z = c
-        white_plane = self._tensor[WHITE_SLICE, z, y, x]
-        black_plane = self._tensor[BLACK_SLICE, z, y, x]
+        white_vec = self._tensor[WHITE_SLICE, z, y, x]
+        black_vec = self._tensor[BLACK_SLICE, z, y, x]
 
-        # Find indices where value is exactly 1.0 (since we only set 0.0 or 1.0)
-        white_one_mask = (white_plane == 1.0)
-        if white_one_mask.any():
-            idx = int(white_one_mask.nonzero(as_tuple=True)[0][0].item())
-            return Piece(Color.WHITE, PieceType(idx))
+        # Optimized: Use torch.max instead of mask and nonzero
+        white_max, white_idx = torch.max(white_vec, dim=0)
+        if white_max == 1.0:
+            return Piece(Color.WHITE, PieceType(white_idx.item()))
 
-        black_one_mask = (black_plane == 1.0)
-        if black_one_mask.any():
-            idx = int(black_one_mask.nonzero(as_tuple=True)[0][0].item())
-            return Piece(Color.BLACK, PieceType(idx))
+        black_max, black_idx = torch.max(black_vec, dim=0)
+        if black_max == 1.0:
+            return Piece(Color.BLACK, PieceType(black_idx.item()))
 
         return None
 
@@ -185,21 +183,33 @@ class Board:
         return Board(t)
 
     def apply_player_plane(self, color: Color) -> None:
-        self._tensor[CURRENT_SLICE] = float(color)
+        self._tensor[CURRENT_SLICE] = float(color.value)  # Fix: Use .value if Color is IntEnum
 
     def occupancy_mask(self) -> torch.Tensor:
-        return (self._tensor[WHITE_SLICE].sum(axis=0) +
-                self._tensor[BLACK_SLICE].sum(axis=0)).bool()
+        if self._occupancy_mask is None:
+            white_sum = self._tensor[WHITE_SLICE].sum(dim=0)
+            black_sum = self._tensor[BLACK_SLICE].sum(dim=0)
+            self._occupancy_mask = (white_sum + black_sum) > 0
+        return self._occupancy_mask
 
     def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
-        occ = self.occupancy_mask()
-        indices = torch.argwhere(occ)
-        for z, y, x in indices.tolist():
-            c = (x, y, z)
-            yield c, self.piece_at(c)
+        if self._occupied_list is None:
+            occ = self.occupancy_mask()
+            indices = torch.nonzero(occ, as_tuple=False)  # (N, 3) with z, y, x
+            self._occupied_list = []
+            for idx in indices:
+                z, y, x = idx.tolist()
+                c = (x, y, z)
+                p = self.piece_at(c)
+                if p is not None:  # Safety check
+                    self._occupied_list.append((c, p))
+        return iter(self._occupied_list)
 
     def clone(self) -> Board:
-        return Board(self._tensor.clone())
+        clone = Board(self._tensor.clone())
+        clone._occupancy_mask = self._occupancy_mask.clone() if self._occupancy_mask is not None else None
+        clone._occupied_list = self._occupied_list[:] if self._occupied_list is not None else None
+        return clone
 
     def share_memory_(self) -> Board:
         self._tensor.share_memory_()
@@ -208,9 +218,6 @@ class Board:
     def __repr__(self) -> str:
         return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
 
-    # --------------------------------------------------------------
-    # Move execution (NEW)
-    # --------------------------------------------------------------
     def apply_move(self, mv: Move) -> bool:
         """
         Apply the move to the tensor.
@@ -242,6 +249,7 @@ class Board:
     def validate_tensor(self) -> bool:
         """Check that every (x,y,z) has at most one 1.0 in white/black planes."""
         valid = True
+        invalid_positions = []
         for z in range(SIZE_Z):
             for y in range(SIZE_Y):
                 for x in range(SIZE_X):
@@ -249,16 +257,8 @@ class Board:
                     black_vals = self._tensor[BLACK_SLICE, z, y, x]
                     total_ones = (white_vals == 1.0).sum().item() + (black_vals == 1.0).sum().item()
                     if total_ones > 1:
-                        raise ValueError(f"INVALID: Multiple pieces at {(x,y,z)}\nWhite: {white_vals}\nBlack: {black_vals}")
+                        invalid_positions.append((x, y, z))
                         valid = False
-                    elif total_ones == 0:
-                        # empty is fine
-                        pass
-                    else:
-                        # exactly one piece
-                        pass
+        if invalid_positions:
+            print(f"Invalid positions found: {invalid_positions}")  # Or log; for debugging
         return valid
-
-
-
-

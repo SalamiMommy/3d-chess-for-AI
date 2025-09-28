@@ -125,8 +125,8 @@ class OptimizedArcheryCache:
 
     def _move_affects_cache(self, mv: Move, board: Board) -> bool:
         """Check if move involves pieces that affect this cache."""
-        from_piece = board.piece_at(mv.from_coord)
-        to_piece = board.piece_at(mv.to_coord)
+        from_piece = cache.piece_cache.get(mv.from_coord)
+        to_piece = cache.piece_cache.get(mv.to_coord)
 
         # Archers and high-value targets affect cache
         relevant_types = {PieceType.ARCHER, PieceType.KING, PieceType.QUEEN, PieceType.ROOK}
@@ -217,7 +217,7 @@ class OptimizedArcheryCache:
     def _is_valid_target(self, board: Board, target_sq: Tuple[int, int, int], controller: Color) -> bool:
         """Check if square is a valid attack target."""
         # Must be occupied by enemy piece
-        piece = board.piece_at(target_sq)
+        piece = cache.piece_cache.get(target_sq)
         if not piece or piece.color == controller:
             return False
 
@@ -235,7 +235,7 @@ class OptimizedArcheryCache:
         path_squares = self._get_path_squares(from_sq, to_sq)
 
         for sq in path_squares[1:-1]:  # Exclude start and end
-            if board.piece_at(sq) is not None:
+            if cache.piece_cache.get(sq) is not None:
                 return False
 
         return True

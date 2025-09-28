@@ -65,46 +65,34 @@ def apply_movement_effects(
     cache_manager: Optional = None
 ) -> Tuple[List[Tuple[int, int, int]], int]:
     """
-    Optimized movement effects application with enhanced caching and performance.
-
-    Args:
-        state: Game state
-        start: Starting coordinate
-        raw_directions: List of direction vectors
-        max_steps: Maximum steps allowed
-        piece_type: Type of piece (for specialized effects)
-        cache_manager: Cache manager instance (optional)
-
-    Returns:
-        Tuple of (filtered_directions, adjusted_max_steps)
+    Optimized movement effects application - CORRECTED.
+    Removed duplicate definition at end of file.
     """
     start_time = time.perf_counter()
     _STATS.total_calls += 1
 
     if cache_manager is None:
-        cache_manager = get_cache_manager()
+        cache_manager = state.cache
 
     try:
         # Quick freeze check (highest priority)
-        if cache_manager.is_frozen(start, state.current):
+        if cache_manager.is_frozen(start, state.color):  # Fixed state.current -> state.color
             _STATS.debuffs_applied += 1
-            return [], 0  # Frozen pieces can't move
+            return [], 0
 
-        # Apply effects in priority order
         directions = raw_directions.copy()
         current_max_steps = max_steps
 
-        # Sort effects by priority and apply dynamically
         sorted_effects = sorted(EFFECT_PRIORITIES.items(), key=lambda x: x[1], reverse=True)
         for effect_type, _ in sorted_effects:
             if effect_type == MovementEffectType.FREEZE:
-                continue  # Already handled
+                continue
             elif effect_type == MovementEffectType.SLOW:
-                if _has_slow_effect(cache_manager, start, state.current):
+                if _has_slow_effect(cache_manager, start, state.color):
                     current_max_steps = max(1, current_max_steps - 1)
                     _STATS.debuffs_applied += 1
             elif effect_type == MovementEffectType.BLOCK_DIAGONAL:
-                if _has_diagonal_block(cache_manager, start, state.current):
+                if _has_diagonal_block(cache_manager, start, state.color):
                     directions = _filter_diagonal_directions(directions)
                     _STATS.directions_filtered += len(raw_directions) - len(directions)
             elif effect_type == MovementEffectType.GEOMANCY_BLOCK:
@@ -116,18 +104,16 @@ def apply_movement_effects(
                     directions, start, state, cache_manager
                 )
             elif effect_type == MovementEffectType.BUFF_RANGE:
-                if cache_manager.is_movement_buffed(start, state.current):
+                if cache_manager.is_movement_buffed(start, state.color):
                     current_max_steps += 1
                     _STATS.buffs_applied += 1
 
-        # Update statistics
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         _update_stats(elapsed_ms)
 
         return directions, current_max_steps
 
     except Exception as e:
-        # Fallback to original behavior
         return _fallback_movement_effects(start, raw_directions, max_steps, cache_manager, state)
 
 def _has_slow_effect(cache_manager, start: Tuple[int, int, int], color: Color) -> bool:
@@ -187,7 +173,7 @@ def _filter_wall_capture_directions(
 ) -> List[Tuple[int, int, int]]:
     """Filter directions based on wall capture restrictions."""
     # Check if there's a wall at the current position
-    victim = state.board.piece_at(start)
+    victim = state.cache.piece_cache.get(start)
     if victim is None or victim.ptype != PieceType.WALL:
         return directions
 
@@ -206,35 +192,37 @@ def _fallback_movement_effects(
     cache_manager,
     state
 ) -> Tuple[List[Tuple[int, int, int]], int]:
-    """Fallback to original implementation."""
-    # Original implementation logic
+    """Fallback to original implementation - CORRECTED."""
     directions = raw_directions.copy()
 
     # 1. range buffs / debuffs
-    if cache_manager.is_movement_buffed(start, state.current):
+    if cache_manager.is_movement_buffed(start, state.color):  # Fixed state.current
         max_steps += 1
 
-    if hasattr(cache_manager, "is_movement_slowed") and cache_manager.is_movement_slowed(start, state.current):
+    if (hasattr(cache_manager, "is_movement_slowed") and
+        cache_manager.is_movement_slowed(start, state.color)):  # Fixed state.current
         max_steps = max(1, max_steps - 1)
 
     # 2. direction filters
-    if hasattr(cache_manager, "is_diagonal_blocked") and cache_manager.is_diagonal_blocked(start, state.current):
-        directions = [d for d in directions if sum(1 for coord in d if coord != 0) <= 1]  # Updated filter
+    if (hasattr(cache_manager, "is_diagonal_blocked") and
+        cache_manager.is_diagonal_blocked(start, state.color)):  # Fixed state.current
+        directions = [d for d in directions if sum(1 for coord in d if coord != 0) <= 1]
 
     # 4. geomancy blocked squares
     if hasattr(cache_manager, "is_geomancy_blocked") and hasattr(state, "halfmove_clock"):
-        directions = [
-            d for d in directions
-            if not cache_manager.is_geomancy_blocked(
-                add_coords(start, (d[0] * max_steps, d[1] * max_steps, d[2] * max_steps)),
-                state.halfmove_clock
-            )
-        ]
+        filtered_dirs = []
+        for d in directions:
+            end_pos = add_coords(start, (d[0] * max_steps, d[1] * max_steps, d[2] * max_steps))
+            if all(0 <= coord < BOARD_SIZE for coord in end_pos):
+                if not cache_manager.is_geomancy_blocked(end_pos, state.halfmove_clock):
+                    filtered_dirs.append(d)
+        directions = filtered_dirs
 
     # 5. wall capture rules
-    victim = state.board.piece_at(start)
+    victim = state.cache.piece_cache.get(start)
     if victim is not None and victim.ptype == PieceType.WALL:
-        if hasattr(cache_manager, "can_capture_wall") and not cache_manager.can_capture_wall(start, start, state.current):
+        if (hasattr(cache_manager, "can_capture_wall") and
+            not cache_manager.can_capture_wall(start, start, state.color)):  # Fixed state.current
             return [], max_steps
 
     return directions, max_steps
@@ -242,29 +230,23 @@ def _fallback_movement_effects(
 # ==============================================================================
 # SPECIALIZED EFFECT HANDLERS
 # ==============================================================================
-
 def apply_archery_effects(
     start: Tuple[int, int, int],
     targets: List[Tuple[int, int, int]],
     state,
     cache_manager: Optional = None
 ) -> List[Tuple[int, int, int]]:
-    """Apply archery-specific movement effects."""
+    """Apply archery-specific movement effects - CORRECTED."""
     if cache_manager is None:
-        cache_manager = get_cache_manager()
-
-    # Archery attacks are not affected by movement buffs/debuffs
-    # But they are affected by line-of-sight and range restrictions
+        cache_manager = state.cache
 
     valid_targets = []
 
     for target in targets:
-        # Check if target is on 2-radius sphere surface
         distance = euclidean_distance(start, target)
-        if abs(distance - 2.0) > 0.1:  # Not on sphere surface
+        if abs(distance - 2.0) > 0.1:
             continue
 
-        # Check line of sight (simplified)
         if _has_clear_line_of_sight(start, target, state):
             valid_targets.append(target)
 
@@ -281,7 +263,7 @@ def _has_clear_line_of_sight(
     path_squares = get_path_squares(start, target)
 
     for sq in path_squares[1:-1]:  # Exclude start and end
-        if state.board.piece_at(sq) is not None:
+        if state.cache.piece_cache.get(sq) is not None:
             return False
 
     return True
@@ -291,18 +273,16 @@ def apply_hive_effects(
     state,
     cache_manager: Optional = None
 ) -> List[Tuple[int, int, int]]:
-    """Apply hive-specific movement effects."""
+    """Apply hive-specific movement effects - CORRECTED."""
     if cache_manager is None:
-        cache_manager = get_cache_manager()
-
-    # Hive pieces move as a group and are not affected by individual buffs/debuffs
-    # But they are affected by area effects
+        cache_manager = state.cache
 
     valid_moves = []
 
     for move in moves:
-        # Check if destination is blocked by area effects
-        if not hasattr(cache_manager, "is_movement_blocked_for_hive") or not cache_manager.is_movement_blocked_for_hive(move, state.current):
+        # Fixed hasattr check
+        if (not hasattr(cache_manager, "is_movement_blocked_for_hive") or
+            not cache_manager.is_movement_blocked_for_hive(move, state.color)):
             valid_moves.append(move)
 
     return valid_moves
@@ -355,7 +335,7 @@ def apply_movement_effects_batch(
 ) -> List[Tuple[List[Tuple[int, int, int]], int]]:
     """Apply movement effects to multiple positions in batch."""
     if cache_manager is None:
-        cache_manager = get_cache_manager()
+        cache_manager = state.cache
 
     results = []
 
@@ -377,13 +357,3 @@ def apply_movement_effects_legacy(
 ) -> Tuple[List[Tuple[int, int, int]], int]:
     """Legacy interface for backward compatibility."""
     return apply_movement_effects(state, start, raw_directions, max_steps)
-
-# Maintain original function signature but with enhanced implementation
-def apply_movement_effects(
-    state,
-    start: Tuple[int, int, int],
-    raw_directions: List[Tuple[int, int, int]],
-    max_steps: int,
-) -> Tuple[List[Tuple[int, int, int]], int]:
-    """Apply movement buffs/debuffs to raw sliders."""
-    return apply_movement_effects(state, start, raw_directions, max_steps, piece_type=None, cache_manager=None)

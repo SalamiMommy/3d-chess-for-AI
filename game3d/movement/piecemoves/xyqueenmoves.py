@@ -14,7 +14,6 @@ def generate_xy_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
     Combines XY queen sliding moves + 1-step king moves within XY plane (Z fixed).
     Deduplicates by target coordinate.
     """
-    # use the state that was passed in
     queen_moves = generate_xy_queen_moves(state.board, state.color, x, y, z)
     king_moves = generate_king_moves(state.board, state.color, x, y, z)
 
@@ -38,7 +37,8 @@ def generate_xy_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
 
 @register(PieceType.XYQUEEN)
 def xy_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_xy_queen_with_king_moves(state.board, state.color, x, y, z)
+    # ✅ Pass 'state', not board/color
+    return generate_xy_queen_with_king_moves(state, x, y, z)
 
 
 # Re-export for external use

@@ -12,7 +12,7 @@ def frozen_squares(board: BoardProto, freezer_colour: Color) -> Set[Tuple[int, i
     for coord, piece in board.list_occupied():
         if piece.color == freezer_colour and piece.ptype == PieceType.FREEZER:
             for sq in sphere_centre(board, coord, radius=2):
-                target = board.piece_at(sq)
+                target = cache.piece_cache.get(sq)
                 if target is not None and target.color != freezer_colour:
                     frozen.add(sq)
     return frozen

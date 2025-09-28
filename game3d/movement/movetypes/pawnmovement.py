@@ -34,7 +34,7 @@ def generate_pawn_moves(
     Generate all legal pawn moves from (x, y, z).
     """
     pos = (x, y, z)
-    piece = board.piece_at(pos)
+    piece = cache.piece_cache.get(pos)
     if piece is None or piece.color != color or piece.ptype != PieceType.PAWN:
         return []
 
@@ -43,11 +43,11 @@ def generate_pawn_moves(
 
     # --- Forward moves ---
     forward = (x, y, z + dz)
-    if in_bounds(forward) and board.piece_at(forward) is None:
+    if in_bounds(forward) and cache.piece_cache.get(forward) is None:
         moves.append(_create_pawn_move(pos, forward, color))
         if _is_on_start_rank(z, color):
             double_forward = (x, y, z + 2 * dz)
-            if in_bounds(double_forward) and board.piece_at(double_forward) is None:
+            if in_bounds(double_forward) and cache.piece_cache.get(double_forward) is None:
                 moves.append(_create_pawn_move(pos, double_forward, color))
 
     # --- Capture logic ---
@@ -66,7 +66,7 @@ def generate_pawn_moves(
                     continue  # skip forward (already handled)
                 target = (x + dx, y + dy, z + dz)
                 if in_bounds(target):
-                    if _can_capture_pawn(board.piece_at(target)):
+                    if _can_capture_pawn(cache.piece_cache.get(target)):
                         moves.append(_create_pawn_move(pos, target, color, is_capture=True))
 
     return moves

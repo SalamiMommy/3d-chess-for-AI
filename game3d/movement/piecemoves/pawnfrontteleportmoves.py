@@ -39,7 +39,8 @@ def pawn_front_teleport_move_dispatcher(
     y: int,
     z: int
 ) -> List[Move]:
-    return generate_pawn_front_teleport_with_king_moves(state.board, state.color, x, y, z)
+    # ✅ Pass 'state', not board/color
+    return generate_pawn_front_teleport_with_king_moves(state, x, y, z)
 
 # ------------------------------------------------------------------
 # Public API

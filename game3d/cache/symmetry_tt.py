@@ -8,10 +8,11 @@ import struct
 import time
 
 from game3d.cache.transposition import TranspositionTable, TTEntry
-from game3d.movement.movepiece import CompactMove
+from game3d.cache.transposition import CompactMove
 from game3d.board.symmetry import SymmetryManager
 from game3d.pieces.enums import Color
-
+from game3d.board.board import Board
+from typing import Dict, Any
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -142,23 +143,26 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         variants = []
         seen_hashes: Set[int] = set()
 
-        # Generate transformations in optimized order
-        transform_groups = ['primary', 'secondary', 'tertiary', 'reflections']
+        # Get all transformations from SymmetryManager
+        for transformation in self._symmetry_manager.transformations:
+            try:
+                # Apply transformation
+                sym_tensor = self._symmetry_manager.apply_transformation(board_state.tensor(), transformation)
 
-        for group in transform_groups:
-            for transform_name in self._batch_transforms[group]:
-                try:
-                    # Apply transformation
-                    sym_board = self._symmetry_manager.apply_transformation(board_state, transform_name)
-                    sym_hash = hash(self._symmetry_manager._extract_board_state(sym_board))
+                # Create new board with transformed tensor
+                from game3d.board.board import Board
+                sym_board = Board(sym_tensor)
 
-                    if sym_hash not in seen_hashes:
-                        seen_hashes.add(sym_hash)
-                        variants.append((sym_hash, transform_name, sym_board))
+                # Calculate hash
+                sym_hash = hash(sym_board.tensor().cpu().numpy().tobytes())
 
-                except Exception:
-                    # Skip invalid transformations
-                    continue
+                if sym_hash not in seen_hashes:
+                    seen_hashes.add(sym_hash)
+                    variants.append((sym_hash, transformation.name, sym_board))
+
+            except Exception:
+                # Skip invalid transformations
+                continue
 
         self._symmetry_stats.transform_time += time.perf_counter() - start_time
         return variants
@@ -233,9 +237,9 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         # Base table memory
         base_memory = super().get_memory_usage() if hasattr(super(), 'get_memory_usage') else 0
 
-        # Symmetry cache memory
+        # Symmetry cache memory (optimized estimate)
         symmetry_memory = (
-            len(self._canonical_cache) * 64 +  # Rough estimate
+            len(self._canonical_cache) * 64 +  # Rough estimate per entry
             len(self._transform_cache) * 32 +
             len(self._inverse_transforms) * 32 +
             len(self._batch_transforms) * 32
@@ -279,6 +283,10 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
 
         return {**base_stats, **symmetry_stats}
 
+
+    def _extract_board_state(self, board: Board) -> bytes:
+        """Extract board state for hashing."""
+        return board.tensor().cpu().numpy().tobytes()
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================

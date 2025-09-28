@@ -1,9 +1,9 @@
 """Reflecting Bishop — diagonal rays that bounce off cube walls and pieces (≤3 bounces)."""
 
 from typing import List, Set, Tuple
-from game3d.pieces.enums import PieceType
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import validate_piece_at
+from game3d.movement.movepiece import Move  # Make sure Move is imported!
 
 MAX_BOUNCES = 3
 BOARD_SIZE = 9
@@ -23,7 +23,8 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
     """Generate all legal reflecting-bishop moves (wall-bouncing diagonal rays)."""
     start_pos = (x, y, z)
 
-    if not validate_piece_at(state, start_pos, pos, expected_type=PieceType.REFLECTOR):
+    # Validate that the piece at start_pos is a REFLECTOR
+    if not validate_piece_at(board, color, start_pos, expected_type=PieceType.REFLECTOR):
         return []
 
     # 8 space diagonal directions
@@ -36,7 +37,7 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
 
     visited_targets: Set[Tuple[int, int, int]] = set()
     moves: List['Move'] = []
-    current_color = state.color
+    current_color = color  # <-- use the parameter, not state.color
 
     for init_dir in initial_directions:
         pos = start_pos
@@ -58,15 +59,14 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
                 out_of_bounds[2] = True
 
             if any(out_of_bounds):
-                # Reflect on all out-of-bounds axes
                 if bounces >= MAX_BOUNCES:
-                    break  # Can't bounce anymore
+                    break
                 direction = reflect_direction(direction, tuple(out_of_bounds))
                 bounces += 1
-                continue  # Try again with new direction
+                continue
 
             # In bounds - check occupancy
-            target_piece = state.board.piece_at(next_pos)
+            target_piece = cache.piece_cache.get(next_pos)  # <-- use board, not state.board
 
             # Cannot land on friendly pieces
             if target_piece is not None and target_piece.color == current_color:
@@ -82,11 +82,10 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
                     is_capture=is_capture
                 ))
 
-            # Stop ray at any piece (friendly already handled above)
+            # Stop ray at any piece
             if target_piece is not None:
                 break
 
-            # Move to next position
             pos = next_pos
 
     return moves

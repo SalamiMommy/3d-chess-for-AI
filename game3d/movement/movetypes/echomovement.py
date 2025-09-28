@@ -9,6 +9,7 @@ from game3d.pieces.enums import PieceType
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import validate_piece_at
 from game3d.common.common import in_bounds, add_coords, Coord
+from game3d.movement.movepiece import Move
 
 # Precomputed: 32 offsets within Euclidean distance <= 2 (excluding origin)
 _BUBBLE_OFFSETS = [
@@ -30,10 +31,12 @@ _ANCHOR_OFFSETS = [
 def generate_echo_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
     """Generate all legal Echo moves from (x, y, z)."""
     pos = (x, y, z)
-    if not validate_piece_at(state.board, state.color, pos, PieceType.ECHO):
+
+    # Validate that the piece at pos is an ECHO of the given color
+    if not validate_piece_at(board, color, pos, PieceType.ECHO):
         return []
 
-    current_color = state.color
+    current_color = color  # ← use parameter
     move_targets: Set[Coord] = set()
 
     # Generate all potential targets
@@ -47,7 +50,7 @@ def generate_echo_moves(board, color: Color, x: int, y: int, z: int) -> List['Mo
     # Build moves
     moves = []
     for target in move_targets:
-        target_piece = state.board.piece_at(target)
+        target_piece = cache.piece_cache.get(target)  # ← use board
         if target_piece is None:
             moves.append(Move(from_coord=pos, to_coord=target, is_capture=False))
         elif target_piece.color != current_color:

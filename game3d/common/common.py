@@ -20,7 +20,7 @@ N_PLANES_PER_SIDE = N_PIECE_TYPES
 N_COLOR_PLANES = N_PLANES_PER_SIDE * 2
 N_AUX_PLANES = 1
 N_TOTAL_PLANES = N_COLOR_PLANES + N_AUX_PLANES
-
+N_CHANNELS = N_TOTAL_PLANES + 1  # Should be 81 (40 per color + 1 aux)
 # Axis indices
 X, Y, Z = 0, 1, 2
 Coord = Tuple[int, int, int]
@@ -117,7 +117,7 @@ def get_between_squares(start: Coord, end: Coord) -> List[Coord]:
 def is_path_clear(board, start: Coord, end: Coord) -> bool:
     """Check if path between start and end is clear."""
     for sq in get_between_squares(start, end):
-        if board.piece_at(sq) is not None:
+        if cache.piece_cache.get(sq) is not None:
             return False
     return True
 

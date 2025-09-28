@@ -27,7 +27,7 @@ def generate_network_teleport_moves(
     current_color = color
 
     # Validate piece
-    piece = board.piece_at(self_pos)
+    piece = cache.piece_cache.get(self_pos)
     if piece is None or piece.color != current_color or piece.ptype != PieceType.FRIENDLYTELEPORTER:
         return []
 
@@ -40,7 +40,7 @@ def generate_network_teleport_moves(
                 target = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
                 if not in_bounds(target):
                     continue
-                if board.piece_at(target) is None:  # only empty squares
+                if cache.piece_cache.get(target) is None:  # only empty squares
                     candidate_targets.add(target)
 
     # Create moves

@@ -1,7 +1,6 @@
 """3D Edge-Rook (Edge-Walker) move generation — traverses entire edge network."""
 
 from typing import List, Set
-from game3d.pieces.enums import PieceType
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import is_edge_square, validate_piece_at
 from game3d.movement.movepiece import Move
@@ -46,13 +45,14 @@ def generate_edgerook_moves(board, color: Color, x: int, y: int, z: int) -> List
     """
     start = (x, y, z)
 
-    if not validate_piece_at(state, start, pos, PieceType.EDGEROOK):
+    # Validate piece at start position
+    if not validate_piece_at(board, color, start, PieceType.EDGEROOK):
         return []
 
     if start not in _EDGE_GRAPH:
         return []  # not on edge
 
-    current_color = state.color
+    current_color = color  # ← use parameter, not state.color
     moves: List[Move] = []
     visited: set = set()
     queue = deque([start])
@@ -66,7 +66,7 @@ def generate_edgerook_moves(board, color: Color, x: int, y: int, z: int) -> List
             if neighbor in visited:
                 continue
 
-            piece = state.board.piece_at(neighbor)
+            piece = cache.piece_cache.get(neighbor)  # ← use board, not state.board
 
             if piece is None:
                 # Empty square: can traverse and move here

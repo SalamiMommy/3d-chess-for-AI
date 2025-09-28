@@ -131,12 +131,12 @@ class OptimizedWhiteHolePushCache:
     def _move_affects_white_holes(self, mv: Move, board: Board) -> bool:
         """Check if move affects white holes (piece moved, captured, or white hole moved)."""
         # Check if moved piece is a white hole
-        moved_piece = board.piece_at(mv.from_coord)
+        moved_piece = cache.piece_cache.get(mv.from_coord)
         if moved_piece and moved_piece.ptype == PieceType.WHITE_HOLE:
             return True
 
         # Check if destination had a white hole (captured)
-        dest_piece = board.piece_at(mv.to_coord)
+        dest_piece = cache.piece_cache.get(mv.to_coord)
         if dest_piece and dest_piece.ptype == PieceType.WHITE_HOLE:
             return True
 

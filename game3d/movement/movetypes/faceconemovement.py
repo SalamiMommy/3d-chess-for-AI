@@ -1,5 +1,6 @@
 """3D Face Cone Slider — projects sliding rays in conical volumes outward from each face."""
 
+import numpy as np  # ← ADD THIS
 from typing import List, Set, Tuple
 from math import gcd
 from game3d.pieces.enums import PieceType, Color
@@ -37,8 +38,8 @@ def _precompute_cone_directions() -> List[Tuple[int, int, int]]:
 
     return list(directions)
 
-# Compute once at import time
-CONE_DIRECTIONS = _precompute_cone_directions()
+# Compute once at import time — NOW AS A NUMPY ARRAY
+CONE_DIRECTIONS = np.array(_precompute_cone_directions())
 
 def generate_face_cone_slider_moves(
     board,
@@ -57,7 +58,7 @@ def generate_face_cone_slider_moves(
         board,
         color,
         start=start,
-        directions=CONE_DIRECTIONS,
+        directions=CONE_DIRECTIONS,  # ← now a np.ndarray
         allow_capture=True,
         allow_self_block=False
     )

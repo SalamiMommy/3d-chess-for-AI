@@ -7,6 +7,8 @@ from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds, add_coords
 from game3d.pieces.enums import PieceType
 
+from game3d.pieces.piece import Piece
+
 BOARD_SIZE = 9
 
 def is_edge_square(x: int, y: int, z: int, board_size: int = BOARD_SIZE) -> bool:
@@ -23,7 +25,7 @@ def should_stop_at(
     """
     Determine if movement should stop at target square.
     """
-    piece = board.piece_at(target)
+    piece = cache.piece_cache.get(target)
     has_piece = piece is not None
     is_friendly = has_piece and (piece.color == color)
     is_enemy = has_piece and (piece.color != color)
@@ -65,7 +67,7 @@ def slide_along_directions(
             stop, can_land = should_stop_at(board, color, target, allow_capture, allow_self_block)
 
             if can_land:
-                target_piece = board.piece_at(target)
+                target_piece = cache.piece_cache.get(target)
                 is_capture = target_piece is not None and target_piece.color != color
                 moves.append(Move(from_coord=start, to_coord=target, is_capture=is_capture))
 
@@ -90,7 +92,7 @@ def jump_to_targets(
 
         _, can_land = should_stop_at(board, color, target, allow_capture, allow_self_block)
         if can_land:
-            target_piece = board.piece_at(target)
+            target_piece = cache.piece_cache.get(target)
             is_capture = target_piece is not None and target_piece.color != color
             moves.append(Move(from_coord=start, to_coord=target, is_capture=is_capture))
 
@@ -102,7 +104,7 @@ def validate_piece_at(
     pos: Tuple[int, int, int],
     expected_type: Optional[PieceType] = None,
 ) -> bool:
-    piece = board.piece_at(pos)
+    piece = cache.piece_cache.get(pos)
     if piece is None:
         return False
     if piece.color != color:

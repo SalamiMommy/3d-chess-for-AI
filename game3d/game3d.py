@@ -8,12 +8,13 @@ import time
 import weakref
 
 from game3d.pieces.enums import Color, Result, PieceType
-from game3d.movement.movepiece import Move, CompactMove
+from game3d.movement.movepiece import Move
+from game3d.cache.transposition import CompactMove
 from game3d.game.gamestate import GameState
 from game3d.cache.manager import CacheManager, get_cache_manager
 from game3d.board.board import Board
 from game3d.cache.symmetry_tt import SymmetryAwareTranspositionTable
-
+from game3d.board.symmetry import SymmetryManager
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -41,30 +42,28 @@ class GameMode(Enum):
 # ==============================================================================
 
 class OptimizedGame3D:
-    """High-performance Game3D controller with advanced caching and symmetry support."""
-
+    # … existing __slots__ …
     __slots__ = (
-        "_state", "_cache", "_transposition_table", "_game_mode",
-        "_move_history", "_performance_stats", "_archery_cache",
-        "_symmetry_enabled", "_batch_processing"
+        # … keep every existing slot …
+        "_turn_counter",          # ← NEW
+        "_debug_turn_info",       # ← NEW
     )
 
     def __init__(self,
-                 game_mode: GameMode = GameMode.STANDARD,
-                 enable_symmetry: bool = True,
-                 transposition_size_mb: int = 512) -> None:
+                game_mode: GameMode = GameMode.STANDARD,
+                enable_symmetry: bool = True,
+                transposition_size_mb: int = 512,
+                *, debug_turn_info: bool = True) -> None:
 
         # Initialize board and cache
         board = Board.startpos()
         current_color = Color.WHITE
 
         # Initialize cache manager
-        init_cache_manager(board, current_color)
-        self._cache = get_cache_manager()
+        self._cache = get_cache_manager(board, current_color)
 
         # Initialize transposition table with symmetry support
         if enable_symmetry:
-            from game3d.board.symmetry import SymmetryManager
             symmetry_manager = SymmetryManager()
             self._transposition_table = SymmetryAwareTranspositionTable(symmetry_manager, transposition_size_mb)
         else:
@@ -89,6 +88,9 @@ class OptimizedGame3D:
         # Initialize game state
         self._state = GameState(board, current_color, self._cache)
         self._move_history: List[Tuple[Move, float]] = []  # Move and processing time
+        # NEW: turn-tracking
+        self._turn_counter: int = 1                 # first turn is 1
+        self._debug_turn_info: bool = debug_turn_info
 
     # ---------- PUBLIC API ----------
     @property
@@ -113,10 +115,20 @@ class OptimizedGame3D:
             stats['symmetry'] = self._transposition_table.get_symmetry_stats()
         return stats
 
+    def toggle_debug_turn_info(self, value: bool | None = None) -> bool:
+        """Toggle (or set) turn debug print-outs.  Returns new state."""
+        if value is None:
+            self._debug_turn_info = not self._debug_turn_info
+        else:
+            self._debug_turn_info = bool(value)
+        return self._debug_turn_info
+
     # ---------- ENHANCED MOVE SUBMISSION ----------
     def submit_move(self, move: Move) -> MoveReceipt:
-        """Optimized move submission with enhanced validation and caching."""
         start_time = time.perf_counter()
+
+        if self._debug_turn_info:
+            print(f"[Turn {self._turn_counter}] {self.current_player.name} submits {move}")
 
         # Fast validation pipeline
         validation_result = self._validate_move_fast(move)
@@ -131,6 +143,9 @@ class OptimizedGame3D:
             # Update history
             self._move_history.append((move, time.perf_counter() - start_time))
             self._state = new_state
+
+            # Increment turn counter after successful move
+            self._turn_counter += 1
 
             return MoveReceipt(
                 new_state=new_state,
@@ -147,7 +162,8 @@ class OptimizedGame3D:
             return self._create_error_receipt(str(e), start_time)
 
     def submit_archery_attack(self, target_sq: Tuple[int, int, int]) -> MoveReceipt:
-        """Enhanced archery attack with 2-radius sphere surface targeting."""
+        if self._debug_turn_info:
+            print(f"[Turn {self._turn_counter}] {self.current_player.name} archery attack → {target_sq}")
         start_time = time.perf_counter()
 
         # Fast archer validation
@@ -171,6 +187,9 @@ class OptimizedGame3D:
             self._move_history.append((archery_move, time.perf_counter() - start_time))
             self._state = new_state
 
+            # Increment turn counter after successful move
+            self._turn_counter += 1
+
             return MoveReceipt(
                 new_state=new_state,
                 is_legal=True,
@@ -186,7 +205,8 @@ class OptimizedGame3D:
             return self._create_error_receipt(f"Archery attack failed: {str(e)}", start_time)
 
     def submit_hive_turn(self, moves: List[Move]) -> MoveReceipt:
-        """Optimized hive turn processing with batch validation."""
+        if self._debug_turn_info:
+            print(f"[Turn {self._turn_counter}] {self.current_player.name} hive turn ({len(moves)} moves)")
         start_time = time.perf_counter()
 
         if not moves:
@@ -208,6 +228,9 @@ class OptimizedGame3D:
                 self._move_history.append((move, time.perf_counter() - start_time))
 
             self._state = new_state
+
+            # Increment turn counter after successful move
+            self._turn_counter += 1
 
             return MoveReceipt(
                 new_state=new_state,
@@ -231,7 +254,7 @@ class OptimizedGame3D:
             return {'valid': False, 'message': "Game already finished."}
 
         # Check piece exists
-        piece = self._state.board.piece_at(move.from_coord)
+        piece = self._state.cache.piece_cache.get(move.from_coord)
         if piece is None:
             return {'valid': False, 'message': f"No piece at {move.from_coord}"}
 
@@ -250,13 +273,13 @@ class OptimizedGame3D:
         """Batch validation for hive moves."""
         # Check all pieces are hive pieces
         for move in moves:
-            piece = self._state.board.piece_at(move.from_coord)
+            piece = self._state.cache.piece_cache.get(move.from_coord)
             if not piece or piece.ptype != PieceType.HIVE or piece.color != self.current_player:
                 return {'valid': False, 'message': "Only Hive pieces may move."}
 
         # Check no non-hive alternatives exist
         all_legal = self._state.legal_moves()
-        non_hive_moves = [m for m in all_legal if self._state.board.piece_at(m.from_coord).ptype != PieceType.HIVE]
+        non_hive_moves = [m for m in all_legal if self._state.cache.piece_cache.get(m.from_coord).ptype != PieceType.HIVE]
         if non_hive_moves:
             return {'valid': False, 'message': "Must move only Hive pieces this turn."}
 
@@ -301,10 +324,11 @@ class OptimizedGame3D:
     def _apply_archery_attack(self, archery_move: Move, target_sq: Tuple[int, int, int]) -> GameState:
         """Apply archery attack to board state."""
         new_board = self._state.board.clone()
-        if new_board.piece_at(target_sq) is not None:
+
+        # ✅ Fast piece lookup via cache
+        if self._cache.piece.get(target_sq) is not None:
             new_board.set_piece(target_sq, None)
 
-        # Apply to cache
         self._cache.apply_move(archery_move, self.current_player)
 
         return GameState(
@@ -369,17 +393,17 @@ class OptimizedGame3D:
     def reset(self, start_state: Optional[GameState] = None) -> None:
         """Reset game with optional starting state."""
         board = start_state.board if start_state else Board.startpos()
-        current_color = start_state.current if start_state else Color.WHITE
+        current_color = start_state.color if start_state else Color.WHITE  # Fixed to state.color
 
         # Reinitialize cache
-        init_cache_manager(board, current_color)
-        self._cache = get_cache_manager()
+        self._cache = get_cache_manager(board, current_color)
 
         # Reset state
         self._state = start_state or GameState(board, current_color, self._cache)
         self._move_history.clear()
 
         # Reset stats
+        self._turn_counter = 1   # ← NEW
         for key in self._performance_stats:
             self._performance_stats[key] = 0
 

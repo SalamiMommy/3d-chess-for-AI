@@ -10,12 +10,8 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 
 from game3d.movement.registry import register
-from game3d.movement.movetypes.panelmovement import (
-    generate_panel_moves,
-    get_panel_offsets,
-    count_valid_panel_moves_from,
-    get_panel_theoretical_reach
-)
+from game3d.movement.movetypes.panelmovement import generate_panel_moves
+
 from game3d.movement.movepiece import Move
 
 

@@ -131,12 +131,12 @@ class OptimizedBlackHoleSuckCache:
     def _move_affects_black_holes(self, mv: Move, board: Board) -> bool:
         """Check if move affects black holes (piece moved, captured, or black hole moved)."""
         # Check if moved piece is a black hole
-        moved_piece = board.piece_at(mv.from_coord)
+        moved_piece = cache.piece_cache.get(mv.from_coord)
         if moved_piece and moved_piece.ptype == PieceType.BLACK_HOLE:
             return True
 
         # Check if destination had a black hole (captured)
-        dest_piece = board.piece_at(mv.to_coord)
+        dest_piece = cache.piece_cache.get(mv.to_coord)
         if dest_piece and dest_piece.ptype == PieceType.BLACK_HOLE:
             return True
 

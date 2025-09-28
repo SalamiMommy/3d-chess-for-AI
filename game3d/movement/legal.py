@@ -12,6 +12,7 @@ from game3d.movement.movepiece import Move
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.attacks.check import king_in_check
 from game3d.pieces.enums import Color, PieceType
+from game3d.board.board import Board
 
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
@@ -113,10 +114,10 @@ def generate_legal_moves(state: GameState) -> List[Move]:
 def _generate_legal_moves_cached(state: GameState) -> List[Move]:
     """Cached legal move generation with state validation."""
     # Create state hash
-    state_hash = hash((state.board.byte_hash(), state.current, state.halfmove_clock))
+    state_hash = hash((state.board.byte_hash(), state.color, state.halfmove_clock))
 
     # Check cache
-    cached_moves = _LEGAL_CACHE.get(state_hash, state.current)
+    cached_moves = _LEGAL_CACHE.get(state_hash, state.color)
     if cached_moves is not None:
         _STATS.cache_hits += 1
         return cached_moves.copy()
@@ -125,7 +126,7 @@ def _generate_legal_moves_cached(state: GameState) -> List[Move]:
 
     # Generate and cache
     moves = _generate_legal_moves_standard(state)
-    _LEGAL_CACHE.store(state_hash, state.current, moves)
+    _LEGAL_CACHE.store(state_hash, state.color, moves)
 
     return moves
 
@@ -139,7 +140,7 @@ def _generate_legal_moves_batch(state: GameState) -> List[Move]:
 
     # Pre-filter frozen pieces
     freeze_cache = state.cache._effect["freeze"]
-    color = state.current
+    color = state.color
 
     # Filter out frozen pieces first (fast operation)
     unfrozen_moves = [
@@ -169,7 +170,7 @@ def _generate_legal_moves_standard(state: GameState) -> List[Move]:
 
     # Get effect caches
     freeze_cache = state.cache._effect["freeze"]
-    color = state.current
+    color = state.color
 
     # Process each move
     for mv in pseudo_moves:
@@ -199,10 +200,10 @@ def _would_leave_king_in_check(move: Move, state: GameState) -> bool:
     tmp_board.apply_move(move)
 
     # Use cached check detection
-    opponent_color = state.current.opposite()
+    opponent_color = state.color.opposite()
     try:
         # Pass the cache to king_in_check for better performance
-        return king_in_check(tmp_board, state.current, opponent_color, state.cache)
+        return king_in_check(tmp_board, state.color, opponent_color, state.cache)
     except Exception:
         # Fallback to basic check detection
         return False
@@ -222,15 +223,14 @@ def _batch_check_validation(moves: List[Move], state: GameState) -> List[Move]:
     return legal_moves
 
 def _validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
-    """Validate a batch of moves."""
     legal_batch = []
-
-    for move in moves:
-        if not _would_leave_king_in_check(move, state):
-            legal_batch.append(move)
-        else:
-            _STATS.check_filtered += 1
-
+    with ThreadPoolExecutor(max_workers=4) as executor:  # Configurable
+        futures = [executor.submit(_would_leave_king_in_check, move, state) for move in moves]
+        for future, move in zip(as_completed(futures), moves):
+            if not future.result():
+                legal_batch.append(move)
+            else:
+                _STATS.check_filtered += 1
     return legal_batch
 
 # ==============================================================================
@@ -243,7 +243,7 @@ def generate_legal_moves_excluding_checks(state: GameState) -> List[Move]:
 
     # Only apply basic filters
     freeze_cache = state.cache._effect["freeze"]
-    color = state.current
+    color = state.color
 
     return [
         mv for mv in pseudo_moves
@@ -326,9 +326,4 @@ class IncrementalLegalCache:
 
 def generate_legal_moves_legacy(state: GameState) -> List[Move]:
     """Legacy interface for backward compatibility."""
-    return generate_legal_moves(state, mode=LegalMoveMode.STANDARD, use_cache=False)
-
-# Maintain original function signature but with enhanced implementation
-def generate_legal_moves(state: GameState) -> List[Move]:
-    """Legal moves with freeze filtering and check detection."""
-    return generate_legal_moves(state, mode=LegalMoveMode.CACHED, use_cache=True)
+    return _generate_legal_moves_impl(state, mode=LegalMoveMode.STANDARD, use_cache=False)

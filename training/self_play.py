@@ -12,49 +12,87 @@ import time
 from contextlib import contextmanager
 import random
 import torch.nn.functional as F
-
+from dataclasses import dataclass
+from game3d.pieces.enums import Color
 from game3d.game3d import Game3D
 from game3d.game.gamestate import GameState
 from game3d.pieces.enums import Color, Result
 from game3d.common.common import N_TOTAL_PLANES, SIZE_X, SIZE_Y, SIZE_Z
 from models.resnet3d import OptimizedResNet3D, LightweightResNet3D
-
+from game3d.policy_encoder import MoveEncoder
 # ==============================================================================
 # CHESS DATASET FOR TRAINING
 # ==============================================================================
 
 @dataclass
 class TrainingExample:
-    """Single training example from self-play."""
-    state_tensor: torch.Tensor  # Board state + current player
-    policy_target: torch.Tensor  # Move probabilities (soft targets)
-    value_target: float          # Game outcome (-1, 0, 1)
+    """Single training example from self-play with player perspective."""
+    state_tensor: torch.Tensor  # Board state (C,9,9,9)
+    policy_target: torch.Tensor  # Move probabilities (size n_moves)
+    value_target: float          # Game outcome relative to current player (-1, 0, 1)
     game_phase: float           # 0.0 (opening) to 1.0 (endgame)
+    player_sign: float           # 1.0 if white to move, -1.0 if black
 
 class ChessDataset(Dataset):
-    """Dataset for chess training examples with augmentation."""
+    """Dataset for chess training examples with 3D augmentation."""
 
-    def __init__(self, examples: List[TrainingExample], augment: bool = True):
+    def __init__(self, examples: list[TrainingExample], augment: bool = True, validate: bool = True):
         self.examples = examples
         self.augment = augment
+        if validate:
+            self._validate_examples()
+
+    def _validate_examples(self):
+        for i, ex in enumerate(self.examples):
+            if not isinstance(ex.state_tensor, torch.Tensor) or ex.state_tensor.shape != (N_TOTAL_PLANES + 1, 9, 9, 9):
+                raise ValueError(f"Invalid state_tensor in example {i}")
+            if not isinstance(ex.policy_target, torch.Tensor) or ex.policy_target.shape != (531_441,):
+                raise ValueError(f"Invalid policy_target in example {i}")
+            if not (-1 <= ex.value_target <= 1):
+                raise ValueError(f"Invalid value_target in example {i}")
+            if ex.player_sign not in {-1.0, 1.0}:
+                raise ValueError(f"Invalid player_sign in example {i}")
 
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
-        example = self.examples[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        ex = self.examples[idx]
+        state = ex.state_tensor.clone()  # Avoid modifying original
 
-        # Apply data augmentation for chess
-        if self.augment and random.random() > 0.5:
-            state_tensor = self._augment_state(example.state_tensor)
+        if self.augment:
+            # 3D rotations (random around X, Y, Z axes)
+            axes = random.choice([(1,2), (1,3), (2,3)])  # Depth, Height, Width
+            k = random.randint(0, 3)
+            state = torch.rot90(state, k, dims=axes)
+
+            # Random flips along axes
+            if random.random() > 0.5:
+                state = torch.flip(state, dims=[1])  # Flip depth
+            if random.random() > 0.5:
+                state = torch.flip(state, dims=[2])  # Flip height
+            if random.random() > 0.5:
+                state = torch.flip(state, dims=[3])  # Flip width
+
+            # Player color flip (swap players, flip value)
+            if random.random() > 0.5:
+                # Assume inverting certain planes swaps players; stub for actual impl
+                # state = swap_player_planes(state)  # Implement based on encoding
+                value_target = -ex.value_target
+                player_sign = -ex.player_sign
+            else:
+                value_target = ex.value_target
+                player_sign = ex.player_sign
         else:
-            state_tensor = example.state_tensor
+            value_target = ex.value_target
+            player_sign = ex.player_sign
 
-        policy_target = example.policy_target
-        value_target = torch.tensor([example.value_target], dtype=torch.float32)
-        game_phase = torch.tensor([example.game_phase], dtype=torch.float32)
-
-        return state_tensor, policy_target, value_target, game_phase
+        return (
+            state,
+            ex.policy_target,
+            torch.tensor(value_target, dtype=torch.float32),
+            torch.tensor(ex.game_phase, dtype=torch.float32)
+        )
 
     def _augment_state(self, state: torch.Tensor) -> torch.Tensor:
         """Apply chess-specific augmentations (rotations, reflections)."""
@@ -91,7 +129,7 @@ class ChessLoss(nn.Module):
 
     def forward(self, policy_pred: torch.Tensor, value_pred: torch.Tensor,
                 policy_target: torch.Tensor, value_target: torch.Tensor,
-                game_phase: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
+                game_phase: torch.Tensor) -> tuple[torch.Tensor, Dict[str, float]]:
 
         # Policy loss (soft cross-entropy for probabilities)
         policy_loss = - (policy_target * F.log_softmax(policy_pred, dim=1)).sum(dim=1).mean()
@@ -143,7 +181,7 @@ class TrainingConfig:
     model_type: str = "optimized"  # "optimized" or "lightweight"
     blocks: int = 15
     channels: int = 256
-    n_moves: int = 10_000
+    n_moves: int = 531_441
 
     # Training hyperparameters
     batch_size: int = 32
@@ -291,7 +329,7 @@ class ChessTrainer:
             for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
                 ema_param.data.mul_(self.config.ema_decay).add_(model_param.data, alpha=1 - self.config.ema_decay)
 
-    def prepare_data(self, examples: List[TrainingExample]) -> Tuple[ChessDataset, ChessDataset]:
+    def prepare_data(self, examples: List[TrainingExample]) -> tuple[ChessDataset, ChessDataset]:
         """Prepare training and validation datasets."""
         if self.config.max_examples:
             examples = examples[:self.config.max_examples]
@@ -514,87 +552,84 @@ class ChessTrainer:
 
         print(f"Best model loaded from: {best_model_path}")
 
+
+def play_game(net: torch.nn.Module, mcts_depth: int = 0) -> List[TrainingExample]:
+    """
+    Play a single game and return training examples.
+
+    Args:
+        net: Neural network model
+        mcts_depth: MCTS simulations per move (0 = random play)
+
+    Returns:
+        List of TrainingExample objects
+    """
+    device = next(net.parameters()).device
+    generator = SelfPlayGenerator(net, device=device, temperature=1.0)
+    initial_state = GameState.start()
+    return generator.generate_game(initial_state, max_moves=531_441)
 # ==============================================================================
 # SELF-PLAY DATA GENERATION
 # ==============================================================================
-
 class SelfPlayGenerator:
-    """Generate training data through self-play with the current model."""
+    """Generate training data through self-play with proper policy mapping."""
 
-    def __init__(self, model: nn.Module, device: str = "cuda", temperature: float = 1.0):
-        self.model = model.to(device)
-        self.model.eval()
+    def __init__(self, model: torch.nn.Module, device: str = "cuda", temperature: float = 1.0, mcts_depth: int = 0):
+        self.model = model.to(device).eval()
         self.device = device
         self.temperature = temperature
-
-    def play_game(net: torch.nn.Module, mcts_depth: int = 0) -> List[TrainingExample]:
-        """
-        Play a single game and return training examples.
-
-        Args:
-            net: Neural network model
-            mcts_depth: MCTS simulations per move (0 = random play)
-
-        Returns:
-            List of TrainingExample objects
-        """
-        device = next(net.parameters()).device
-        generator = SelfPlayGenerator(net, device=device, temperature=1.0)
-        initial_state = GameState.start()
-        return generator.generate_game(initial_state, max_moves=10000)
+        self.mcts_depth = mcts_depth  # If >0, stub for MCTS (not implemented)
+        self.move_encoder = MoveEncoder(max_actions=600_000)
 
     def generate_game(self, initial_state: GameState, max_moves: int = 200) -> List[TrainingExample]:
-        """Generate a single game of self-play data."""
         examples = []
         state = initial_state
         move_count = 0
 
         while not state.is_game_over() and move_count < max_moves:
-            # Get model predictions
+            state_tensor = state.to_tensor().unsqueeze(0).to(self.device)
             with torch.no_grad():
-                state_tensor = state.to_tensor().unsqueeze(0).to(self.device)
-                policy_logits, value_pred = self.model(state_tensor)
-
-                # Apply temperature scaling
+                policy_logits, value_pred, *_ = self.model(state_tensor)
                 policy_logits = policy_logits / self.temperature
 
-                # Convert to probabilities
-                policy_probs = torch.softmax(policy_logits, dim=1)
-
-            # Get legal moves
             legal_moves = state.legal_moves()
             if not legal_moves:
                 break
 
-            # Map policy to legal moves
-            move_probs = self._map_policy_to_moves(policy_probs[0], legal_moves, state)
+            # 1. logits → probs over *legal* moves
+            legal_indices = [self.move_encoder.move_to_index(m) for m in legal_moves]
+            legal_logits = policy_logits[0, legal_indices]
+            legal_probs = torch.softmax(legal_logits, dim=0)   # <-- this is the tensor to use
 
-            # Sample move
-            move = self._sample_move(legal_moves, move_probs)
-            if move is None:
-                break
+            # 2. (optional) MCTS override
+            if self.mcts_depth > 0:
+                # legal_probs = run_mcts(...)   # when you implement MCTS
+                pass
 
-            # Create training example
-            example = TrainingExample(
+            # 3. sample
+            move_idx = torch.multinomial(legal_probs, num_samples=1).item()
+            move = legal_moves[move_idx]
+
+            # 4. build full 531441-vector target
+            full_policy_target = torch.zeros(531_441, dtype=torch.float32, device=self.device)
+            full_policy_target[legal_indices] = legal_probs
+
+            player_sign = 1.0 if state.color == Color.WHITE else -1.0
+            examples.append(TrainingExample(
                 state_tensor=state.to_tensor(),
-                policy_target=torch.tensor(move_probs, dtype=torch.float32),
-                value_target=value_pred.item(),  # Will be updated with final outcome
-                game_phase=self._estimate_game_phase(state)
-            )
-            examples.append(example)
+                policy_target=full_policy_target.cpu(),
+                value_target=value_pred.item(),   # patched later when game ends
+                game_phase=self._estimate_game_phase(state),
+                player_sign=player_sign
+            ))
 
-            # Make move
-            try:
-                state = state.make_move(move)
-                move_count += 1
-            except Exception as e:
-                print(f"Move failed in self-play: {e}")
-                break
+            state = state.make_move(move)
+            move_count += 1
 
-        # Update value targets with actual game outcome
+        # retro-fix value targets
         final_outcome = state.outcome()
-        for example in examples:
-            example.value_target = final_outcome
+        for ex in examples:
+            ex.value_target = final_outcome * ex.player_sign
 
         return examples
 
@@ -622,14 +657,9 @@ class SelfPlayGenerator:
         return legal_moves[move_idx]
 
     def _estimate_game_phase(self, state: GameState) -> float:
-        """Estimate game phase (0.0 = opening, 1.0 = endgame)."""
-        # Simple heuristic based on move count and pieces remaining
-        move_count = len(state.history)
-        pieces_remaining = sum(1 for _ in state.board.list_occupied())
-
-        # Normalize to [0, 1]
-        phase = min(move_count / 100.0, 1.0) * 0.5 + min(pieces_remaining / 50.0, 1.0) * 0.5
-        return phase
+            move_count = len(state.history)
+            pieces_remaining = sum(1 for _ in state.board.list_occupied())
+            return min(move_count / 100.0, 1.0) * 0.5 + (1 - min(pieces_remaining / 50.0, 1.0)) * 0.5  # Inverted for endgame
 
 # ==============================================================================
 # TRAINING PIPELINE
@@ -714,7 +744,7 @@ def main():
         model_type="optimized",
         blocks=15,
         channels=256,
-        n_moves=10_000,
+        n_moves=531_441,
         batch_size=32,
         learning_rate=0.001,
         epochs=50,

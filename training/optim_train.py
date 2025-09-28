@@ -12,7 +12,7 @@ import numpy as np
 import torch.nn.functional as F
 
 # Import your existing modules
-from models.resnet3d import LightweightResNet3D, OptimizedResNet3D as ResNet3D
+from models.resnet3d import LightweightResNet3D, OptimizedResNet3D
 from training.checkpoint import save_checkpoint, load_latest_checkpoint
 
 # Import the self-play and game state modules
@@ -167,92 +167,51 @@ class SelfPlayGenerator:
 # ==============================================================================
 # ENHANCED TRAINING LOOP WITH SELF-PLAY
 # ==============================================================================
-
 def train_model(net: torch.nn.Module, optimizer: torch.optim.Optimizer,
-                dataset: List[TrainingExample], start_epoch: int = 0, start_step: int = 0,
-                device: str = "cuda") -> Dict[str, Any]:
-    """Enhanced training loop with self-play integration."""
-
+                examples: List[TrainingExample], start_epoch: int = 0, start_step: int = 0,
+                device: str = "cuda", train_split: float = 0.8) -> Dict[str, Any]:
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     net.to(device)
 
-    # Create optimized DataLoader
-    loader = DataLoader(
-        ChessDataset(dataset),
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY,
-        drop_last=True,
-    )
+    # Split into train/val
+    split_idx = int(len(examples) * train_split)
+    train_examples, val_examples = examples[:split_idx], examples[split_idx:]
 
-    # Enhanced loss functions
+    train_dataset = ChessDataset(train_examples)
+    val_dataset = ChessDataset(val_examples, augment=False)
+
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=8, pin_memory=True)
+
     criterion_value = torch.nn.MSELoss()
+    patience, no_improvement, best_val_loss = 10, 0, float('inf')
+    training_stats = {'total_loss': [], 'policy_loss': [], 'value_loss': [], 'learning_rate': []}
 
-    last_save_time = time.time()
-    step = start_step
-    total_loss = 0.0
-    num_batches = 0
+    for epoch in range(start_epoch, 1000):
+        net.train()
+        epoch_loss, epoch_policy_loss, epoch_value_loss = 0.0, 0.0, 0.0
 
-    training_stats = {
-        'total_loss': [],
-        'policy_loss': [],
-        'value_loss': [],
-        'learning_rate': []
-    }
+        for batch in train_loader:
+            x, pi, z, _ = batch  # Ignore game_phase for simplicity; extend if using ChessLoss
+            x, pi, z = x.to(device), pi.to(device), z.to(device)
 
-    patience = 10  # Early stopping
-    no_improvement = 0
-    best_val_loss = float('inf')  # Assume validation logic added if needed
-
-    for epoch in range(start_epoch, EPOCHS):
-        epoch_loss = 0.0
-        epoch_policy_loss = 0.0
-        epoch_value_loss = 0.0
-
-        for batch_idx, batch in enumerate(loader):
-            x, pi, z = batch
-            x = x.to(device, non_blocking=True)
-            pi = pi.to(device, non_blocking=True)
-            z = z.to(device, non_blocking=True)
-
-            # Forward pass with autocast for mixed precision
             with torch.cuda.amp.autocast():
-                out_pi, out_value = net(x)
-
-                # Compute losses (soft cross-entropy for policy)
-                loss_policy = - (pi * F.log_softmax(out_pi, dim=1)).sum(dim=1).mean()
+                outputs = net(x)
+                out_pi, out_value = outputs[:2]  # Handle optional uncertainty
+                loss_policy = -(pi * F.log_softmax(out_pi, dim=1)).sum(dim=1).mean()
                 loss_value = criterion_value(out_value.squeeze(), z)
                 loss = loss_policy + loss_value
 
-            # Backward pass with optimizations
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-
-            # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-
             optimizer.step()
-            step += 1
 
-            # Track statistics
-            total_loss += loss.item()
             epoch_loss += loss.item()
             epoch_policy_loss += loss_policy.item()
             epoch_value_loss += loss_value.item()
-            num_batches += 1
 
-            # Periodic checkpointing
-            if time.time() - last_save_time > CHECKPOINT_INTERVAL:
-                save_checkpoint(net, optimizer, epoch, step)
-                last_save_time = time.time()
-                print(f"Checkpoint saved at epoch {epoch}, step {step}")
-
-        # End of epoch processing
-        avg_epoch_loss = epoch_loss / len(loader)
-        avg_policy_loss = epoch_policy_loss / len(loader)
-        avg_value_loss = epoch_value_loss / len(loader)
-
+        avg_epoch_loss = epoch_loss / len(train_loader)
         training_stats['total_loss'].append(avg_epoch_loss)
         training_stats['policy_loss'].append(avg_policy_loss)
         training_stats['value_loss'].append(avg_value_loss)
@@ -261,21 +220,30 @@ def train_model(net: torch.nn.Module, optimizer: torch.optim.Optimizer,
         print(f"Epoch {epoch}: Loss={avg_epoch_loss:.4f}, "
               f"Policy={avg_policy_loss:.4f}, Value={avg_value_loss:.4f}")
 
-        # Early stopping (assume val_loss from validation; stub for now)
-        if avg_epoch_loss < best_val_loss:
-            best_val_loss = avg_epoch_loss
+        net.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                x, pi, z, _ = batch
+                x, pi, z = x.to(device), pi.to(device), z.to(device)
+                outputs = net(x)
+                out_pi, out_value = outputs[:2]
+                loss_policy = -(pi * F.log_softmax(out_pi, dim=1)).sum(dim=1).mean()
+                loss_value = criterion_value(out_value.squeeze(), z)
+                val_loss += (loss_policy + loss_value).item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"Epoch {epoch}: Train Loss={avg_epoch_loss:.4f}, Val Loss={avg_val_loss:.4f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             no_improvement = 0
+            # Save checkpoint
         else:
             no_improvement += 1
             if no_improvement >= patience:
-                print(f"Early stopping at epoch {epoch}")
                 break
 
-        # Save at end of each epoch
-        if SAVE_EVERY_EPOCH:
-            save_checkpoint(net, optimizer, epoch, step)
-
-    print("Training complete.")
     return training_stats
 
 # ==============================================================================
@@ -338,26 +306,26 @@ def train_with_self_play(net: torch.nn.Module, optimizer: torch.optim.Optimizer,
 # INTEGRATION WITH YOUR EXISTING CODE
 # ==============================================================================
 def load_or_init_model():
-    """Load model and initialize for self-play training."""
-    # Try to load your existing ResNet3D first
-    try:
-        net = ResNet3D(blocks=15, n_moves=10_000)
-        print("Loaded existing ResNet3D model")
-    except:
-        # Fall back to optimized version
-        net = OptimizedResNet3D(blocks=15, n_moves=10_000, channels=256)
-        print("Loaded optimized ResNet3D model")
-
+    """Load model: prefer checkpoint, else pre-initialized weights, else fresh init."""
+    net = OptimizedResNet3D(blocks=15, n_moves=531_441, channels=256)
     optimizer = torch.optim.AdamW(net.parameters(), lr=2e-4, weight_decay=1e-5)
 
-    # Try to load checkpoint
+    # Try to load training checkpoint first
     checkpoint = load_latest_checkpoint(net, optimizer)
-    if checkpoint is None:
-        print("No checkpoint found, starting fresh training")
+    if checkpoint is not None:
+        print(f"Loaded checkpoint: epoch {checkpoint['epoch']}, step {checkpoint['step']}")
+        return net, optimizer, checkpoint["epoch"], checkpoint["step"]
+
+    # If no checkpoint, try to load pre-initialized weights
+    init_path = Path("initialized_model.pth")
+    if init_path.exists():
+        print("Loading pre-initialized weights...")
+        net.load_state_dict(torch.load(init_path, map_location="cpu"))
         return net, optimizer, 0, 0
 
-    print(f"Loaded checkpoint: epoch {checkpoint['epoch']}, step {checkpoint['step']}")
-    return net, optimizer, checkpoint["epoch"], checkpoint["step"]
+    # Fallback: fresh init (will trigger kaiming_uniform_)
+    print("No checkpoint or init file found. Initializing fresh weights...")
+    return net, optimizer, 0, 0
 
 # Example usage:
 if __name__ == "__main__":

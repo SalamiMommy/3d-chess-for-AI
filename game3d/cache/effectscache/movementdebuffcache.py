@@ -118,12 +118,12 @@ class OptimizedMovementDebuffCache:
     def _move_affects_debuff_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects debuff sources (piece moved, captured, or near debuff sources)."""
         # Check if moved piece is a debuff source
-        moved_piece = board.piece_at(mv.from_coord)
+        moved_piece = cache.piece_cache.get(mv.from_coord)
         if moved_piece and self._is_debuff_source(moved_piece):
             return True
 
         # Check if destination had a debuff source (captured)
-        dest_piece = board.piece_at(mv.to_coord)
+        dest_piece = cache.piece_cache.get(mv.to_coord)
         if dest_piece and self._is_debuff_source(dest_piece):
             return True
 

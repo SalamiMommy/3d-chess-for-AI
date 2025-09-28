@@ -1,9 +1,9 @@
 # game3d/movement/movetypes/knightmovement.py
+"""3D Knight move generation logic — handles share-square rules."""
+
 from typing import List
 from game3d.pieces.enums import PieceType, Color
-from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import validate_piece_at  # ← may also need update
 from game3d.common.common import in_bounds, add_coords
 
 KNIGHT_OFFSETS = [
@@ -17,15 +17,15 @@ KNIGHT_OFFSETS = [
 
 def generate_knight_moves(
     board,
-    cache,
+    cache,          # ← cache is required for share-square logic
     color: Color,
     x: int, y: int, z: int
 ) -> List['Move']:
     """Generate all legal knight moves from (x, y, z) – Share-Square aware."""
     start = (x, y, z)
 
-    # Inline validation instead of calling validate_piece_at(state, ...)
-    piece = board.piece_at(start)
+    # Inline validation
+    piece = cache.piece_cache.get(start)
     if piece is None or piece.ptype != PieceType.KNIGHT or piece.color != color:
         return []
 

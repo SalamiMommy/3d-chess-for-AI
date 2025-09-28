@@ -1,21 +1,19 @@
-# game3d/movement/movetypes/kingmovement.py
-
 """3D King move generation logic — pure movement rules, no registration."""
 
+import numpy as np
 from typing import List
-from game3d.pieces.enums import PieceType
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
 
 # King moves 1 step in any direction → 26 neighbors
-KING_DIRECTIONS_3D = [
+KING_DIRECTIONS_3D = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
     for dy in (-1, 0, 1)
     for dz in (-1, 0, 1)
     if not (dx == 0 and dy == 0 and dz == 0)  # exclude (0,0,0)
-]
+])
 
 def generate_king_moves(board, color: Color, x: int, y: int, z: int) -> List[Move]:
     """
@@ -27,12 +25,13 @@ def generate_king_moves(board, color: Color, x: int, y: int, z: int) -> List[Mov
     pos = (x, y, z)
 
     # Validate piece exists and is correct type/color
-    if not validate_piece_at(state.board, state.color, pos, PieceType.KING):
+    if not validate_piece_at(board, color, pos, PieceType.KING):
         return []
 
     # Reuse slide logic — but limit to 1 step
     return slide_along_directions(
-        state,
+        board=board,
+        color=color,
         start=pos,
         directions=KING_DIRECTIONS_3D,
         allow_capture=True,      # Kings can capture

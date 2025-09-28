@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
 import time
 from dataclasses import dataclass
+import numpy as np
 from enum import Enum
-
+from game3d.pieces.enums import Color
 if TYPE_CHECKING:
     from game3d.cache.movecache import OptimizedMoveCache, CompactMove, TTEntry
     from game3d.cache.occupancycache import OccupancyCache
@@ -37,6 +38,9 @@ from game3d.cache.effectscache.geomancycache import GeomancyCache
 from game3d.cache.effectscache.archerycache import ArcheryCache
 from game3d.cache.effectscache.sharesquarecache import ShareSquareCache
 from game3d.cache.effectscache.armourcache import ArmourCache
+from game3d.cache.piececache import PieceCache
+# Import occupancy cache (this was missing!)
+from game3d.cache.occupancycache import OccupancyCache
 # ==============================================================================
 # PERFORMANCE MONITORING
 # ==============================================================================
@@ -59,10 +63,8 @@ class CacheEvent:
 class CachePerformanceMonitor:
     """Advanced performance monitoring for the cache system."""
 
-    def __init__(self, max_events: int = 10000):
+    def __init__(self, enable_monitoring: bool = True, max_events: int = 10000):
         self.enable_monitoring = enable_monitoring
-        if enable_monitoring:
-            self.performance_monitor = CachePerformanceMonitor()
         self.events: List[CacheEvent] = []
         self.max_events = max_events
         self.start_time = time.time()
@@ -131,21 +133,20 @@ class CachePerformanceMonitor:
 
         avg_move_apply_time = np.mean(self.move_apply_times) if self.move_apply_times else 0
         avg_move_undo_time = np.mean(self.move_undo_times) if self.move_undo_times else 0
-        avg_legal_move_time = np.mean(self.legal_move_generation_times) if self.legal_move_generation_times else 0
+        avg_legal_gen_time = np.mean(self.legal_move_generation_times) if self.legal_move_generation_times else 0
 
         return {
-            'tt_hit_rate': tt_hit_rate,
             'tt_hits': self.tt_hits,
             'tt_misses': self.tt_misses,
+            'tt_hit_rate': tt_hit_rate,
             'tt_collisions': self.tt_collisions,
             'move_applications': self.move_applications,
             'move_undos': self.move_undos,
             'cache_clears': self.cache_clears,
-            'avg_move_apply_time_ms': avg_move_apply_time * 1000,
-            'avg_move_undo_time_ms': avg_move_undo_time * 1000,
-            'avg_legal_move_generation_time_ms': avg_legal_move_time * 1000,
+            'avg_move_apply_time_ms': avg_move_apply_time,
+            'avg_move_undo_time_ms': avg_move_undo_time,
+            'avg_legal_gen_time_ms': avg_legal_gen_time,
             'total_events': len(self.events),
-            'uptime_seconds': time.time() - self.start_time
         }
 
     def get_optimization_suggestions(self) -> List[str]:
@@ -162,7 +163,7 @@ class CachePerformanceMonitor:
         if stats['avg_move_apply_time_ms'] > 1.0:
             suggestions.append("Slow move application. Consider optimizing incremental updates.")
 
-        if stats['avg_legal_move_generation_time_ms'] > 5.0:
+        if stats['avg_legal_gen_time_ms'] > 5.0:
             suggestions.append("Slow move generation. Consider vectorization or better caching strategies.")
 
         return suggestions
@@ -178,6 +179,7 @@ class OptimizedCacheManager:
         # 🟢 SINGLE source of truth: no cloning
         self.board = board
         self.occupancy = OccupancyCache(board)
+        self.piece_cache = PieceCache(board)  # 👈 NEW
         self._effect: Dict[str, Any] = {}
         self._init_effects()
 
@@ -233,12 +235,12 @@ class OptimizedCacheManager:
 
         try:
             # 1. Validate move on CURRENT board state
-            if self.board.piece_at(mv.from_coord) is None:
+            from_piece = self.piece_cache.get(mv.from_coord)
+            if from_piece is None:
                 raise AssertionError(f"Illegal move: {mv} — no piece at {mv.from_coord}")
 
             # 2. Capture pre-move state
-            from_piece = self.board.piece_at(mv.from_coord)
-            to_piece = self.board.piece_at(mv.to_coord)
+            to_piece = self.piece_cache.get(mv.to_coord)
             captured_piece = None
 
             if getattr(mv, "is_capture", False):
@@ -254,6 +256,7 @@ class OptimizedCacheManager:
             # 4. Apply move to shared board
             self.board.apply_move(mv)
             self.occupancy.rebuild(self.board)
+            self.piece_cache.rebuild(self.board)
 
             # 5. Determine affected caches
             affected_caches = self._get_affected_caches(
@@ -308,7 +311,7 @@ class OptimizedCacheManager:
 
         try:
             # Restore Zobrist hash (XOR is its own inverse)
-            piece = self.board.piece_at(mv.to_coord)
+            piece = self.piece_cache.get(mv.to_coord)
             captured_piece = None
 
             if getattr(mv, "is_capture", False):
@@ -316,15 +319,17 @@ class OptimizedCacheManager:
                 if captured_type is not None:
                     captured_piece = Piece(mover.opposite(), captured_type)
 
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, piece, captured_piece
-            )
+            if piece:
+                self._current_zobrist_hash = self._zobrist.update_hash_move(
+                    self._current_zobrist_hash, mv, piece, captured_piece
+                )
 
             # Apply undo to board
             self._undo_move_optimized(mv, mover)
 
             # Update occupancy
             self.occupancy.rebuild(self.board)
+            self.piece_cache.rebuild(self.board)
 
             # Update effect caches
             affected_caches = self._get_affected_caches_for_undo(mv, mover)
@@ -361,16 +366,14 @@ class OptimizedCacheManager:
                 self.board.set_piece(mv.to_coord, Piece(captured_color, captured_type))
 
         # Move piece back
-        piece = self.board.piece_at(mv.to_coord)
+        piece = self.piece_cache.get(mv.to_coord)  # Fixed from undefined coord
         if piece:
             self.board.set_piece(mv.from_coord, piece)
             self.board.set_piece(mv.to_coord, None)
 
         # Handle promotions
-        if getattr(mv, "is_promotion", False):
-            promotion_type = getattr(mv, "promotion_type", None)
-            if promotion_type:
-                self.board.set_piece(mv.from_coord, Piece(piece.color, PieceType.PAWN))
+        if getattr(mv, "is_promotion", False) and piece:
+            self.board.set_piece(mv.from_coord, Piece(piece.color, PieceType.PAWN))
 
     def _should_store_in_tt(self, mv: Move, piece: Piece) -> bool:
         """Determine if move should be stored in transposition table."""
@@ -428,7 +431,7 @@ class OptimizedCacheManager:
 
                     check_pos = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
                     if (0 <= check_pos[0] < 9 and 0 <= check_pos[1] < 9 and 0 <= check_pos[2] < 9):
-                        piece = self.board.piece_at(check_pos)
+                        piece = self.piece_cache.get(coord)
                         if piece and piece.ptype in {PieceType.FREEZE_AURA, PieceType.BLACK_HOLE,
                                                    PieceType.WHITE_HOLE, PieceType.GEOMANCER}:
                             effect_map = {
@@ -572,8 +575,8 @@ class OptimizedCacheManager:
             if move_stats.get('simple_move_cache_size', 0) < 50:
                 suggestions.append("Simple move cache underutilized - consider more simple move patterns")
 
-            if move_stats.get('vectorized_cache_size', 0) < 20:
-                suggestions.append("Vectorized cache underutilized - ensure vectorization is enabled")
+            if stats['avg_legal_gen_time_ms'] > 5.0:
+                suggestions.append("Slow move generation. Consider vectorization or better caching strategies.")
 
         return suggestions
 
@@ -583,7 +586,7 @@ class OptimizedCacheManager:
         print(f"[CacheManager] {context} stats:")
         print(f"  TT Hit Rate: {stats['tt_hit_rate']:.3f}")
         print(f"  Avg Move Apply Time: {stats['avg_move_apply_time_ms']:.2f}ms")
-        print(f"  Avg Legal Move Time: {stats['avg_legal_move_generation_time_ms']:.2f}ms")
+        print(f"  Avg Legal Move Time: {stats['avg_legal_gen_time_ms']:.2f}ms")
 
         suggestions = self.get_optimization_suggestions()
         if suggestions:
