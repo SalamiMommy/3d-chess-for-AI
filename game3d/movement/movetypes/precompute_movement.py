@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Set, Any
 from math import gcd
-
+from ..cache.manager import OptimizedCacheManager
 # Constants
 SIZE = 9
 CACHE_DIR = Path(__file__).parent / "precomputed_cache"

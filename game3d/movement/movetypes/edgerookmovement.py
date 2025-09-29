@@ -5,7 +5,7 @@ from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import is_edge_square, validate_piece_at
 from game3d.movement.movepiece import Move
 from collections import deque
-
+from game3d.cache.manager import OptimizedCacheManager
 # Precomputed edge adjacency graph: {coord: [neighbor_coords]}
 _EDGE_GRAPH: dict[tuple, list[tuple]] = {}
 
@@ -33,7 +33,7 @@ def _build_edge_graph(board_size: int = 9) -> None:
 # Build the graph immediately when module is imported
 _build_edge_graph()
 
-def generate_edgerook_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
     """
     Generate legal Edge-Rook moves from (x, y, z) using precomputed edge graph.
 
@@ -46,7 +46,7 @@ def generate_edgerook_moves(board, color: Color, x: int, y: int, z: int) -> List
     start = (x, y, z)
 
     # Validate piece at start position
-    if not validate_piece_at(board, color, start, PieceType.EDGEROOK):
+    if not validate_piece_at(cache, color, start, PieceType.EDGEROOK):
         return []
 
     if start not in _EDGE_GRAPH:

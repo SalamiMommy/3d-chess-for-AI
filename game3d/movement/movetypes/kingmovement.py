@@ -5,6 +5,7 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
+from game3d.cache.manager import OptimizedCacheManager
 
 # King moves 1 step in any direction → 26 neighbors
 KING_DIRECTIONS_3D = np.array([
@@ -15,7 +16,13 @@ KING_DIRECTIONS_3D = np.array([
     if not (dx == 0 and dy == 0 and dz == 0)  # exclude (0,0,0)
 ])
 
-def generate_king_moves(board, color: Color, x: int, y: int, z: int) -> List[Move]:
+def generate_king_moves(
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List[Move]:
     """
     Generate all legal king moves from (x, y, z).
     King = single-step queen → 26 directions, max 1 step.
@@ -25,12 +32,12 @@ def generate_king_moves(board, color: Color, x: int, y: int, z: int) -> List[Mov
     pos = (x, y, z)
 
     # Validate piece exists and is correct type/color
-    if not validate_piece_at(board, color, pos, PieceType.KING):
+    if not validate_piece_at(cache, color, pos, PieceType.KING):  # ← cache, not board
         return []
 
     # Reuse slide logic — but limit to 1 step
     return slide_along_directions(
-        board=board,
+        cache=cache,  # ← cache, not board
         color=color,
         start=pos,
         directions=KING_DIRECTIONS_3D,

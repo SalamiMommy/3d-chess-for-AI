@@ -1,4 +1,3 @@
-#game3d/movement/movetypes/pawnfrontteleportermovement.py
 """Pawn-Front Teleporter — teleports to any empty square directly in front of an enemy pawn.
    Pawns advance along Z: White +Z, Black -Z.
 """
@@ -7,8 +6,15 @@ from typing import List, Set
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds
+from game3d.cache.manager import OptimizedCacheManager
 
-def generate_pawn_front_teleport_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_pawn_front_teleport_moves(
+    cache: OptimizedCacheManager,  # ← Already correct
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List['Move']:
     """
     Generate teleport moves to any EMPTY square directly in front of an enemy pawn.
     Pawns move in Z-direction:
@@ -25,7 +31,7 @@ def generate_pawn_front_teleport_moves(board, color: Color, x: int, y: int, z: i
     candidate_targets: Set[tuple] = set()
 
     # Iterate over occupied squares to find enemy pawns
-    for pos, other_piece in board.list_occupied():
+    for pos, other_piece in cache.board.list_occupied():  # ← cache.board, not board
         if other_piece.ptype != PieceType.PAWN:
             continue
         if other_piece.color == color:

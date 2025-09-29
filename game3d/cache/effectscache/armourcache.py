@@ -3,7 +3,6 @@
 from __future__ import annotations
 from typing import Dict, Set, Tuple
 from game3d.pieces.enums import Color, PieceType
-from game3d.board.board import Board
 from game3d.movement.movepiece import Move
 
 class ArmourCache:

@@ -1,4 +1,3 @@
-# game3d/movement/movetypes/xyqueenmovement.py
 """3D XY-Queen movement logic — moves like 2D queen in XY-plane (Z fixed)."""
 
 import numpy as np
@@ -6,13 +5,14 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
+from game3d.cache.manager import OptimizedCacheManager
 
-def generate_xy_queen_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_xy_queen_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
     """Generate all legal XY-QUEEN moves from (x, y, z)."""
     start = (x, y, z)
 
     # Validate piece at start position
-    if not validate_piece_at(board, color, start, PieceType.XYQUEEN):
+    if not validate_piece_at(cache, color, start, PieceType.XYQUEEN):
         return []
 
     # 8 directions in XY-plane (Z fixed)
@@ -24,7 +24,7 @@ def generate_xy_queen_moves(board, color: Color, x: int, y: int, z: int) -> List
     ])
 
     return slide_along_directions(
-        board=board,
+        cache=cache,  # ✅ FIXED: cache, not board
         color=color,
         start=start,
         directions=directions,

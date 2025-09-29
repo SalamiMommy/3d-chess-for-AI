@@ -13,4 +13,4 @@ __all__ = ['generate_bishop_moves']
 
 @register(PieceType.BISHOP)
 def bishop_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_bishop_moves(state.board, state.color, x, y, z)
+    return generate_bishop_moves(state.cache, state.color, x, y, z)

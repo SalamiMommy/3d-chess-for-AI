@@ -305,27 +305,31 @@ def train_with_self_play(net: torch.nn.Module, optimizer: torch.optim.Optimizer,
 # ==============================================================================
 # INTEGRATION WITH YOUR EXISTING CODE
 # ==============================================================================
-def load_or_init_model():
-    """Load model: prefer checkpoint, else pre-initialized weights, else fresh init."""
-    net = OptimizedResNet3D(blocks=15, n_moves=531_441, channels=256)
+def load_or_init_model(device="cuda"):
+    """Load model and initialize for self-play training."""
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+    # Try to load your existing ResNet3D first
+    try:
+        net = ResNet3D(blocks=15, n_moves=531_441, channels=256)
+        net = net.to(device)  # ✅ Move to device immediately
+        print("Loaded existing ResNet3D model")
+    except Exception as e:
+        print(f"Falling back to optimized model: {e}")
+        net = OptimizedResNet3D(blocks=15, n_moves=531_441, channels=256)
+        net = net.to(device)  # ✅ Move to device immediately
+        print("Loaded optimized ResNet3D model")
+
     optimizer = torch.optim.AdamW(net.parameters(), lr=2e-4, weight_decay=1e-5)
 
-    # Try to load training checkpoint first
+    # Try to load checkpoint
     checkpoint = load_latest_checkpoint(net, optimizer)
-    if checkpoint is not None:
-        print(f"Loaded checkpoint: epoch {checkpoint['epoch']}, step {checkpoint['step']}")
-        return net, optimizer, checkpoint["epoch"], checkpoint["step"]
-
-    # If no checkpoint, try to load pre-initialized weights
-    init_path = Path("initialized_model.pth")
-    if init_path.exists():
-        print("Loading pre-initialized weights...")
-        net.load_state_dict(torch.load(init_path, map_location="cpu"))
+    if checkpoint is None:
+        print("No checkpoint found, starting fresh training")
         return net, optimizer, 0, 0
 
-    # Fallback: fresh init (will trigger kaiming_uniform_)
-    print("No checkpoint or init file found. Initializing fresh weights...")
-    return net, optimizer, 0, 0
+    print(f"Loaded checkpoint: epoch {checkpoint['epoch']}, step {checkpoint['step']}")
+    return net, optimizer, checkpoint["epoch"], checkpoint["step"]
 
 # Example usage:
 if __name__ == "__main__":

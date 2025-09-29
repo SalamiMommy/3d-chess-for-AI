@@ -3,8 +3,9 @@
 from typing import List, Set, Tuple
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import validate_piece_at
-from game3d.movement.movepiece import Move  # Make sure Move is imported!
-
+from game3d.movement.movepiece import Move
+from game3d.cache.manager import OptimizedCacheManager  # ← Add import
+from game3d.cache.manager import OptimizedCacheManager
 MAX_BOUNCES = 3
 BOARD_SIZE = 9
 
@@ -19,12 +20,18 @@ def reflect_direction(direction: Tuple[int, int, int], axes_to_flip: Tuple[bool,
         dz = -dz
     return (dx, dy, dz)
 
-def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_reflecting_bishop_moves(
+    cache: OptimizedCacheManager,  # ← CHANGED: accept cache instead of board
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List['Move']:
     """Generate all legal reflecting-bishop moves (wall-bouncing diagonal rays)."""
     start_pos = (x, y, z)
 
     # Validate that the piece at start_pos is a REFLECTOR
-    if not validate_piece_at(board, color, start_pos, expected_type=PieceType.REFLECTOR):
+    if not validate_piece_at(cache, color, start_pos, expected_type=PieceType.REFLECTOR):
         return []
 
     # 8 space diagonal directions
@@ -37,7 +44,7 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
 
     visited_targets: Set[Tuple[int, int, int]] = set()
     moves: List['Move'] = []
-    current_color = color  # <-- use the parameter, not state.color
+    current_color = color
 
     for init_dir in initial_directions:
         pos = start_pos
@@ -45,11 +52,10 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
         bounces = 0
 
         while bounces <= MAX_BOUNCES:
-            # Calculate next position
             next_pos = (pos[0] + direction[0], pos[1] + direction[1], pos[2] + direction[2])
             nx, ny, nz = next_pos
 
-            # Check if out of bounds on any axis
+            # Check bounds
             out_of_bounds = [False, False, False]
             if nx < 0 or nx >= BOARD_SIZE:
                 out_of_bounds[0] = True
@@ -65,14 +71,13 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
                 bounces += 1
                 continue
 
-            # In bounds - check occupancy
-            target_piece = cache.piece_cache.get(next_pos)  # <-- use board, not state.board
+            # Use cache for piece lookup
+            target_piece = cache.piece_cache.get(next_pos)
 
             # Cannot land on friendly pieces
             if target_piece is not None and target_piece.color == current_color:
                 break
 
-            # Add unique target
             if next_pos not in visited_targets:
                 visited_targets.add(next_pos)
                 is_capture = target_piece is not None
@@ -82,7 +87,6 @@ def generate_reflecting_bishop_moves(board, color: Color, x: int, y: int, z: int
                     is_capture=is_capture
                 ))
 
-            # Stop ray at any piece
             if target_piece is not None:
                 break
 

@@ -4,11 +4,12 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import validate_piece_at
+from game3d.cache.manager import OptimizedCacheManager
 
 SEGMENT_LENGTH = 3
 
 def _zigzag_ray(
-    board,
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
     color: Color,
     start: tuple[int, int, int],
     plane: str,      # 'YZ', 'XZ', 'XY'
@@ -56,7 +57,7 @@ def _zigzag_ray(
             if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
                 return moves
 
-            occupant = cache.piece_cache.get(target)
+            occupant = cache.piece_cache.get(target)  # ← NOW cache is defined
             if occupant is not None:
                 if occupant.color != current_color:
                     moves.append(Move(from_coord=start, to_coord=target, is_capture=True))
@@ -69,13 +70,15 @@ def _zigzag_ray(
         move_axis_1 = not move_axis_1
 
 def generate_yz_zigzag_moves(
-    board,
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
     color: Color,
-    x: int, y: int, z: int
+    x: int,
+    y: int,
+    z: int
 ) -> List['Move']:
     """Generate all zig-zag moves in YZ, XZ, and XY planes."""
     start = (x, y, z)
-    if not validate_piece_at(board, color, start, PieceType.YZZIGZAG):
+    if not validate_piece_at(cache, color, start, PieceType.YZZIGZAG):  # ← cache, not board
         return []
 
     moves: List['Move'] = []
@@ -83,14 +86,14 @@ def generate_yz_zigzag_moves(
 
     # YZ plane (X fixed)
     for pri, sec in directions:
-        moves.extend(_zigzag_ray(board, color, start, 'YZ', pri, sec, x))
+        moves.extend(_zigzag_ray(cache, color, start, 'YZ', pri, sec, x))  # ← cache, not board
 
     # XZ plane (Y fixed)
     for pri, sec in directions:
-        moves.extend(_zigzag_ray(board, color, start, 'XZ', pri, sec, y))
+        moves.extend(_zigzag_ray(cache, color, start, 'XZ', pri, sec, y))  # ← cache, not board
 
     # XY plane (Z fixed)
     for pri, sec in directions:
-        moves.extend(_zigzag_ray(board, color, start, 'XY', pri, sec, z))
+        moves.extend(_zigzag_ray(cache, color, start, 'XY', pri, sec, z))  # ← cache, not board
 
     return moves

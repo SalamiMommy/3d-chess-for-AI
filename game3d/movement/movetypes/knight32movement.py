@@ -4,7 +4,7 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import validate_piece_at
 from game3d.movement.movepiece import Move  # ← Import Move
-
+from game3d.cache.manager import OptimizedCacheManager
 # 48 unique (3,2,1) permutations with all sign combinations
 VECTORS_32 = [
     # (3,2,1) family
@@ -27,12 +27,12 @@ VECTORS_32 = [
     (-1, 2, 3), (-1, 2, -3), (-1, -2, 3), (-1, -2, -3),
 ]
 
-def generate_knight32_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_knight32_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
     """Generate all (3,2,1) knight leaps."""
     start = (x, y, z)
 
     # Validate piece at start position
-    if not validate_piece_at(board, color, start, expected_type=PieceType.KNIGHT32):
+    if not validate_piece_at(cache, color, start, expected_type=PieceType.KNIGHT32):
         return []
 
     moves = []

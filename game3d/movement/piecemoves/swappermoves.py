@@ -11,8 +11,8 @@ from game3d.movement.movepiece import Move
 @register(PieceType.SWAPPER)
 def swapper_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """Combines king moves and swap moves for the Swapper piece."""
-    king_moves = generate_king_moves(state.board, state.color, x, y, z)
-    swap_moves = generate_swapper_moves(state.board, state.color, x, y, z)
+    king_moves = generate_king_moves(state.cache, state.color, x, y, z)
+    swap_moves = generate_swapper_moves(state.cache, state.color, x, y, z)
     return king_moves + swap_moves
 
 # Re-export for external use

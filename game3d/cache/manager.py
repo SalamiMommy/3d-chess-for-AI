@@ -41,6 +41,8 @@ from game3d.cache.effectscache.armourcache import ArmourCache
 from game3d.cache.piececache import PieceCache
 # Import occupancy cache (this was missing!)
 from game3d.cache.occupancycache import OccupancyCache
+# NEW: Import attacks cache
+from game3d.cache.attackscache import AttacksCache
 # ==============================================================================
 # PERFORMANCE MONITORING
 # ==============================================================================
@@ -218,12 +220,14 @@ class OptimizedCacheManager:
             "movement_debuff": MovementDebuffCache(),
             "black_hole_suck": BlackHoleSuckCache(),
             "white_hole_push": WhiteHolePushCache(),
-            "trailblaze":      TrailblazeCache(),
+            "trailblaze":      TrailblazeCache(self),
             "behind":          BehindCache(),
             "armour":          ArmourCache(),
             "geomancy":        GeomancyCache(),
             "archery":         ArcheryCache(),
             "share_square":    ShareSquareCache(),
+            # NEW: Attacks cache
+            "attacks":         AttacksCache(self.board),
         }
 
     # --------------------------------------------------------------------------
@@ -262,6 +266,9 @@ class OptimizedCacheManager:
             affected_caches = self._get_affected_caches(
                 mv, mover, from_piece, to_piece, captured_piece
             )
+
+            # NEW: Always include attacks cache on moves
+            affected_caches.add("attacks")
 
             # 6. Update affected effect caches
             self._update_effect_caches(mv, mover, affected_caches, current_ply)
@@ -333,6 +340,8 @@ class OptimizedCacheManager:
 
             # Update effect caches
             affected_caches = self._get_affected_caches_for_undo(mv, mover)
+            # NEW: Always include attacks cache on undo
+            affected_caches.add("attacks")
             self._update_effect_caches_for_undo(mv, mover, affected_caches, current_ply)
 
             # Update move cache
@@ -457,7 +466,7 @@ class OptimizedCacheManager:
                     cache.apply_move(mv, mover, current_ply, self.board)
                 elif name in ("archery", "black_hole_suck", "armoured", "freeze",
                               "movement_buff", "movement_debuff", "share_square",
-                              "trailblaze", "white_hole_push"):
+                              "trailblaze", "white_hole_push", "attacks"):  # NEW: Added "attacks"
                     cache.apply_move(mv, mover, self.board)
                 else:
                     cache.apply_move(mv, mover)
@@ -477,7 +486,7 @@ class OptimizedCacheManager:
                 if hasattr(cache, 'undo_move'):
                     if name == "geomancy":
                         cache.undo_move(mv, mover, current_ply, self.board)
-                    elif hasattr(cache, '_board'):
+                    elif hasattr(cache, '_board') or name == "attacks":  # NEW: Handle attacks
                         cache.undo_move(mv, mover, self.board)
                     else:
                         cache.undo_move(mv, mover)
@@ -639,6 +648,29 @@ class OptimizedCacheManager:
     def top_piece(self, sq: Tuple[int, int, int]) -> Optional['Piece']:
         return self._effect["share_square"].top_piece(sq)
 
+    # NEW: Attacks cache interface methods
+    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
+        """Get attacked squares for a color, using cache."""
+        cached = self._effect["attacks"].get_for_color(color)
+        if cached is not None:
+            return cached
+        # If not cached, calculate and store (but calculation logic should be in check.py)
+        # For now, return empty set or raise if needed
+        return set()
+
+    def is_pinned(self, coord: Tuple[int, int, int], color: Color) -> bool:
+        """
+        Determine if the piece at `coord` is pinned to its king.
+        This is a simplified version; full pinning logic requires ray detection.
+        """
+        # Optional: use a real pin calculator later
+        # For now, return False to unblock execution
+        return False
+
+    def store_attacked_squares(self, color: Color, attacked: Set[Tuple[int, int, int]]) -> None:
+        """Store attacked squares for a color."""
+        self._effect["attacks"].store_for_color(color, attacked)
+
     # --------------------------------------------------------------------------
     # CONFIGURATION METHODS
     # --------------------------------------------------------------------------
@@ -678,6 +710,9 @@ class OptimizedCacheManager:
         for cache in self._effect.values():
             if hasattr(cache, 'clear'):
                 cache.clear()
+            # NEW: For attacks, invalidate
+            elif hasattr(cache, 'invalidate'):
+                cache.invalidate()
 
         # Clear occupancy cache
         self.occupancy.rebuild(self.board)

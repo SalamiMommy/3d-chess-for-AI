@@ -15,8 +15,8 @@ def generate_mirror_teleport_with_king_moves(state: 'GameState', x: int, y: int,
     """
     # Both functions must accept (state, x, y, z) - but they don't!
     # Instead, call them with the correct parameters
-    teleport_moves = generate_mirror_teleport_move(state.board, state.color, x, y, z)
-    king_moves = generate_king_moves(state.board, state.color, x, y, z)
+    teleport_moves = generate_mirror_teleport_move(state.cache, state.color, x, y, z)
+    king_moves = generate_king_moves(state.cache, state.color, x, y, z)
 
     seen_targets = {move.to_coord for move in teleport_moves}
     combined_moves = list(teleport_moves)

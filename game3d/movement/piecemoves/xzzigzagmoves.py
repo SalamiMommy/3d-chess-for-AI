@@ -11,4 +11,4 @@ __all__ = ['generate_xz_zigzag_moves']
 
 @register(PieceType.XZZIGZAG)
 def xz_zigzag_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_xz_zigzag_moves(state.board, state.color, x, y, z)
+    return generate_xz_zigzag_moves(state.cache, state.color, x, y, z)

@@ -11,16 +11,14 @@ from game3d.common.common import (
     SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_TOTAL_PLANES,
     N_COLOR_PLANES, N_PLANES_PER_SIDE, X, Y, Z,
     Coord, in_bounds, coord_to_idx, idx_to_coord,
-    hash_board_tensor
+    hash_board_tensor, WHITE_SLICE, BLACK_SLICE, CURRENT_SLICE
 )
 from game3d.pieces.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
 from game3d.movement.movepiece import Move
 
-WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
-BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
-CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
+
 
 class Board:
     """Thin wrapper around a single tensor of shape (N_TOTAL_PLANES, 9, 9, 9)."""
@@ -35,9 +33,11 @@ class Board:
                 raise ValueError("Board tensor must be (C,9,9,9)")
             self._tensor = tensor
         self._hash: Optional[int] = None
-        self.symmetry_manager = SymmetryManager()
         self._occupancy_mask: Optional[torch.Tensor] = None
         self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
+
+        # CRITICAL: Lazy symmetry manager
+        self.symmetry_manager = None  # Don't initialize here!
 
     def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
         """Get all symmetric variants of current board position."""
@@ -160,7 +160,6 @@ class Board:
         white_vec = self._tensor[WHITE_SLICE, z, y, x]
         black_vec = self._tensor[BLACK_SLICE, z, y, x]
 
-        # Optimized: Use torch.max instead of mask and nonzero
         white_max, white_idx = torch.max(white_vec, dim=0)
         if white_max == 1.0:
             return Piece(Color.WHITE, PieceType(white_idx.item()))
@@ -206,9 +205,14 @@ class Board:
         return iter(self._occupied_list)
 
     def clone(self) -> Board:
-        clone = Board(self._tensor.clone())
-        clone._occupancy_mask = self._occupancy_mask.clone() if self._occupancy_mask is not None else None
-        clone._occupied_list = self._occupied_list[:] if self._occupied_list is not None else None
+        clone = Board.__new__(Board)
+        clone._tensor = self._tensor.clone()
+        clone._hash = self._hash
+        clone.symmetry_manager = None  # Don't copy!
+
+        # Don't clone caches - rebuild lazily
+        clone._occupancy_mask = None
+        clone._occupied_list = None
         return clone
 
     def share_memory_(self) -> Board:

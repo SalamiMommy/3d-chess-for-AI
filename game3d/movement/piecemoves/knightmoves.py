@@ -6,10 +6,10 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.knightmovement import generate_knight_moves
 from game3d.movement.movepiece import Move
 
+# Re-export core function for external use (e.g., AI, UI, testing)
+__all__ = ['generate_knight_moves']
+
+
 @register(PieceType.KNIGHT)
 def knight_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    # ✅ Pass cache as second argument
-    return generate_knight_moves(state.board, state.cache, state.color, x, y, z)
-
-# Re-export for external use
-__all__ = ['generate_knight_moves']
+    return generate_knight_moves(state, x, y, z)

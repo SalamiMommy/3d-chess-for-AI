@@ -2,6 +2,7 @@
 # main.py  (COMPLETE FILE)
 # ---------------------------------------------------------
 import argparse
+import torch
 from models.resnet3d import OptimizedResNet3D as ResNet3D
 from training.optim_train import load_or_init_model, train_model
 from training.self_play import play_game
@@ -19,6 +20,12 @@ def main():
 
     if args.mode == "train":
         net, optimizer, start_epoch, start_step = load_or_init_model()
+
+        # ✅ ADD THIS: Move model to GPU
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        net = net.to(device)
+        print(f"Using device: {device}")
+
         examples = play_game(net, mcts_depth=args.mcts_depth)
         train_model(net, optimizer, examples, start_epoch, start_step)
     else:

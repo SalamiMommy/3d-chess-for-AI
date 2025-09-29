@@ -20,6 +20,7 @@ from game3d.pieces.enums import Color, Result
 from game3d.common.common import N_TOTAL_PLANES, SIZE_X, SIZE_Y, SIZE_Z
 from models.resnet3d import OptimizedResNet3D, LightweightResNet3D
 from game3d.policy_encoder import MoveEncoder
+from game3d.movement.movepiece import Move
 # ==============================================================================
 # CHESS DATASET FOR TRAINING
 # ==============================================================================
@@ -127,12 +128,25 @@ class ChessLoss(nn.Module):
         # Value loss
         self.value_loss = nn.MSELoss()
 
-    def forward(self, policy_pred: torch.Tensor, value_pred: torch.Tensor,
-                policy_target: torch.Tensor, value_target: torch.Tensor,
-                game_phase: torch.Tensor) -> tuple[torch.Tensor, Dict[str, float]]:
-
-        # Policy loss (soft cross-entropy for probabilities)
-        policy_loss = - (policy_target * F.log_softmax(policy_pred, dim=1)).sum(dim=1).mean()
+    def forward(
+        self,
+        from_logits: torch.Tensor,      # (B, 729)
+        to_logits: torch.Tensor,        # (B, 729)
+        legal_from_indices: List[torch.Tensor],  # list of (n_legal,)
+        legal_to_indices: List[torch.Tensor],    # list of (n_legal,)
+        policy_targets: List[torch.Tensor],      # list of (n_legal,) target probs
+        value_pred: torch.Tensor,
+        value_target: torch.Tensor,
+        game_phase: torch.Tensor
+    ) -> torch.Tensor:
+        policy_loss = 0.0
+        for i in range(len(legal_from_indices)):
+            # Compute logits for legal moves
+            logits = from_logits[i][legal_from_indices[i]] + to_logits[i][legal_to_indices[i]]
+            targets = policy_targets[i]
+            loss = -(targets * F.log_softmax(logits, dim=0)).sum()
+            policy_loss += loss
+        policy_loss /= len(legal_from_indices)
 
         # Value loss with phase-based weighting
         # Middle game gets higher weight than opening/endgame
@@ -149,7 +163,7 @@ class ChessLoss(nn.Module):
             'value_loss': value_loss.item(),
         }
 
-        return total_loss, loss_dict
+        return total_loss
 
 class PolicyDistillationLoss(nn.Module):
     """Policy distillation for transfer learning between models."""
@@ -589,36 +603,46 @@ class SelfPlayGenerator:
         while not state.is_game_over() and move_count < max_moves:
             state_tensor = state.to_tensor().unsqueeze(0).to(self.device)
             with torch.no_grad():
-                policy_logits, value_pred, *_ = self.model(state_tensor)
-                policy_logits = policy_logits / self.temperature
+                # Get separate from/to logits
+                from_logits, to_logits, value_pred, *_ = self.model(state_tensor)
+                from_logits = from_logits / self.temperature
+                to_logits = to_logits / self.temperature
 
             legal_moves = state.legal_moves()
             if not legal_moves:
                 break
 
-            # 1. logits → probs over *legal* moves
-            legal_indices = [self.move_encoder.move_to_index(m) for m in legal_moves]
-            legal_logits = policy_logits[0, legal_indices]
-            legal_probs = torch.softmax(legal_logits, dim=0)   # <-- this is the tensor to use
+            # Compute combined logits for legal moves
+            legal_move_logits = []
+            legal_from_indices = []
+            legal_to_indices = []
 
-            # 2. (optional) MCTS override
-            if self.mcts_depth > 0:
-                # legal_probs = run_mcts(...)   # when you implement MCTS
-                pass
+            for move in legal_moves:
+                from_idx = self.move_encoder.coord_to_index(move.from_coord)  # 0-728
+                to_idx = self.move_encoder.coord_to_index(move.to_coord)      # 0-728
+                combined_logit = from_logits[0, from_idx] + to_logits[0, to_idx]
+                legal_move_logits.append(combined_logit)
+                legal_from_indices.append(from_idx)
+                legal_to_indices.append(to_idx)
 
-            # 3. sample
+            legal_move_logits = torch.stack(legal_move_logits)
+            legal_probs = F.softmax(legal_move_logits, dim=0)
+
+            # Sample move
             move_idx = torch.multinomial(legal_probs, num_samples=1).item()
             move = legal_moves[move_idx]
 
-            # 4. build full 531441-vector target
-            full_policy_target = torch.zeros(531_441, dtype=torch.float32, device=self.device)
-            full_policy_target[legal_indices] = legal_probs
+            # Create full policy target (531,441) for training
+            full_policy_target = torch.zeros(531_441, dtype=torch.float32)
+            for i, (from_idx, to_idx) in enumerate(zip(legal_from_indices, legal_to_indices)):
+                move_idx_full = from_idx * 729 + to_idx  # Convert to flat index
+                full_policy_target[move_idx_full] = legal_probs[i].cpu()
 
             player_sign = 1.0 if state.color == Color.WHITE else -1.0
             examples.append(TrainingExample(
                 state_tensor=state.to_tensor(),
-                policy_target=full_policy_target.cpu(),
-                value_target=value_pred.item(),   # patched later when game ends
+                policy_target=full_policy_target,
+                value_target=value_pred.item(),
                 game_phase=self._estimate_game_phase(state),
                 player_sign=player_sign
             ))
@@ -626,7 +650,7 @@ class SelfPlayGenerator:
             state = state.make_move(move)
             move_count += 1
 
-        # retro-fix value targets
+        # Update value targets with final outcome
         final_outcome = state.outcome()
         for ex in examples:
             ex.value_target = final_outcome * ex.player_sign
@@ -661,6 +685,24 @@ class SelfPlayGenerator:
             pieces_remaining = sum(1 for _ in state.board.list_occupied())
             return min(move_count / 100.0, 1.0) * 0.5 + (1 - min(pieces_remaining / 50.0, 1.0)) * 0.5  # Inverted for endgame
 
+
+    def compute_move_logits(from_logits: torch.Tensor, to_logits: torch.Tensor, legal_moves: List[Move]) -> torch.Tensor:
+        """
+        Compute logits for legal moves using factorized policy.
+        Args:
+            from_logits: (729,)
+            to_logits:   (729,)
+            legal_moves: list of Move objects
+        Returns:
+            move_logits: (n_legal,)
+        """
+        move_logits = []
+        for move in legal_moves:
+            f_idx = move_encoder.move_from_to_index(move.from_coord)  # 0..728
+            t_idx = move_encoder.move_from_to_index(move.to_coord)    # 0..728
+            logit = from_logits[f_idx] + to_logits[t_idx]
+            move_logits.append(logit)
+        return torch.stack(move_logits) if move_logits else torch.tensor([])
 # ==============================================================================
 # TRAINING PIPELINE
 # ==============================================================================

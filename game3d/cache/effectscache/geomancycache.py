@@ -3,7 +3,6 @@
 from __future__ import annotations
 from typing import Dict, Tuple
 from game3d.pieces.enums import Color
-from game3d.board.board import Board
 from game3d.effects.geomancy import block_candidates
 from game3d.movement.movepiece import Move
 

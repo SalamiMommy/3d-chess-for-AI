@@ -155,49 +155,22 @@ class AttentionBlock3D(nn.Module):
         return x
 
 class OptimizedPolicyHead(nn.Module):
-    """Optimized policy head with spatial attention and multiple output formats."""
-
     def __init__(self, in_channels: int, n_moves: int):
         super().__init__()
-
-        # Feature extraction with attention
-        self.conv1 = nn.Conv3d(in_channels, 128, 1, bias=False)
-        self.norm1 = GroupNorm3D(128)
-        self.attention = AttentionBlock3D(128)
-
-        # Multi-scale feature extraction
-        self.conv3 = nn.Conv3d(128, 64, 3, padding=1, bias=False)
-        self.conv5 = nn.Conv3d(128, 64, 5, padding=2, bias=False)
-        self.conv7 = nn.Conv3d(128, 64, 7, padding=3, bias=False)
-
-        # Final feature combination
-        self.final_conv = nn.Conv3d(192, 32, 1, bias=False)  # 64*3 = 192
-        self.norm_final = GroupNorm3D(32)
-
-        # Policy output
-        self.fc_policy = nn.Linear(32 * SIZE * SIZE * SIZE, n_moves)
-
-        # Optional: add spatial policy output for move probabilities per square
-        self.spatial_conv = nn.Conv3d(32, 1, 1, bias=False)
+        self.n_move_types = n_move_types
+        # Predict move type logits per spatial location
+        self.conv = nn.Conv3d(in_channels, n_move_types, kernel_size=1, bias=False)
+        self.norm = GroupNorm3D(n_move_types)
+        self.fc_from = nn.Linear(32 * SIZE * SIZE * SIZE, 729)  # From squares
+        self.fc_to = nn.Linear(32 * SIZE * SIZE * SIZE, 729)    # To squares
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Initial feature extraction
-        x = F.relu(self.norm1(self.conv1(x)))
-        x = self.attention(x)
 
-        # Multi-scale features
-        feat3 = F.relu(self.conv3(x))
-        feat5 = F.relu(self.conv5(x))
-        feat7 = F.relu(self.conv7(x))
-
-        # Combine multi-scale features
-        combined = torch.cat([feat3, feat5, feat7], dim=1)
-        x = F.relu(self.norm_final(self.final_conv(combined)))
-
-        # Global average pooling for policy
-        policy_logits = self.fc_policy(x.view(x.size(0), -1))
-
-        return F.log_softmax(policy_logits, dim=1)
+        x = self.norm(self.conv(x))  # (B, 28, 9, 9, 9)
+        x_flat = x.view(x.size(0), -1)
+        from_logits = self.fc_from(x_flat)
+        to_logits = self.fc_to(x_flat)
+        return from_logits, to_logits
 
 class OptimizedValueHead(nn.Module):
     """Optimized value head with uncertainty estimation."""
@@ -274,7 +247,7 @@ class OptimizedResNet3D(nn.Module):
         self.global_attention = AttentionBlock3D(channels)
 
         # Heads
-        self.policy_head = OptimizedPolicyHead(channels, n_moves)
+        self.policy_head = FactorizedPolicyHead(channels)
         self.value_head = OptimizedValueHead(channels)
 
         # Initialize weights properly
@@ -306,14 +279,16 @@ class OptimizedResNet3D(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-            x = self.relu(self.bn1(self.in_conv(x)))
-            x = self.maxpool(x)
-            x = self.layer1(x)
-            x = self.global_attention(x)
-            policy = self.policy_head(x)
-            value, uncertainty = self.value_head(x)
-            return policy, value, uncertainty  # uncertainty can be ignored
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        x = self.relu(self.bn1(self.in_conv(x)))
+        x = self.maxpool(x)
+        x = self.layer1(x)
+        x = self.global_attention(x)
+
+        # NEW: factorized policy
+        from_logits, to_logits = self.policy_head(x)
+        value, uncertainty = self.value_head(x)
+        return from_logits, to_logits, value, uncertainty
 
 # ==============================================================================
 # LIGHTWEIGHT VERSION FOR FASTER INFERENCE
@@ -361,6 +336,33 @@ class LightweightResNet3D(nn.Module):
 
         return policy, value
 
+
+class FactorizedPolicyHead(nn.Module):
+    """Outputs separate 'from' and 'to' logits (729 each)."""
+
+    def __init__(self, in_channels: int):
+        super().__init__()
+        # Shared feature extractor
+        self.conv = nn.Conv3d(in_channels, 32, kernel_size=1, bias=False)
+        self.norm = GroupNorm3D(32)
+
+        # From head
+        self.from_conv = nn.Conv3d(32, 1, kernel_size=1, bias=False)
+        # To head
+        self.to_conv = nn.Conv3d(32, 1, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            from_logits: (B, 729)
+            to_logits:   (B, 729)
+        """
+        x = F.relu(self.norm(self.conv(x)))  # (B, 32, 9,9,9)
+
+        from_logits = self.from_conv(x).view(x.size(0), -1)  # (B, 729)
+        to_logits = self.to_conv(x).view(x.size(0), -1)      # (B, 729)
+
+        return from_logits, to_logits
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================

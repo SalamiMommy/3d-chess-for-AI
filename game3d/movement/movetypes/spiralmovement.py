@@ -4,7 +4,7 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import validate_piece_at
 from game3d.movement.movepiece import Move  # Ensure Move is imported!
-
+from game3d.cache.manager import OptimizedCacheManager
 # Precomputed spiral offsets per face direction
 _SPIRAL_PATTERNS = {
     (1, 0, 0):  [(1, (0, 0)), (2, (0, 1)), (3, (-1, 1)), (4, (-1, 0)), (5, (-1, -1)), (6, (0, -1)), (7, (1, -1)), (8, (1, 0))],
@@ -15,12 +15,12 @@ _SPIRAL_PATTERNS = {
     (0, 0, -1): [(1, (0, 0)), (2, (-1, 0)), (3, (-1, 1)), (4, (0, 1)), (5, (1, 1)), (6, (1, 0)), (7, (1, -1)), (8, (0, -1))],
 }
 
-def generate_spiral_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_spiral_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
     """Generate spiral moves: 6 rays (one per face), each rotating CCW with radius 2."""
     start = (x, y, z)
 
     # Validate piece at start
-    if not validate_piece_at(board, color, start, expected_type=PieceType.SPIRAL):
+    if not validate_piece_at(cache, color, start, expected_type=PieceType.SPIRAL):
         return []
 
     moves: List[Move] = []

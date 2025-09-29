@@ -52,3 +52,7 @@ class MoveEncoder:
         tz = to_idx // 81
 
         return (fx, fy, fz), (tx, ty, tz)
+
+    def coord_to_index(self, coord: tuple[int, int, int]) -> int:
+        x, y, z = coord
+        return z * 81 + y * 9 + x  # 0..728

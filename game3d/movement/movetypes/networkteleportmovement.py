@@ -4,6 +4,7 @@ from typing import List, Set
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds, add_coords
+from game3d.cache.manager import OptimizedCacheManager
 
 # Precomputed 26 3D neighbor directions
 _NEIGHBOR_DIRECTIONS = [
@@ -15,9 +16,11 @@ _NEIGHBOR_DIRECTIONS = [
 ]
 
 def generate_network_teleport_moves(
-    board,
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
     color: Color,
-    x: int, y: int, z: int
+    x: int,
+    y: int,
+    z: int
 ) -> List['Move']:
     """
     Generate all teleport moves to empty squares adjacent to ANY friendly piece.
@@ -34,7 +37,7 @@ def generate_network_teleport_moves(
     candidate_targets: Set[tuple] = set()
 
     # ✅ Only iterate over occupied squares (not entire board!)
-    for pos, other_piece in board.list_occupied():
+    for pos, other_piece in cache.board.list_occupied():  # ← cache.board, not board
         if other_piece.color == current_color:  # friendly piece
             for dx, dy, dz in _NEIGHBOR_DIRECTIONS:
                 target = (pos[0] + dx, pos[1] + dy, pos[2] + dz)

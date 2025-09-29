@@ -13,9 +13,9 @@ __all__ = ['generate_freezer_moves']
 
 @register(PieceType.FREEZER)
 def freezer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_king_moves(state.board, state.color, x, y, z)
+    return generate_king_moves(state.cache, state.color, x, y, z)
 
 
 def generate_freezer_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """Alias for king moves since Freezer uses the same movement pattern."""
-    return generate_king_moves(state.board, state.color, x, y, z)
+    return generate_king_moves(state.cache, state.color, x, y, z)

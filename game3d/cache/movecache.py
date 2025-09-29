@@ -18,7 +18,6 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.movement.registry import get_dispatcher
 from game3d.attacks.check import king_in_check
-from game3d.board.board import Board
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.symmetry_tt import SymmetryAwareTranspositionTable
@@ -31,14 +30,19 @@ from game3d.common.common import in_bounds
 # ==============================================================================
 
 class ZobristHashing:
-    """High-performance Zobrist hashing for 3D chess positions."""
+    _piece_keys = None
+    _initialized = False
 
     def __init__(self):
-        # Generate high-quality random numbers for each piece-square combination
-        self.piece_keys = self._generate_piece_keys()
-        self.side_to_move_key = random.getrandbits(64)
-        self.castling_keys = [random.getrandbits(64) for _ in range(16)]  # 4 castling rights
-        self.en_passant_keys = [random.getrandbits(64) for _ in range(9)]  # 9 files
+        if not ZobristHashing._initialized:
+            ZobristHashing._piece_keys = self._generate_piece_keys()
+            ZobristHashing._side_to_move_key = random.getrandbits(64)
+            ZobristHashing._castling_keys = [random.getrandbits(64) for _ in range(16)]
+            ZobristHashing._en_passant_keys = [random.getrandbits(64) for _ in range(9)]
+            ZobristHashing._initialized = True
+
+        self.piece_keys = ZobristHashing._piece_keys
+        self.side_to_move_key = ZobristHashing._side_to_move_key
 
     def _generate_piece_keys(self) -> Dict[Tuple[Color, PieceType, Tuple[int, int, int]], int]:
         """Generate random keys for all piece-position combinations."""
@@ -486,8 +490,7 @@ class OptimizedMoveCache:
         tmp_state.cache = self._cache
         pseudo = dispatcher(tmp_state, *coord)
 
-        # Filter valid moves
-        pseudo = [m for m in pseudo if m.from_coord == coord]
+        pseudo = piece_moves
 
         # Fast path for priest-present scenarios
         if self._has_priest[piece.color]:
@@ -749,9 +752,7 @@ class OptimizedMoveCache:
 
         # Generate pseudo-legal moves
         pseudo = dispatcher(tmp_state, *coord)
-
-        # Filter for valid moves from this position
-        pseudo = [m for m in pseudo if m.from_coord == coord]
+        pseudo = piece_moves
 
         # Fast path if priests are present
         if self._has_priest[piece.color]:

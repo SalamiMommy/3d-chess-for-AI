@@ -79,19 +79,12 @@ def compute_zobrist(board: Board, color: Color) -> int:
     _init_zobrist()  # Ensure initialized
 
     zkey = 0
-    for x in range(SIZE_X):
-        for y in range(SIZE_Y):
-            for z in range(SIZE_Z):
-                piece = cache.piece_cache.get((x, y, z))
-                if piece is not None:
-                    zkey ^= _PIECE_KEYS[(piece.ptype, piece.color, (x, y, z))]
+    # Use board.list_occupied() instead of cache
+    for coord, piece in board.list_occupied():
+        zkey ^= _PIECE_KEYS[(piece.ptype, piece.color, coord)]
 
     if color == Color.BLACK:
         zkey ^= _SIDE_KEY
-
-    # Add en passant and castling if applicable (stub)
-    # zkey ^= _EN_PASSANT_KEYS[en_passant_sq] if en_passant_sq else 0
-    # zkey ^= _CASTLE_KEYS[castling_rights]
 
     return zkey
 
@@ -226,7 +219,7 @@ class GameState:
             # CRITICAL: Validate cached moves before returning
             return self._validate_legal_moves(self._legal_moves_cache)
 
-        from game3d.movement.legal import generate_legal_moves
+        from game3d.movement.generator import generate_legal_moves
         moves = generate_legal_moves(self)
 
         # CRITICAL: Validate moves immediately after generation
@@ -386,7 +379,7 @@ class GameState:
         all_hole_moves = {**pull_map, **push_map}
 
         for from_sq, to_sq in all_hole_moves.items():
-            piece = cache.piece_cache.get(from_sq)
+            piece = self.cache.piece_cache.get(from_sq)
             if piece and piece.color == enemy_color:
                 moved_pieces.append((from_sq, to_sq, piece))
                 board.set_piece(to_sq, piece)
@@ -401,7 +394,7 @@ class GameState:
         # Handle captured bomb explosion
         if captured_piece and captured_piece.ptype == PieceType.BOMB and captured_piece.color == enemy_color:
             for sq in detonate(board, mv.to_coord):
-                piece = cache.piece_cache.get(sq)
+                piece = self.cache.piece_cache.get(sq)
                 if piece:
                     removed_pieces.append((sq, piece))
                 board.set_piece(sq, None)
@@ -410,7 +403,7 @@ class GameState:
         if (moving_piece.ptype == PieceType.BOMB and
             getattr(mv, 'is_self_detonate', False)):
             for sq in detonate(board, mv.to_coord):
-                piece = cache.piece_cache.get(sq)
+                piece = self.cache.piece_cache.get(sq)
                 if piece:
                     removed_pieces.append((sq, piece))
                 board.set_piece(sq, None)

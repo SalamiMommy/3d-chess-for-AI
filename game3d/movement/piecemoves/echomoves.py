@@ -25,4 +25,4 @@ __all__ = [
 
 @register(PieceType.ECHO)
 def echo_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_echo_moves(state.board, state.color, x, y, z)
+    return generate_echo_moves(state.cache, state.color, x, y, z)

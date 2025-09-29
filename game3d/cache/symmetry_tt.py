@@ -11,7 +11,6 @@ from game3d.cache.transposition import TranspositionTable, TTEntry
 from game3d.cache.transposition import CompactMove
 from game3d.board.symmetry import SymmetryManager
 from game3d.pieces.enums import Color
-from game3d.board.board import Board
 from typing import Dict, Any
 # ==============================================================================
 # OPTIMIZATION CONSTANTS

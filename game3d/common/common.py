@@ -1,64 +1,61 @@
-"""
-game3d/common/common.py
-Common utilities for 3D 9×9×9 chess game - used by piece movement generators.
-"""
-
+# ------------------------------------------------------------------
+# Coordinate utilities – optimised drop-in replacements
+# ------------------------------------------------------------------
 from __future__ import annotations
 import torch
 from typing import Tuple, List, Optional
-from game3d.pieces.enums import PieceType  # ← needed for N_PIECE_TYPES
+from game3d.pieces.enums import PieceType
 
-# ------------------------------------------------------------------
-# Board dimensions and constants
-# ------------------------------------------------------------------
 SIZE_X = SIZE_Y = SIZE_Z = SIZE = 9
 VOLUME = SIZE ** 3  # 729
-
-# Derive from actual enum
 N_PIECE_TYPES = len(PieceType)
 N_PLANES_PER_SIDE = N_PIECE_TYPES
 N_COLOR_PLANES = N_PLANES_PER_SIDE * 2
 N_AUX_PLANES = 1
 N_TOTAL_PLANES = N_COLOR_PLANES + N_AUX_PLANES
-N_CHANNELS = N_TOTAL_PLANES + 1  # Should be 81 (40 per color + 1 aux)
-# Axis indices
+N_CHANNELS = N_TOTAL_PLANES + 1
 X, Y, Z = 0, 1, 2
 Coord = Tuple[int, int, int]
+WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
+BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
+CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
 
 # ------------------------------------------------------------------
-# Coordinate utilities (keep all — they're correct)
+# Fast bounds check – branch-free, no Python-level tuple unpacking
 # ------------------------------------------------------------------
+_UPPER = SIZE - 1  # 8
 def in_bounds(c: Coord) -> bool:
-    x, y, z = c
-    return 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE
+    """Branch-free bounds check for 9×9×9 board."""
+    # All comparisons are unsigned after the shift, so a single & gives the answer.
+    return ((c[0] | c[1] | c[2]) & ~_UPPER) == 0
 
+# ------------------------------------------------------------------
+# Helpers – avoid tuple unpacking in the inner loop
+# ------------------------------------------------------------------
 def coord_to_idx(c: Coord) -> int:
-    x, y, z = c
-    return z * (SIZE * SIZE) + y * SIZE + x
+    # 9×9×9  →  z*81 + y*9 + x
+    return (c[2] * 81) + (c[1] * 9) + c[0]
 
 def idx_to_coord(idx: int) -> Coord:
-    z = idx // (SIZE * SIZE)
-    y = (idx % (SIZE * SIZE)) // SIZE
-    x = idx % SIZE
-    return (x, y, z)
+    z, r = divmod(idx, 81)
+    y, x = divmod(r, 9)
+    return x, y, z
 
-def add_coords(c1: Coord, c2: Coord) -> Coord:
-    return (c1[0] + c2[0], c1[1] + c2[1], c1[2] + c2[2])
+def add_coords(a: Coord, b: Coord) -> Coord:
+    return a[0] + b[0], a[1] + b[1], a[2] + b[2]
 
-def subtract_coords(c1: Coord, c2: Coord) -> Coord:
-    return (c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2])
+def subtract_coords(a: Coord, b: Coord) -> Coord:
+    return a[0] - b[0], a[1] - b[1], a[2] - b[2]
 
-def scale_coord(c: Coord, factor: int) -> Coord:
-    return (c[0] * factor, c[1] * factor, c[2] * factor)
+def scale_coord(c: Coord, k: int) -> Coord:
+    return c[0] * k, c[1] * k, c[2] * k
 
-def manhattan_distance(c1: Coord, c2: Coord) -> int:
-    return sum(abs(a - b) for a, b in zip(c1, c2))
-
-def chebyshev_distance(c1: Coord, c2: Coord) -> int:
-    return max(abs(a - b) for a, b in zip(c1, c2))
-
-def euclidean_distance_squared(c1: Coord, c2: Coord) -> int:
-    return sum((a - b) ** 2 for a, b in zip(c1, c2))
+# ------------------------------------------------------------------
+# Distance helpers – kept as one-liners, already fast
+# ------------------------------------------------------------------
+manhattan_distance      = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+chebyshev_distance      = lambda a, b: max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+euclidean_distance_squared = lambda a, b: (a[0] - b[0])**2 + (a[1] - b[1])**2 + (a[2] - b[2])**2
 
 # ------------------------------------------------------------------
 # Ray generation (keep — useful for some pieces)

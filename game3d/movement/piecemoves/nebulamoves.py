@@ -19,4 +19,4 @@ __all__ = [
 
 @register(PieceType.NEBULA)
 def nebula_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_nebula_moves(state.board, state.color, x, y, z)
+    return generate_nebula_moves(state.cache, state.color, x, y, z)

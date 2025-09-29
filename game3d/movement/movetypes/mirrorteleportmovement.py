@@ -4,9 +4,10 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.movement.pathvalidation import validate_piece_at
+from game3d.cache.manager import OptimizedCacheManager
 
 def generate_mirror_teleport_move(
-    board,
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
     color: Color,
     x: int, y: int, z: int
 ) -> List['Move']:
@@ -20,7 +21,7 @@ def generate_mirror_teleport_move(
     """
     start = (x, y, z)
 
-    if not validate_piece_at(board, color, start, PieceType.MIRROR):
+    if not validate_piece_at(cache, color, start, PieceType.MIRROR):  # ← cache, not board
         return []
 
     target = (8 - x, 8 - y, 8 - z)
@@ -29,7 +30,7 @@ def generate_mirror_teleport_move(
     if start == target:
         return []
 
-    target_piece = cache.piece_cache.get(target)
+    target_piece = cache.piece_cache.get(target)  # ← cache, not board
 
     # Cannot land on friendly pieces
     if target_piece is not None and target_piece.color == color:

@@ -5,13 +5,20 @@ from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
+from game3d.cache.manager import OptimizedCacheManager
 
-def generate_xz_queen_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_xz_queen_moves(
+    cache: OptimizedCacheManager,  # ← Already correct
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List['Move']:
     """Generate all legal XZ-QUEEN moves from (x, y, z)."""
     start = (x, y, z)
 
     # Validate piece at start
-    if not validate_piece_at(board, color, start, PieceType.XZQUEEN):
+    if not validate_piece_at(cache, color, start, PieceType.XZQUEEN):
         return []
 
     # 8 directions in XZ-plane (Y fixed)
@@ -23,7 +30,7 @@ def generate_xz_queen_moves(board, color: Color, x: int, y: int, z: int) -> List
     ])
 
     return slide_along_directions(
-        board=board,
+        cache=cache,  # ✅ FIXED: cache, not board
         color=color,
         start=start,
         directions=directions,

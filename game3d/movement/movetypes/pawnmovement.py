@@ -1,9 +1,8 @@
-# In pawnmovement.py
 from typing import List
-from game3d.pieces.enums import PieceType, Color
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds
+from game3d.cache.manager import OptimizedCacheManager
 
 def _is_on_start_rank(z: int, color: Color) -> bool:
     return (color == Color.WHITE and z == 1) or (color == Color.BLACK and z == 7)
@@ -26,7 +25,7 @@ def _create_pawn_move(
     )
 
 def generate_pawn_moves(
-    board,           # ← just the board
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
     color: Color,    # ← current player color
     x: int, y: int, z: int
 ) -> List['Move']:

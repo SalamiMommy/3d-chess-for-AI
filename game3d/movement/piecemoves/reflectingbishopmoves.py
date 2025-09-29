@@ -8,7 +8,6 @@ from game3d.movement.movepiece import Move
 
 @register(PieceType.REFLECTOR)
 def reflecting_bishop_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_reflecting_bishop_moves(state.board, state.color, x, y, z)
-
+    return generate_reflecting_bishop_moves(state.cache, state.color, x, y, z)  # ← PASS CACHE
 
 __all__ = ['generate_reflecting_bishop_moves']

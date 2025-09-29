@@ -8,7 +8,6 @@ import weakref
 import math
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.board.board import Board
 from game3d.effects.archery import archery_targets
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece

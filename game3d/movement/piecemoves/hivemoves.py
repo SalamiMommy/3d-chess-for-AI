@@ -11,7 +11,7 @@ generate_hive_moves = generate_king_moves  # alias
 
 @register(PieceType.HIVE)
 def hive_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_hive_moves(state.board, state.color, x, y, z)
+    return generate_hive_moves(state.cache, state.color, x, y, z)
 
 
 __all__ = ["generate_hive_moves"]

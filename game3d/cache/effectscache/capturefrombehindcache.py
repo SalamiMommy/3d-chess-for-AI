@@ -4,7 +4,6 @@
 from __future__ import annotations
 from typing import Dict, Set, Tuple
 from game3d.pieces.enums import Color
-from game3d.board.board import Board
 from game3d.effects.capturefrombehind import from_behind_squares
 from game3d.movement.movepiece import Move
 

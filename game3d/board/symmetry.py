@@ -56,9 +56,14 @@ class TensorTransformation:
     hash_multiplier: int
 
 class SymmetryManager:
-    """Manages all 24 rotational symmetry operations for Board class."""
+    _rotation_matrices = None
+    _initialized = False
 
     def __init__(self):
+        if not SymmetryManager._initialized:
+            SymmetryManager._rotation_matrices = self._build_rotation_matrices()
+            SymmetryManager._initialized = True
+        self.rotation_matrices = SymmetryManager._rotation_matrices
         self.size_x = SIZE_X
         self.size_y = SIZE_Y
         self.size_z = SIZE_Z

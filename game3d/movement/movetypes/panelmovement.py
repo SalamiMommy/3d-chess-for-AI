@@ -1,14 +1,12 @@
-from __future__ import annotations
-# game3d/movement/movetypes/panelmovement.py
 """Panel piece — jumps to any square on 6 orthogonal 3x3 walls centered 2 squares away along each axis.
 Pure movement logic — no registration, no dispatcher.
 """
 
-
 from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.pathvalidation import jump_to_targets, validate_piece_at
-from game3d.movement.movepiece import Move  # Ensure Move is available
+from game3d.movement.movepiece import Move
+from game3d.cache.manager import OptimizedCacheManager
 
 # Precomputed: 54 offsets for six 3×3 walls, 2 units away along each axis
 _PANEL_OFFSETS = []
@@ -41,17 +39,23 @@ for direction, plane_key in _DIRECTIONS_AND_PLANES:
             anchor[2] + wz
         ))
 
-def generate_panel_moves(board, color: Color, x: int, y: int, z: int) -> List['Move']:
+def generate_panel_moves(
+    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List['Move']:
     """Generate all legal Panel moves from (x, y, z)."""
     pos = (x, y, z)
 
     # Validate piece at starting position
-    if not validate_piece_at(board, color, pos, PieceType.PANEL):
+    if not validate_piece_at(cache, color, pos, PieceType.PANEL):  # ← cache, not board
         return []
 
     # Use jump_to_targets with correct arguments
     return jump_to_targets(
-        board=board,
+        cache=cache,  # ← FIXED: cache, not board
         color=color,
         start=pos,
         offsets=_PANEL_OFFSETS,
@@ -59,13 +63,5 @@ def generate_panel_moves(board, color: Color, x: int, y: int, z: int) -> List['M
         allow_self_block=False
     )
 
-# Keep this helper only if used elsewhere (it's safe — no GameState)
 def get_panel_offsets():
     return _PANEL_OFFSETS.copy()
-
-# ❌ REMOVE these — they break the "pure movement" contract:
-# def count_valid_panel_moves_from(state: GameState, x: int, y: int, z: int) -> int:
-#     return len(generate_panel_moves(state, x, y, z))
-#
-# def get_panel_theoretical_reach() -> int:
-#     return len(_PANEL_OFFSETS)  # 54

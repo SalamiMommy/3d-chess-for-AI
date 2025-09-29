@@ -1,16 +1,22 @@
-from __future__ import annotations
-from typing import Dict, Set
-from game3d.common.common import Coord  # Assuming Coord is Tuple[int, int, int]
-from game3d.common.protocols import BoardProto  # If needed for type checking
-from game3d.effects.trailblazing import TrailblazeRecorder
+from __future__ import annotations  # Enables forward references
+from typing import Dict, Set, Optional
+from game3d.common.common import Coord
 from game3d.pieces.enums import Color, PieceType
-from game3d.board.board import Board
 from game3d.movement.movepiece import Move
-
+from game3d.effects.trailblazing import TrailblazeRecorder
 class TrailblazeCache:
-    def __init__(self) -> None:
+    def __init__(self, cache_manager=None) -> None:  # No type hint needed, or use string
         self._recorders: Dict[Coord, TrailblazeRecorder] = {}
         self._counters: Dict[Coord, int] = {}
+        self._cache_manager = cache_manager
+
+    def current_trail_squares(self, controller: Color, board: Board) -> Set[Coord]:
+        result: Set[Coord] = set()
+        for coord, recorder in self._recorders.items():
+            piece = self._cache_manager.piece_cache.get(coord)  # Safe at runtime
+            if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
+                result.update(recorder.current_trail())
+        return result
 
     def record_trail(self, trailblazer_pos: Coord, path: Set[Coord]) -> None:
         """Record a new trail for the trailblazer at trailblazer_pos."""

@@ -7,7 +7,6 @@ import time
 from collections import defaultdict  # Added for pieces_by_type
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState   # only for mypy/IDE
-from game3d.board.board import Board
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers

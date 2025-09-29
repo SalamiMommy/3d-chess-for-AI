@@ -17,4 +17,4 @@ __all__ = ['generate_pawn_moves']
 
 @register(PieceType.PAWN)
 def pawn_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_pawn_moves(state.board, state.color, x, y, z)
+    return generate_pawn_moves(state.cache, state.color, x, y, z)

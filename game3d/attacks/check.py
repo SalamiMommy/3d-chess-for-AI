@@ -9,7 +9,6 @@ from typing import Iterable
 from game3d.common.common import Coord, N_PLANES_PER_SIDE, in_bounds
 from game3d.pieces.piece import Piece
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
-from game3d.board.board import Board
 from game3d.pieces.enums import PieceType, Color
 
 # ==============================================================================
@@ -156,7 +155,7 @@ def king_in_check(
     king_color: Color,
     cache=None
 ) -> bool:
-    """Optimized king check detection with full caching support."""
+    """Optimized incremental king check detection - NO full move generation."""
     # Fast path: if priests are alive, no check
     if _any_priest_alive(board, king_color, cache):
         return False
@@ -166,8 +165,50 @@ def king_in_check(
     if king_pos is None:
         return False
 
-    # Check if king is attacked
-    return square_attacked_by(board, current_player, king_pos, king_color.opposite(), cache)
+    # Check if any enemy piece can attack the king position
+    attacker_color = king_color.opposite()
+
+    # Use piece cache for O(1) lookups
+    if cache and hasattr(cache, 'piece_cache'):
+        piece_cache = cache.piece_cache
+    else:
+        # Fallback to board iteration (slower but works)
+        piece_cache = None
+
+    if piece_cache is not None:
+        # Iterate only over occupied squares
+        for coord, piece in board.list_occupied():
+            if piece.color != attacker_color:
+                continue
+
+            # Quick distance check for non-sliding pieces
+            if piece.ptype in {PieceType.PAWN, PieceType.KNIGHT, PieceType.KNIGHT31,
+                              PieceType.KNIGHT32, PieceType.ARCHER}:
+                if _can_piece_attack_square(piece, coord, king_pos, board):
+                    return True
+            else:
+                # Sliding pieces - check ray to king
+                if _can_sliding_piece_attack_king(piece, coord, king_pos, board, piece_cache):
+                    return True
+    else:
+        # Fallback: iterate through all squares (much slower)
+        for x in range(9):
+            for y in range(9):
+                for z in range(9):
+                    piece = board.piece_at((x, y, z))
+                    if piece is None or piece.color != attacker_color:
+                        continue
+
+                    coord = (x, y, z)
+                    if piece.ptype in {PieceType.PAWN, PieceType.KNIGHT, PieceType.KNIGHT31,
+                                      PieceType.KNIGHT32, PieceType.ARCHER}:
+                        if _can_piece_attack_square(piece, coord, king_pos, board):
+                            return True
+                    else:
+                        if _can_sliding_piece_attack_king(piece, coord, king_pos, board, None):
+                            return True
+
+    return False
 
 def get_check_status(
     board: BoardProto,
@@ -209,6 +250,115 @@ def get_all_pieces_in_check(
                 pieces_in_check.append((king_pos, color))
 
     return pieces_in_check
+
+def _can_piece_attack_square(piece: Piece, from_coord: Coord, to_coord: Coord, board: BoardProto) -> bool:
+    """Check if a non-sliding piece can attack a square."""
+    from game3d.movement.movepiece import Move
+
+    # Create a dummy move
+    dummy_move = Move(from_coord=from_coord, to_coord=to_coord, is_capture=True)
+
+    # Get the dispatcher for this piece type
+    from game3d.movement.registry import get_dispatcher
+    dispatcher = get_dispatcher(piece.ptype)
+    if dispatcher is None:
+        return False
+
+    # Create temporary state
+    from game3d.game.gamestate import GameState
+    tmp_state = GameState.__new__(GameState)
+    tmp_state.board = board
+    tmp_state.color = piece.color
+    # Use minimal cache or None
+    tmp_state.cache = getattr(board, 'cache', None)
+
+    try:
+        # Generate moves for this piece
+        moves = dispatcher(tmp_state, *from_coord)
+        # Check if our target square is in the generated moves
+        for move in moves:
+            if move.to_coord == to_coord:
+                return True
+    except Exception:
+        pass
+
+    return False
+
+def _can_sliding_piece_attack_king(piece: Piece, from_coord: Coord, king_pos: Coord,
+                                  board: BoardProto, piece_cache) -> bool:
+    """Check if a sliding piece can attack the king along a clear ray."""
+    # Check if king and piece are on same line
+    if not _is_on_same_ray(from_coord, king_pos):
+        return False
+
+    # Check if ray is clear
+    if not _is_ray_clear(from_coord, king_pos, board, piece_cache):
+        return False
+
+    # If ray is clear and on same line, piece can attack
+    return True
+
+def _is_on_same_ray(from_coord: Coord, to_coord: Coord) -> bool:
+    """Check if two coordinates are on the same orthogonal, diagonal, or space diagonal ray."""
+    fx, fy, fz = from_coord
+    tx, ty, tz = to_coord
+
+    dx = tx - fx
+    dy = ty - fy
+    dz = tz - fz
+
+    # Same square
+    if dx == dy == dz == 0:
+        return False
+
+    # Orthogonal: only one non-zero delta
+    if (dx != 0) + (dy != 0) + (dz != 0) == 1:
+        return True
+
+    # Diagonal: two non-zero deltas with same absolute value
+    non_zero = [d for d in (dx, dy, dz) if d != 0]
+    if len(non_zero) == 2 and abs(non_zero[0]) == abs(non_zero[1]):
+        return True
+
+    # Space diagonal: all three non-zero with same absolute value
+    if len(non_zero) == 3 and abs(dx) == abs(dy) == abs(dz):
+        return True
+
+    return False
+
+def _is_ray_clear(from_coord: Coord, to_coord: Coord, board: BoardProto, piece_cache) -> bool:
+    """Check if the ray between from_coord and to_coord is clear of pieces."""
+    fx, fy, fz = from_coord
+    tx, ty, tz = to_coord
+
+    dx = tx - fx
+    dy = ty - fy
+    dz = tz - fz
+
+    # Get step directions
+    step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+    step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+    step_z = 0 if dz == 0 else (1 if dz > 0 else -1)
+
+    # Number of steps
+    steps = max(abs(dx), abs(dy), abs(dz))
+
+    # Check each square along the ray (excluding endpoints)
+    x, y, z = fx, fy, fz
+    for _ in range(steps - 1):
+        x += step_x
+        y += step_y
+        z += step_z
+
+        if piece_cache is not None:
+            piece = piece_cache.get((x, y, z))
+        else:
+            piece = board.piece_at((x, y, z))
+
+        if piece is not None:
+            return False
+
+    return True
 
 # ==============================================================================
 # BATCH OPERATIONS

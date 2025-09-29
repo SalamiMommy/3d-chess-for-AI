@@ -7,7 +7,6 @@ from enum import Enum
 import weakref
 
 from game3d.pieces.enums import Color
-from game3d.board.board import Board
 from game3d.effects.auras.blackholesuck import suck_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
