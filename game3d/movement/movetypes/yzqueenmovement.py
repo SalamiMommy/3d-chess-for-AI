@@ -1,33 +1,35 @@
-"""3D YZ-Queen movement logic — moves like 2D queen in YZ-plane (X fixed)."""
+"""3D YZ-Queen movement logic — 2-D queen in YZ-plane via slidermovement."""
 
 import numpy as np
 from typing import List
 from game3d.pieces.enums import PieceType, Color
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
 from game3d.movement.movepiece import Move
+from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
 from game3d.cache.manager import OptimizedCacheManager
 
-def generate_yz_queen_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
+# 8 directions in YZ-plane (X fixed)
+YZ_QUEEN_DIRECTIONS = np.array([
+    (0, 1, 0), (0, -1, 0),   # Y axis
+    (0, 0, 1), (0, 0, -1),   # Z axis
+    (0, 1, 1), (0, 1, -1),   # YZ diagonals
+    (0, -1, 1), (0, -1, -1)
+], dtype=np.int8)
+
+def generate_yz_queen_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     """Generate all legal YZ-QUEEN moves from (x, y, z)."""
-    start = (x, y, z)
-
-    # Validate piece at start position
-    if not validate_piece_at(cache, color, start, expected_type=PieceType.YZQUEEN):
-        return []
-
-    # 8 directions in YZ-plane (X fixed)
-    directions = np.array([
-        (0, 1, 0), (0, -1, 0),   # Y axis
-        (0, 0, 1), (0, 0, -1),   # Z axis
-        (0, 1, 1), (0, 1, -1),   # YZ diagonals
-        (0, -1, 1), (0, -1, -1)
-    ])
-
-    return slide_along_directions(
-        cache=cache,  # ✅ FIXED: cache, not board
+    engine = get_integrated_movement_generator(cache)
+    return engine.generate_sliding_moves(
         color=color,
-        start=start,
-        directions=directions,
+        piece_type=PieceType.YZQUEEN,   # <-- NEW
+        position=(x, y, z),
+        directions=YZ_QUEEN_DIRECTIONS,
+        max_steps=9,
         allow_capture=True,
-        allow_self_block=False
+        allow_self_block=False,
+        use_symmetry=True,
+        use_amd=True
     )

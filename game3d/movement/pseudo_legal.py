@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState   # only for mypy/IDE
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers
+from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers, dispatch_batch
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -31,11 +31,10 @@ class PseudoLegalStats:
             self.piece_breakdown = {pt: 0 for pt in PieceType}
 
 class PseudoLegalMode(Enum):
-    """Generation modes for different optimization levels."""
-    STANDARD = "standard"
-    CACHED = "cached"
-    BATCH = "batch"
-    INCREMENTAL = "incremental"
+    STANDARD   = "standard"
+    CACHED     = "cached"
+    BATCH      = "batch"        # <-- new
+    INCREMENTAL= "incremental"
 
 # ==============================================================================
 # ENHANCED CACHING SYSTEM
@@ -136,40 +135,16 @@ def _generate_pseudo_legal_cached(state: GameState) -> List[Move]:
 
     return moves
 
-def _generate_pseudo_legal_batch(state: GameState) -> List[Move]:
-    """Batch pseudo-legal move generation for better performance."""
-    all_moves: List[Move] = []
+def _generate_pseudo_legal_batch(state: GameState) -> list[Move]:
+    """Batch pseudo-legal move generation – now *really* batched."""
+    coords, types = [], []
 
-    # Pre-filter current player's pieces
-    current_pieces = _get_current_player_pieces(state)
+    for coord, piece in state.board.list_occupied():
+        if piece.color == state.color:
+            coords.append(coord)
+            types.append(piece.ptype)
 
-    if not current_pieces:
-        return all_moves
-
-    # Group pieces by type for batch processing
-    pieces_by_type: Dict[PieceType, List[Tuple[Tuple[int, int, int], PieceType]]] = defaultdict(list)
-
-    for coord, piece in current_pieces:
-        pieces_by_type[piece.ptype].append((coord, piece))
-
-    # Process each piece type
-    for piece_type, pieces in pieces_by_type.items():
-        dispatcher = get_dispatcher(piece_type)
-        if dispatcher is None:
-            continue
-
-        # Batch process pieces of same type
-        for coord, piece in pieces:
-            piece_moves = dispatcher(state, *coord)
-
-            # Validate and filter moves
-            validated_moves = _validate_piece_moves(piece_moves, coord, piece, state)
-            all_moves.extend(validated_moves)
-
-            _STATS.piece_breakdown[piece_type] += len(validated_moves)
-            _STATS.total_moves_generated += len(validated_moves)
-
-    return all_moves
+    return dispatch_batch(state, coords, types, state.color)
 
 def _generate_pseudo_legal_incremental(state: GameState) -> List[Move]:
     """Incremental pseudo-legal move generation (for small changes)."""

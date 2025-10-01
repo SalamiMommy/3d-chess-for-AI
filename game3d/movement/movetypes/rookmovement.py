@@ -1,37 +1,37 @@
-"""3D Rook move generation logic — pure movement rules, no registration."""
+"""3D Rook move generation — orthogonal rays via slidermovement engine."""
 
 import numpy as np
 from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
 from game3d.cache.manager import OptimizedCacheManager
 
 # 6 orthogonal directions (±X, ±Y, ±Z)
 ROOK_DIRECTIONS_3D = np.array([
-    (1, 0, 0), (-1, 0, 0),  # X axis
-    (0, 1, 0), (0, -1, 0),  # Y axis
-    (0, 0, 1), (0, 0, -1)   # Z axis
-])
+    (1, 0, 0), (-1, 0, 0),
+    (0, 1, 0), (0, -1, 0),
+    (0, 0, 1), (0, 0, -1)
+], dtype=np.int8)
 
 def generate_rook_moves(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    cache: OptimizedCacheManager,
     color: Color,
     x: int,
     y: int,
-    z: int
-) -> List['Move']:
-    """Generate all legal rook moves from (x, y, z)."""
-    pos = (x, y, z)
-
-    if not validate_piece_at(cache, color, pos, PieceType.ROOK):  # ← cache, not board
-        return []
-
-    return slide_along_directions(
-        cache=cache,  # ← FIXED: cache, not board
+    z: int,
+    max_steps: int = 9
+) -> List[Move]:
+    """Generate all legal rook moves from (x, y, z) up to max_steps."""
+    engine = get_integrated_movement_generator(cache)
+    return engine.generate_sliding_moves(
         color=color,
-        start=pos,
+        piece_type=PieceType.ROOK,   # <-- NEW
+        position=(x, y, z),
         directions=ROOK_DIRECTIONS_3D,
+        max_steps=max_steps,
         allow_capture=True,
-        allow_self_block=False
+        allow_self_block=False,
+        use_symmetry=True,
+        use_amd=True
     )

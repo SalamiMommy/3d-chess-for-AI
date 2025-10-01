@@ -1,53 +1,63 @@
-"""Network Teleporter — teleports to any empty square adjacent to any friendly piece."""
+"""Network Teleporter — teleport to any empty square adjacent to any friendly piece.
+Zero-redundancy via the jump engine (dynamic directions list).
+"""
+
+from __future__ import annotations
 
 from typing import List, Set
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move
-from game3d.common.common import in_bounds, add_coords
-from game3d.cache.manager import OptimizedCacheManager
+import numpy as np
 
-# Precomputed 26 3D neighbor directions
-_NEIGHBOR_DIRECTIONS = [
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.cache.manager import CacheManager
+from game3d.common.common import in_bounds
+
+# 26 3-D neighbour deltas
+_NEIGHBOR_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
     for dy in (-1, 0, 1)
     for dz in (-1, 0, 1)
     if not (dx == dy == dz == 0)
-]
+], dtype=np.int8)
 
 def generate_network_teleport_moves(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    cache: CacheManager,
     color: Color,
-    x: int,
-    y: int,
-    z: int
+    x: int, y: int, z: int
 ) -> List['Move']:
-    """
-    Generate all teleport moves to empty squares adjacent to ANY friendly piece.
-    Includes squares adjacent to the teleporter itself.
-    """
-    self_pos = (x, y, z)
-    current_color = color
+    """Generate all legal network-teleport moves from (x, y, z)."""
+    start = (x, y, z)
 
-    # Validate piece
-    piece = cache.piece_cache.get(self_pos)
-    if piece is None or piece.color != current_color or piece.ptype != PieceType.FRIENDLYTELEPORTER:
+    # --- 1. collect candidate targets ---
+    occ, piece_array = cache.piece_cache.export_arrays()
+    own_code = 1 if color == Color.WHITE else 2
+    candidates: Set[tuple[int, int, int]] = set()
+
+    # iterate only over *occupied* squares
+    for pos, _ in cache.board.list_occupied():
+        px, py, pz = pos
+        if occ[px, py, pz] != own_code:        # not friendly
+            continue
+        for dx, dy, dz in _NEIGHBOR_DIRECTIONS:
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            if not in_bounds((tx, ty, tz)):
+                continue
+            if occ[tx, ty, tz] == 0:           # empty
+                candidates.add((tx, ty, tz))
+
+    # --- 2. convert to directions for the jump engine ---
+    if not candidates:
         return []
+    dirs = np.array([np.array(t, dtype=np.int8) - np.array(start, dtype=np.int8)
+                     for t in candidates], dtype=np.int8)
 
-    candidate_targets: Set[tuple] = set()
-
-    # ✅ Only iterate over occupied squares (not entire board!)
-    for pos, other_piece in cache.board.list_occupied():  # ← cache.board, not board
-        if other_piece.color == current_color:  # friendly piece
-            for dx, dy, dz in _NEIGHBOR_DIRECTIONS:
-                target = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
-                if not in_bounds(target):
-                    continue
-                if cache.piece_cache.get(target) is None:  # only empty squares
-                    candidate_targets.add(target)
-
-    # Create moves
-    return [
-        Move(from_coord=self_pos, to_coord=target, is_capture=False)
-        for target in candidate_targets
-    ]
+    # --- 3. hand off to the existing generator ---
+    gen = get_integrated_jump_movement_generator(cache)
+    return gen.generate_jump_moves(
+        color=color,
+        position=start,
+        directions=dirs,
+        allow_capture=False,   # network teleport never captures
+        use_amd=True           # keep GPU path
+    )

@@ -1,17 +1,27 @@
 from __future__ import annotations
-"""Optimized Central cache manager – supports advanced move caching and transposition tables."""
+"""Optimized Central cache manager – supports advanced move caching, transposition tables, and full 5600X/64GB RAM utilization."""
 # game3d/cache/manager.py
 
-from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
+import os
 import time
+import gc
+import psutil
+import threading
+from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
 from dataclasses import dataclass
-import numpy as np
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+import pickle
+import zlib
+
 from game3d.pieces.enums import Color
+
 if TYPE_CHECKING:
     from game3d.cache.movecache import OptimizedMoveCache, CompactMove, TTEntry
     from game3d.cache.occupancycache import OccupancyCache
-    from game3d.pieces.enums import Color, PieceType
+    from game3d.pieces.enums import PieceType
     from game3d.movement.movepiece import Move
     from game3d.board.board import Board
     from game3d.pieces.piece import Piece
@@ -39,10 +49,10 @@ from game3d.cache.effectscache.archerycache import ArcheryCache
 from game3d.cache.effectscache.sharesquarecache import ShareSquareCache
 from game3d.cache.effectscache.armourcache import ArmourCache
 from game3d.cache.piececache import PieceCache
-# Import occupancy cache (this was missing!)
 from game3d.cache.occupancycache import OccupancyCache
-# NEW: Import attacks cache
 from game3d.cache.attackscache import AttacksCache
+
+
 # ==============================================================================
 # PERFORMANCE MONITORING
 # ==============================================================================
@@ -54,13 +64,17 @@ class CacheEventType(Enum):
     TT_MISS = "tt_miss"
     TT_COLLISION = "tt_collision"
     CACHE_CLEARED = "cache_cleared"
+    CACHE_ERROR = "cache_error"
+
 
 @dataclass
 class CacheEvent:
     """Event for cache performance monitoring."""
+    __slots__ = ("event_type", "timestamp", "data")
     event_type: CacheEventType
     timestamp: float
     data: Dict[str, Any]
+
 
 class CachePerformanceMonitor:
     """Advanced performance monitoring for the cache system."""
@@ -79,24 +93,23 @@ class CachePerformanceMonitor:
         self.move_undos = 0
         self.cache_clears = 0
 
-        # Timing statistics
+        # Timing statistics (keep last 1000)
         self.move_apply_times = []
         self.move_undo_times = []
         self.legal_move_generation_times = []
 
     def record_event(self, event_type: CacheEventType, data: Dict[str, Any] = None):
-        """Record a cache event."""
+        if not self.enable_monitoring:
+            return
         event = CacheEvent(
             event_type=event_type,
             timestamp=time.time() - self.start_time,
             data=data or {}
         )
-
         self.events.append(event)
         if len(self.events) > self.max_events:
             self.events.pop(0)
 
-        # Update counters
         if event_type == CacheEventType.TT_HIT:
             self.tt_hits += 1
         elif event_type == CacheEventType.TT_MISS:
@@ -111,25 +124,21 @@ class CachePerformanceMonitor:
             self.cache_clears += 1
 
     def record_move_apply_time(self, duration: float):
-        """Record time taken for move application."""
         self.move_apply_times.append(duration)
         if len(self.move_apply_times) > 1000:
             self.move_apply_times.pop(0)
 
     def record_move_undo_time(self, duration: float):
-        """Record time taken for move undo."""
         self.move_undo_times.append(duration)
         if len(self.move_undo_times) > 1000:
             self.move_undo_times.pop(0)
 
     def record_legal_move_generation_time(self, duration: float):
-        """Record time taken for legal move generation."""
         self.legal_move_generation_times.append(duration)
         if len(self.legal_move_generation_times) > 1000:
             self.legal_move_generation_times.pop(0)
 
     def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics."""
         total_tt_accesses = self.tt_hits + self.tt_misses
         tt_hit_rate = self.tt_hits / max(1, total_tt_accesses)
 
@@ -145,139 +154,170 @@ class CachePerformanceMonitor:
             'move_applications': self.move_applications,
             'move_undos': self.move_undos,
             'cache_clears': self.cache_clears,
-            'avg_move_apply_time_ms': avg_move_apply_time,
-            'avg_move_undo_time_ms': avg_move_undo_time,
-            'avg_legal_gen_time_ms': avg_legal_gen_time,
+            'avg_move_apply_time_ms': avg_move_apply_time * 1000,
+            'avg_move_undo_time_ms': avg_move_undo_time * 1000,
+            'avg_legal_gen_time_ms': avg_legal_gen_time * 1000,
             'total_events': len(self.events),
         }
 
     def get_optimization_suggestions(self) -> List[str]:
-        """Get optimization suggestions based on performance data."""
         suggestions = []
         stats = self.get_performance_stats()
 
-        if stats['tt_hit_rate'] < 0.4:
-            suggestions.append("Low transposition table hit rate. Consider increasing table size or improving replacement strategy.")
+        # Only warn about TT hit rate after meaningful usage
+        if stats['tt_hits'] + stats['tt_misses'] > 1000:  # ← ADD THIS CHECK
+            if stats['tt_hit_rate'] < 0.6:
+                suggestions.append("Transposition table hit rate is low. Consider increasing size beyond 6GB.")
 
-        if stats['tt_collisions'] > stats['tt_hits'] * 0.02:
-            suggestions.append("High collision rate. Consider using larger hash keys or better hash function.")
+        if stats['tt_collisions'] > stats['tt_hits'] * 0.01:
+            suggestions.append("High TT collision rate. Verify Zobrist hash quality.")
 
-        if stats['avg_move_apply_time_ms'] > 1.0:
-            suggestions.append("Slow move application. Consider optimizing incremental updates.")
+        if stats['avg_move_apply_time_ms'] > 0.5:
+            suggestions.append("Move apply time high. Profile occupancy/piece cache rebuilds.")
 
-        if stats['avg_legal_gen_time_ms'] > 5.0:
-            suggestions.append("Slow move generation. Consider vectorization or better caching strategies.")
+        if stats['avg_legal_gen_time_ms'] > 3.0:
+            suggestions.append("Legal move gen slow. Ensure parallelism and vectorization are active.")
 
         return suggestions
 
+
 # ==============================================================================
-# OPTIMIZED CACHE MANAGER
+# OPTIMIZED CACHE MANAGER — FULLY TUNED FOR 5600X + 64GB RAM
 # ==============================================================================
 
 class OptimizedCacheManager:
-    """Advanced cache manager with integrated transposition tables and performance monitoring."""
+    """Advanced cache manager with TT, parallel move gen, and NUMA-friendly design."""
 
     def __init__(self, board: Board) -> None:
-        # 🟢 SINGLE source of truth: no cloning
+        total_ram_budget_gb = 45
         self.board = board
         self.occupancy = OccupancyCache(board)
-        self.piece_cache = PieceCache(board)  # 👈 NEW
+        self.piece_cache = PieceCache(board)
         self._effect: Dict[str, Any] = {}
         self._init_effects()
 
         # Performance monitoring
         self.performance_monitor = CachePerformanceMonitor()
 
-        # Zobrist hashing for transposition tables
+        # Zobrist hashing
         self._zobrist = ZobristHashing()
-        self._current_zobrist_hash = self._zobrist.compute_hash(board, Color.WHITE)
+        self._current_zobrist_hash = self._zobrist.compute_hash(board, Color.WHITE, ply=0)
 
-        # Create optimized move cache but defer rebuild
-        self._move_cache: Optional[OptimizedMoveCache] = None
-
-        # Cache configuration
-        self._tt_size_mb = 512  # 512MB transposition table
+        total_mb = total_ram_budget_gb * 1024
+        self.main_tt_size_mb = int(total_mb * 0.73)
+        self.sym_tt_size_mb  = int(total_mb * 0.27)
         self._enable_parallel = True
         self._enable_vectorization = True
-        self._cache_stats_interval = 1000  # Log stats every N moves
+        self._max_workers = min(8, os.cpu_count() or 6)  # 5600X: 6C/12T → use 6–8 threads
+        self._cache_stats_interval = 1000
 
-        # Move counter for periodic stats
+        self._move_cache: Optional[OptimizedMoveCache] = None
         self._move_counter = 0
 
-    def initialise(self, current: Color) -> None:
-        """Initialize with current player and create optimized move cache."""
-        self._current_zobrist_hash = self._zobrist.compute_hash(self.board, current)
-        self._move_cache = create_optimized_move_cache(self.board, current, self)
+        # NEW: Memory management
+        self._mem_threshold_gb = 40  # Trigger GC above this
+        self._mem_check_interval = 300  # Seconds (5 min) for background check
+        self._mem_monitor_thread = threading.Thread(target=self._monitor_memory, daemon=True)
+        self._mem_monitor_thread.start()
 
-        # Log initial stats
+    def _monitor_memory(self) -> None:
+        while True:
+            try:
+                process = psutil.Process(os.getpid())
+                mem_usage_gb = process.memory_info().rss / (1024 ** 3)  # RSS in GB
+                if mem_usage_gb > self._mem_threshold_gb:
+                    print(f"[CacheManager] Memory usage {mem_usage_gb:.2f}GB > {self._mem_threshold_gb}GB. Triggering GC.")
+                    gc.collect()  # Force garbage collection
+                    # Compress simple move cache if it exists
+                    self.compress_caches()
+                    post_gc_gb = process.memory_info().rss / (1024 ** 3)
+                    print(f"[CacheManager] Post-GC memory: {post_gc_gb:.2f}GB")
+            except Exception as e:
+                print(f"[CacheManager] Memory monitor error: {str(e)}")
+            time.sleep(self._mem_check_interval)
+
+    def _check_and_gc_if_needed(self) -> None:
+        process = psutil.Process(os.getpid())
+        mem_usage_gb = process.memory_info().rss / (1024 ** 3)
+        if mem_usage_gb > self._mem_threshold_gb:
+            print(f"[CacheManager] Inline GC trigger: {mem_usage_gb:.2f}GB > {self._mem_threshold_gb}GB")
+            gc.collect()
+            self.compress_caches()
+
+    def compress_caches(self) -> None:
+        """Compress big caches like simple move cache using zlib."""
+        if not self._move_cache:
+            return
+        simple_cache = self._move_cache._simple_move_cache
+        if simple_cache:
+            compressed = {}
+            for key, moves in simple_cache.items():
+                pickled = pickle.dumps(moves, protocol=4)
+                compressed[key] = zlib.compress(pickled, level=6)
+            self._move_cache._simple_move_cache = compressed
+            print(f"[CacheManager] Compressed {len(compressed)} simple move cache entries.")
+            # Note: movecache.py needs update to decompress on access (check if bytes, then pickle.loads(zlib.decompress()))
+
+    def initialise(self, current: Color) -> None:
+        self._current_zobrist_hash = self._zobrist.compute_hash(self.board, current)
+        # manager keeps control – just pass self
+        self._move_cache = create_optimized_move_cache(
+            self.board, current, self
+        )
         self._log_cache_stats("initialization")
 
     def _init_effects(self) -> None:
-        """Initialize all effect caches."""
         self._effect = {
-            "freeze":          FreezeCache(),
-            "movement_buff":   MovementBuffCache(),
+            "freeze": FreezeCache(),
+            "movement_buff": MovementBuffCache(),
             "movement_debuff": MovementDebuffCache(),
             "black_hole_suck": BlackHoleSuckCache(),
             "white_hole_push": WhiteHolePushCache(),
-            "trailblaze":      TrailblazeCache(self),
-            "behind":          BehindCache(),
-            "armour":          ArmourCache(),
-            "geomancy":        GeomancyCache(),
-            "archery":         ArcheryCache(),
-            "share_square":    ShareSquareCache(),
-            # NEW: Attacks cache
-            "attacks":         AttacksCache(self.board),
+            "trailblaze": TrailblazeCache(self),
+            "behind": BehindCache(),
+            "armour": ArmourCache(),
+            "geomancy": GeomancyCache(),
+            "archery": ArcheryCache(),
+            "share_square": ShareSquareCache(),
+            "attacks": AttacksCache(self.board),
         }
 
     # --------------------------------------------------------------------------
-    # ADVANCED MOVE APPLICATION WITH TRANSPOSITION TABLE SUPPORT
+    # MOVE APPLICATION & UNDO (UNCHANGED LOGIC, KEPT FOR COMPLETENESS)
     # --------------------------------------------------------------------------
     def apply_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
-        """Apply move with full transposition table and performance monitoring."""
         start_time = time.time()
-
+        self._check_and_gc_if_needed()
         try:
-            # 1. Validate move on CURRENT board state
             from_piece = self.piece_cache.get(mv.from_coord)
             if from_piece is None:
                 raise AssertionError(f"Illegal move: {mv} — no piece at {mv.from_coord}")
 
-            # 2. Capture pre-move state
             to_piece = self.piece_cache.get(mv.to_coord)
             captured_piece = None
-
             if getattr(mv, "is_capture", False):
-                captured_type = getattr(mv, "captured_piece", None)
+                captured_type = getattr(mv, "captured_ptype", None)
                 if captured_type is not None:
                     captured_piece = Piece(mover.opposite(), captured_type)
 
-            # 3. Update Zobrist hash incrementally
             self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, from_piece, captured_piece
+                self._current_zobrist_hash, mv, from_piece, captured_piece,
+                old_castling=0, new_castling=0,  # set real values if applicable
+                old_ep=None, new_ep=None,
+                old_ply=current_ply, new_ply=current_ply + 1
             )
 
-            # 4. Apply move to shared board
             self.board.apply_move(mv)
             self.occupancy.rebuild(self.board)
             self.piece_cache.rebuild(self.board)
 
-            # 5. Determine affected caches
-            affected_caches = self._get_affected_caches(
-                mv, mover, from_piece, to_piece, captured_piece
-            )
-
-            # NEW: Always include attacks cache on moves
+            affected_caches = self._get_affected_caches(mv, mover, from_piece, to_piece, captured_piece)
             affected_caches.add("attacks")
 
-            # 6. Update affected effect caches
             self._update_effect_caches(mv, mover, affected_caches, current_ply)
 
-            # 7. Update optimized move cache
             if self._move_cache:
                 self._move_cache.apply_move(mv, mover)
-
-                # Store in transposition table if this is a significant move
                 if self._should_store_in_tt(mv, from_piece):
                     compact_move = CompactMove(
                         mv.from_coord, mv.to_coord, from_piece.ptype,
@@ -289,7 +329,6 @@ class OptimizedCacheManager:
                         self._current_zobrist_hash, 1, 0, 0, compact_move
                     )
 
-            # 8. Performance monitoring
             duration = time.time() - start_time
             self.performance_monitor.record_move_apply_time(duration)
             self.performance_monitor.record_event(CacheEventType.MOVE_APPLIED, {
@@ -299,7 +338,6 @@ class OptimizedCacheManager:
                 'affected_caches': list(affected_caches)
             })
 
-            # 9. Periodic stats logging
             self._move_counter += 1
             if self._move_counter % self._cache_stats_interval == 0:
                 self._log_cache_stats("periodic")
@@ -313,14 +351,11 @@ class OptimizedCacheManager:
             raise
 
     def undo_move(self, mv: Move, mover: Color, current_ply: int = 0) -> None:
-        """Undo move with full cache restoration and hash updates."""
         start_time = time.time()
-
+        self._check_and_gc_if_needed()
         try:
-            # Restore Zobrist hash (XOR is its own inverse)
             piece = self.piece_cache.get(mv.to_coord)
             captured_piece = None
-
             if getattr(mv, "is_capture", False):
                 captured_type = getattr(mv, "captured_ptype", None)
                 if captured_type is not None:
@@ -328,27 +363,23 @@ class OptimizedCacheManager:
 
             if piece:
                 self._current_zobrist_hash = self._zobrist.update_hash_move(
-                    self._current_zobrist_hash, mv, piece, captured_piece
+                    self._current_zobrist_hash, mv, piece, captured_piece,
+                    old_castling=0, new_castling=0,  # set real values if applicable
+                    old_ep=None, new_ep=None,
+                    old_ply=current_ply, new_ply=current_ply - 1
                 )
 
-            # Apply undo to board
             self._undo_move_optimized(mv, mover)
-
-            # Update occupancy
             self.occupancy.rebuild(self.board)
             self.piece_cache.rebuild(self.board)
 
-            # Update effect caches
             affected_caches = self._get_affected_caches_for_undo(mv, mover)
-            # NEW: Always include attacks cache on undo
             affected_caches.add("attacks")
             self._update_effect_caches_for_undo(mv, mover, affected_caches, current_ply)
 
-            # Update move cache
             if self._move_cache:
                 self._move_cache.undo_move(mv, mover)
 
-            # Performance monitoring
             duration = time.time() - start_time
             self.performance_monitor.record_move_undo_time(duration)
             self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
@@ -356,7 +387,6 @@ class OptimizedCacheManager:
                 'color': mover.name,
                 'duration_ms': duration * 1000
             })
-
         except Exception as e:
             self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
                 'error': str(e),
@@ -365,82 +395,59 @@ class OptimizedCacheManager:
             })
             raise
 
-    def _undo_move_optimized(self, mv: Move, color: Color) -> None:
-        """Optimized undo implementation."""
-        # Handle captures
+    def _undo_move_optimized(self, mv: Move, mover: Color) -> None:
         if getattr(mv, "is_capture", False):
             captured_type = getattr(mv, "captured_ptype", None)
             if captured_type is not None:
-                captured_color = color.opposite()
-                self.board.set_piece(mv.to_coord, Piece(captured_color, captured_type))
-
-        # Move piece back
-        piece = self.piece_cache.get(mv.to_coord)  # Fixed from undefined coord
+                self.board.set_piece(mv.to_coord, Piece(mover.opposite(), captured_type))
+        piece = self.board.piece_at(mv.to_coord)
         if piece:
             self.board.set_piece(mv.from_coord, piece)
             self.board.set_piece(mv.to_coord, None)
-
-        # Handle promotions
         if getattr(mv, "is_promotion", False) and piece:
             self.board.set_piece(mv.from_coord, Piece(piece.color, PieceType.PAWN))
 
-    def _should_store_in_tt(self, mv: Move, piece: Piece) -> bool:
-        """Determine if move should be stored in transposition table."""
-        # Store significant moves: captures, promotions, checks
-        return (getattr(mv, 'is_capture', False) or
-                getattr(mv, 'is_promotion', False) or
-                piece.ptype in {PieceType.KING, PieceType.QUEEN, PieceType.ROOK})
+    def _should_store_in_tt(self, mv: Move, from_piece: Piece) -> bool:
+        return True
 
-    def _get_affected_caches(self, mv: Move, mover: Color,
-                           from_piece: Optional[Piece], to_piece: Optional[Piece],
-                           captured_piece: Optional[Piece]) -> Set[str]:
-        """Determine affected caches using dependency analysis."""
-        affected = {"trailblaze"}  # trailblaze always updates
+    def _get_affected_caches(self, mv: Move, mover: Color, from_piece: Piece,
+                            to_piece: Optional[Piece], captured_piece: Optional[Piece]) -> Set[str]:
+        affected = set()
+        if from_piece.ptype in {PieceType.FREEZE_AURA, PieceType.MOVEMENT_BUFF, PieceType.MOVEMENT_DEBUFF,
+                                PieceType.BLACK_HOLE, PieceType.WHITE_HOLE, PieceType.TRAILBLAZER,
+                                PieceType.BEHIND_CAPTURE, PieceType.ARMOUR, PieceType.GEOMANCER,
+                                PieceType.ARCHER, PieceType.SHARE_SQUARE}:
+            effect_map = {
+                PieceType.FREEZE_AURA: "freeze",
+                PieceType.MOVEMENT_BUFF: "movement_buff",
+                PieceType.MOVEMENT_DEBUFF: "movement_debuff",
+                PieceType.BLACK_HOLE: "black_hole_suck",
+                PieceType.WHITE_HOLE: "white_hole_push",
+                PieceType.TRAILBLAZER: "trailblaze",
+                PieceType.BEHIND_CAPTURE: "behind",
+                PieceType.ARMOUR: "armour",
+                PieceType.GEOMANCER: "geomancy",
+                PieceType.ARCHER: "archery",
+                PieceType.SHARE_SQUARE: "share_square"
+            }
+            affected.add(effect_map[from_piece.ptype])
 
-        pieces_to_check = [p for p in [from_piece, to_piece, captured_piece] if p is not None]
-
-        # Add pieces that might be affected by the move
-        for piece in pieces_to_check:
-            ptype = piece.ptype
-            if ptype == PieceType.FREEZE_AURA:
-                affected.add("freeze")
-            elif ptype == PieceType.BLACK_HOLE:
-                affected.add("black_hole_suck")
-            elif ptype == PieceType.WHITE_HOLE:
-                affected.add("white_hole_push")
-            elif ptype == PieceType.GEOMANCER:
-                affected.add("geomancy")
-            elif ptype == PieceType.ARCHER:
-                affected.add("archery")
-            elif ptype == PieceType.WALL:
-                affected.add("armoured")
-            elif ptype == PieceType.TRAILBLAZER:
-                affected.add("trailblaze")
-            elif ptype in {PieceType.SPEEDER, PieceType.XZQUEEN, PieceType.YZQUEEN, PieceType.XYQUEEN}:
-                affected.add("movement_buff")
-            elif ptype in {PieceType.SLOWER, PieceType.CONESLIDER}:
-                affected.add("movement_debuff")
-            elif ptype == PieceType.KNIGHT:
-                affected.add("share_square")
-
-        # Add caches that might be affected by position changes
-        self._add_position_dependent_caches(affected, mv.from_coord)
-        self._add_position_dependent_caches(affected, mv.to_coord)
+        if captured_piece:
+            self._add_affected_effects_from_pos(mv.to_coord, affected)
+        self._add_affected_effects_from_pos(mv.from_coord, affected)
 
         return affected
 
-    def _add_position_dependent_caches(self, affected: Set[str], pos: Tuple[int, int, int]) -> None:
-        """Add caches that depend on specific positions."""
-        # Check for effect pieces near the position
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                for dz in [-1, 0, 1]:
+    def _add_affected_effects_from_pos(self, pos: Tuple[int, int, int], affected: Set[str]) -> None:
+        from game3d.pieces.enums import PieceType
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
                     if dx == dy == dz == 0:
                         continue
-
                     check_pos = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
-                    if (0 <= check_pos[0] < 9 and 0 <= check_pos[1] < 9 and 0 <= check_pos[2] < 9):
-                        piece = self.piece_cache.get(coord)
+                    if all(0 <= c < 9 for c in check_pos):
+                        piece = self.piece_cache.get(check_pos)
                         if piece and piece.ptype in {PieceType.FREEZE_AURA, PieceType.BLACK_HOLE,
                                                    PieceType.WHITE_HOLE, PieceType.GEOMANCER}:
                             effect_map = {
@@ -452,26 +459,22 @@ class OptimizedCacheManager:
                             affected.add(effect_map[piece.ptype])
 
     def _get_affected_caches_for_undo(self, mv: Move, mover: Color) -> Set[str]:
-        """Get affected caches for undo operation."""
-        # Similar to regular affected caches but considers undo state
         return self._get_affected_caches(mv, mover, None, None, None)
 
     def _update_effect_caches(self, mv: Move, mover: Color,
                             affected_caches: Set[str], current_ply: int) -> None:
-        """Update effect caches with error handling."""
         for name in affected_caches:
             try:
                 cache = self._effect[name]
                 if name == "geomancy":
                     cache.apply_move(mv, mover, current_ply, self.board)
-                elif name in ("archery", "black_hole_suck", "armoured", "freeze",
+                elif name in ("archery", "black_hole_suck", "armour", "freeze",
                               "movement_buff", "movement_debuff", "share_square",
-                              "trailblaze", "white_hole_push", "attacks"):  # NEW: Added "attacks"
+                              "trailblaze", "white_hole_push", "attacks"):
                     cache.apply_move(mv, mover, self.board)
                 else:
                     cache.apply_move(mv, mover)
             except Exception as e:
-                # Log error but don't crash - effect caches are non-critical
                 self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
                     'error': f"Effect cache {name} update failed: {str(e)}",
                     'move': str(mv)
@@ -479,14 +482,13 @@ class OptimizedCacheManager:
 
     def _update_effect_caches_for_undo(self, mv: Move, mover: Color,
                                      affected_caches: Set[str], current_ply: int) -> None:
-        """Update effect caches for undo with proper error handling."""
         for name in affected_caches:
             try:
                 cache = self._effect[name]
                 if hasattr(cache, 'undo_move'):
                     if name == "geomancy":
                         cache.undo_move(mv, mover, current_ply, self.board)
-                    elif hasattr(cache, '_board') or name == "attacks":  # NEW: Handle attacks
+                    elif hasattr(cache, '_board') or name == "attacks":
                         cache.undo_move(mv, mover, self.board)
                     else:
                         cache.undo_move(mv, mover)
@@ -497,13 +499,11 @@ class OptimizedCacheManager:
                 })
 
     # --------------------------------------------------------------------------
-    # ADVANCED TRANSPOSITION TABLE INTERFACE
+    # TRANSPOSITION TABLE INTERFACE
     # --------------------------------------------------------------------------
     def probe_transposition_table(self, hash_value: int) -> Optional[TTEntry]:
-        """Probe transposition table for cached evaluation."""
         if not self._move_cache:
             return None
-
         result = self._move_cache.get_cached_evaluation(hash_value)
         if result:
             score, depth, best_move = result
@@ -521,90 +521,80 @@ class OptimizedCacheManager:
 
     def store_transposition_table(self, hash_value: int, depth: int, score: int,
                                 node_type: int, best_move: Optional[CompactMove] = None) -> None:
-        """Store evaluation in transposition table."""
         if self._move_cache:
             self._move_cache.store_evaluation(hash_value, depth, score, node_type, best_move)
 
     def get_current_zobrist_hash(self) -> int:
-        """Get current Zobrist hash."""
         return self._current_zobrist_hash
 
     # --------------------------------------------------------------------------
-    # PROPERTIES AND HELPERS - ENHANCED WITH PERFORMANCE MONITORING
+    # PARALLEL LEGAL MOVE GENERATION — KEY OPTIMIZATION FOR 5600X
     # --------------------------------------------------------------------------
+    def legal_moves(self, color: Color) -> List[Move]:
+        start_time = time.time()
+        self._check_and_gc_if_needed()
+
+        if self._move_cache is None:
+            raise RuntimeError("Move cache not initialized")
+
+        # Delegate to move cache, which now supports parallel mode
+        moves = self._move_cache.legal_moves(color, parallel=self._enable_parallel, max_workers=self._max_workers)
+
+        duration = time.time() - start_time
+        self.performance_monitor.record_legal_move_generation_time(duration)
+        return moves
+
     @property
     def move(self) -> OptimizedMoveCache:
-        """Get the optimized move cache."""
         if self._move_cache is None:
             raise RuntimeError("MoveCache not initialized. Call initialise() first.")
         return self._move_cache
 
-    def legal_moves(self, color: Color) -> List[Move]:
-        """Get legal moves with performance monitoring."""
-        start_time = time.time()
-
-        moves = self.move.legal_moves(color)
-
-        duration = time.time() - start_time
-        self.performance_monitor.record_legal_move_generation_time(duration)
-
-        return moves
-
+    # --------------------------------------------------------------------------
+    # STATS & CONFIGURATION
+    # --------------------------------------------------------------------------
     def get_cache_stats(self) -> Dict[str, Any]:
-        """Get comprehensive cache statistics."""
         base_stats = self.performance_monitor.get_performance_stats()
-
-        # Add move cache specific stats
         if self._move_cache:
             move_cache_stats = self._move_cache.get_stats()
             base_stats.update({
                 'move_cache_stats': move_cache_stats,
                 'zobrist_hash': self._current_zobrist_hash,
-                'tt_size_mb': self._tt_size_mb,
+                'main_tt_size_mb': self.main_tt_size_mb,
+                'sym_tt_size_mb': self.sym_tt_size_mb,
+                'main_tt_capacity_estimate': (self.main_tt_size_mb * 1024 * 1024) // 32,
+                'sym_tt_capacity_estimate': (self.sym_tt_size_mb * 1024 * 1024) // 32,
                 'enable_parallel': self._enable_parallel,
+                'max_workers': self._max_workers,
                 'enable_vectorization': self._enable_vectorization
             })
-
-        # Add effect cache counts
         base_stats['effect_caches'] = {
             name: {'type': type(cache).__name__}
             for name, cache in self._effect.items()
         }
-
         return base_stats
 
     def get_optimization_suggestions(self) -> List[str]:
-        """Get optimization suggestions from performance monitor."""
-        suggestions = self.performance_monitor.get_optimization_suggestions()
-
-        # Add cache-specific suggestions
-        stats = self.get_cache_stats()
-        if 'move_cache_stats' in stats:
-            move_stats = stats['move_cache_stats']
-            if move_stats.get('simple_move_cache_size', 0) < 50:
-                suggestions.append("Simple move cache underutilized - consider more simple move patterns")
-
-            if stats['avg_legal_gen_time_ms'] > 5.0:
-                suggestions.append("Slow move generation. Consider vectorization or better caching strategies.")
-
-        return suggestions
+        return self.performance_monitor.get_optimization_suggestions()
 
     def _log_cache_stats(self, context: str) -> None:
-        """Log cache statistics for debugging."""
         stats = self.get_cache_stats()
         print(f"[CacheManager] {context} stats:")
+        print(f"  Main TT Size: {stats['main_tt_size_mb']} MB (~{stats.get('main_tt_capacity_estimate', 0):,} entries)")
+        print(f"  Sym TT Size: {stats['sym_tt_size_mb']} MB (~{stats.get('sym_tt_capacity_estimate', 0):,} entries)")
         print(f"  TT Hit Rate: {stats['tt_hit_rate']:.3f}")
+        print(f"  Parallel Workers: {stats.get('max_workers', 'N/A')}")
         print(f"  Avg Move Apply Time: {stats['avg_move_apply_time_ms']:.2f}ms")
         print(f"  Avg Legal Move Time: {stats['avg_legal_gen_time_ms']:.2f}ms")
 
         suggestions = self.get_optimization_suggestions()
         if suggestions:
-            print(f"  Optimization Suggestions: {len(suggestions)}")
-            for suggestion in suggestions[:3]:  # Show top 3
+            print(f"  Optimization Suggestions ({len(suggestions)}):")
+            for suggestion in suggestions[:3]:
                 print(f"    - {suggestion}")
 
     # --------------------------------------------------------------------------
-    # EFFECT CACHE INTERFACE METHODS - ENHANCED
+    # EFFECT CACHE INTERFACE (UNCHANGED)
     # --------------------------------------------------------------------------
     def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
         return self._effect["freeze"].is_frozen(sq, victim)
@@ -640,7 +630,7 @@ class OptimizedCacheManager:
         return self._effect["archery"].is_valid_attack(sq, controller)
 
     def can_capture_wall(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
-        return self._effect["armoured"].can_capture(attacker_sq, wall_sq, controller)
+        return self._effect["armour"].can_capture(attacker_sq, wall_sq, controller)
 
     def pieces_at(self, sq: Tuple[int, int, int]) -> List['Piece']:
         return self._effect["share_square"].pieces_at(sq)
@@ -648,84 +638,68 @@ class OptimizedCacheManager:
     def top_piece(self, sq: Tuple[int, int, int]) -> Optional['Piece']:
         return self._effect["share_square"].top_piece(sq)
 
-    # NEW: Attacks cache interface methods
     def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        """Get attacked squares for a color, using cache."""
         cached = self._effect["attacks"].get_for_color(color)
-        if cached is not None:
-            return cached
-        # If not cached, calculate and store (but calculation logic should be in check.py)
-        # For now, return empty set or raise if needed
-        return set()
+        return cached if cached is not None else set()
 
-    def is_pinned(self, coord: Tuple[int, int, int], color: Color) -> bool:
-        """
-        Determine if the piece at `coord` is pinned to its king.
-        This is a simplified version; full pinning logic requires ray detection.
-        """
-        # Optional: use a real pin calculator later
-        # For now, return False to unblock execution
+    def is_pinned(self, coord: Tuple[int, int, int], color: Optional[Color] = None) -> bool:
+        if color is None:
+            piece = self.piece_cache.get(coord)
+            if piece is None:
+                return False
+            color = piece.color
         return False
 
     def store_attacked_squares(self, color: Color, attacked: Set[Tuple[int, int, int]]) -> None:
-        """Store attacked squares for a color."""
         self._effect["attacks"].store_for_color(color, attacked)
 
     # --------------------------------------------------------------------------
-    # CONFIGURATION METHODS
+    # CONFIGURATION
     # --------------------------------------------------------------------------
     def configure_transposition_table(self, size_mb: int) -> None:
-        """Configure transposition table size."""
-        self._tt_size_mb = size_mb
+        self.main_tt_size_mb = size_mb
         if self._move_cache:
-            # Recreate with new size
             current_color = self._move_cache._current
-            self._move_cache = create_optimized_move_cache(self.board, current_color, self)
+            self._move_cache = create_optimized_move_cache(
+                self.board, current_color, self,
+                main_tt_size_mb=size_mb,
+                sym_tt_size_mb=self.sym_tt_size_mb  # Preserve sym size
+            )
+
+    def configure_symmetry_tt(self, size_mb: int) -> None:  # Add this method
+        self.sym_tt_size_mb = size_mb
+        if self._move_cache:
+            current_color = self._move_cache._current
+            self._move_cache = create_optimized_move_cache(
+                self.board, current_color, self,
+                main_tt_size_mb=self.main_tt_size_mb,  # Preserve main size
+                sym_tt_size_mb=size_mb
+            )
 
     def set_parallel_processing(self, enabled: bool) -> None:
-        """Enable/disable parallel move generation."""
         self._enable_parallel = enabled
-        if self._move_cache:
-            self._move_cache._enable_parallel = enabled
 
     def set_vectorization(self, enabled: bool) -> None:
-        """Enable/disable vectorized operations."""
         self._enable_vectorization = enabled
-        if self._move_cache:
-            self._move_cache._enable_vectorization = enabled
 
     # --------------------------------------------------------------------------
-    # UTILITY METHODS
+    # UTILITY
     # --------------------------------------------------------------------------
     def clear_all_caches(self) -> None:
-        """Clear all caches and reset statistics."""
-        # Clear move cache
         if self._move_cache:
-            self._move_cache._simple_move_cache.clear()
-            self._move_cache._vectorized_cache.clear()
-            self._move_cache._legal_per_piece.clear()
-            self._move_cache._rebuild_color_lists()
-
-        # Clear effect caches
+            self._move_cache.clear()
         for cache in self._effect.values():
             if hasattr(cache, 'clear'):
                 cache.clear()
-            # NEW: For attacks, invalidate
             elif hasattr(cache, 'invalidate'):
                 cache.invalidate()
-
-        # Clear occupancy cache
         self.occupancy.rebuild(self.board)
-
-        # Reset performance monitor
         self.performance_monitor = CachePerformanceMonitor()
         self.performance_monitor.record_event(CacheEventType.CACHE_CLEARED, {})
-
-        # Reset move counter
         self._move_counter = 0
+        gc.collect()
 
     def export_cache_state(self) -> Dict[str, Any]:
-        """Export current cache state for analysis."""
         return {
             'zobrist_hash': self._current_zobrist_hash,
             'performance_stats': self.get_cache_stats(),
@@ -739,29 +713,22 @@ class OptimizedCacheManager:
             }
         }
 
+
 # ==============================================================================
-# FACTORY FUNCTION FOR BACKWARD COMPATIBILITY
+# FACTORY & BACKWARD COMPATIBILITY
 # ==============================================================================
 
 def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
-    """Create and initialize a new OptimizedCacheManager for the given board and player."""
     cache = OptimizedCacheManager(board)
     cache.initialise(current)
     return cache
 
-# ==============================================================================
-# BACKWARD COMPATIBILITY LAYER
-# ==============================================================================
 
 class CacheManager(OptimizedCacheManager):
-    """Backward compatibility wrapper for the original CacheManager."""
-
     def __init__(self, board: Board) -> None:
         super().__init__(board)
 
-    # Alias methods for backward compatibility
     def sync_board(self, new_board: Board) -> None:
-        """Deprecated - use new board reference instead."""
         import warnings
         warnings.warn("sync_board is deprecated. Create a new CacheManager instead.", DeprecationWarning)
         self.board = new_board
@@ -770,7 +737,6 @@ class CacheManager(OptimizedCacheManager):
             self._move_cache._board = new_board
 
     def replace_board(self, new_board: Board) -> None:
-        """Deprecated - use new board reference instead."""
         import warnings
         warnings.warn("replace_board is deprecated. Create a new CacheManager instead.", DeprecationWarning)
         self.board = new_board

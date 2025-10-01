@@ -1,61 +1,51 @@
-"""Counter-clockwise 3-D spiral slider — projects 6 spiral rays (one per face)."""
+"""Counter-clockwise 3-D spiral slider — 6 fixed-offset rays via slidermovement."""
 
-from typing import List
+from typing import List, Tuple
+import numpy as np
 from game3d.pieces.enums import PieceType, Color
-from game3d.movement.pathvalidation import validate_piece_at
-from game3d.movement.movepiece import Move  # Ensure Move is imported!
+from game3d.movement.movepiece import Move
+from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
 from game3d.cache.manager import OptimizedCacheManager
-# Precomputed spiral offsets per face direction
-_SPIRAL_PATTERNS = {
-    (1, 0, 0):  [(1, (0, 0)), (2, (0, 1)), (3, (-1, 1)), (4, (-1, 0)), (5, (-1, -1)), (6, (0, -1)), (7, (1, -1)), (8, (1, 0))],
-    (-1, 0, 0): [(1, (0, 0)), (2, (0, -1)), (3, (-1, -1)), (4, (-1, 0)), (5, (-1, 1)), (6, (0, 1)), (7, (1, 1)), (8, (1, 0))],
-    (0, 1, 0):  [(1, (0, 0)), (2, (-1, 0)), (3, (-1, 1)), (4, (0, 1)), (5, (1, 1)), (6, (1, 0)), (7, (1, -1)), (8, (0, -1))],
-    (0, -1, 0): [(1, (0, 0)), (2, (1, 0)), (3, (1, 1)), (4, (0, 1)), (5, (-1, 1)), (6, (-1, 0)), (7, (-1, -1)), (8, (0, -1))],
-    (0, 0, 1):  [(1, (0, 0)), (2, (1, 0)), (3, (1, 1)), (4, (0, 1)), (5, (-1, 1)), (6, (-1, 0)), (7, (-1, -1)), (8, (0, -1))],
-    (0, 0, -1): [(1, (0, 0)), (2, (-1, 0)), (3, (-1, 1)), (4, (0, 1)), (5, (1, 1)), (6, (1, 0)), (7, (1, -1)), (8, (0, -1))],
-}
 
-def generate_spiral_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
-    """Generate spiral moves: 6 rays (one per face), each rotating CCW with radius 2."""
-    start = (x, y, z)
+# --------------------------------------------------------------------------- #
+#  Pre-computed spiral offsets (same data, now NumPy)
+# --------------------------------------------------------------------------- #
+_SPIRAL_VECTORS: List[Tuple[Tuple[int, int, int], np.ndarray]] = [
+    (( 1, 0, 0), np.array([(0, 0, 0), (0, 1, 0), (-1, 1, 0), (-1, 0, 0),
+                            (-1, -1, 0), (0, -1, 0), (1, -1, 0), (1, 0, 0)], dtype=np.int8)),
+    ((-1, 0, 0), np.array([(0, 0, 0), (0, -1, 0), (-1, -1, 0), (-1, 0, 0),
+                            (-1, 1, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)], dtype=np.int8)),
+    (( 0, 1, 0), np.array([(0, 0, 0), (-1, 0, 0), (-1, 0, 1), (0, 0, 1),
+                            (1, 0, 1), (1, 0, 0), (1, 0, -1), (0, 0, -1)], dtype=np.int8)),
+    (( 0, -1, 0), np.array([(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1),
+                             (-1, 0, 1), (-1, 0, 0), (-1, 0, -1), (0, 0, -1)], dtype=np.int8)),
+    (( 0, 0, 1), np.array([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+                            (-1, 1, 0), (-1, 0, 0), (-1, -1, 0), (0, -1, 0)], dtype=np.int8)),
+    (( 0, 0, -1), np.array([(0, 0, 0), (-1, 0, 0), (-1, 1, 0), (0, 1, 0),
+                             (1, 1, 0), (1, 0, 0), (1, -1, 0), (0, -1, 0)], dtype=np.int8)),
+]
 
-    # Validate piece at start
-    if not validate_piece_at(cache, color, start, expected_type=PieceType.SPIRAL):
-        return []
+# Build one flat array of absolute step vectors for the slidermovement engine
+SPIRAL_DIRECTIONS = np.vstack([off + np.array(dir_ax) * (i + 1)
+                               for dir_ax, offsets in _SPIRAL_VECTORS
+                               for i, off in enumerate(offsets)])
 
-    moves: List[Move] = []
-
-    for direction, spiral_steps in _SPIRAL_PATTERNS.items():
-        dx, dy, dz = direction
-
-        for step, (offset_a, offset_b) in spiral_steps:
-            # Position along main axis: start + step * direction
-            along_x = x + step * dx
-            along_y = y + step * dy
-            along_z = z + step * dz
-
-            # Apply spiral offset in perpendicular plane
-            if dx != 0:  # X-axis movement → offset in YZ plane
-                target = (along_x, along_y + offset_a, along_z + offset_b)
-            elif dy != 0:  # Y-axis → offset in XZ plane
-                target = (along_x + offset_a, along_y, along_z + offset_b)
-            else:  # Z-axis → offset in XY plane
-                target = (along_x + offset_a, along_y + offset_b, along_z)
-
-            # Bounds check (BOARD_SIZE = 9)
-            if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
-                break  # Ray ends at board edge
-
-            if target == start:
-                continue  # Skip self (shouldn't occur)
-
-            occupant = cache.piece_cache.get(target)
-            if occupant is None:
-                moves.append(Move(from_coord=start, to_coord=target, is_capture=False))
-            elif occupant.color != color:
-                moves.append(Move(from_coord=start, to_coord=target, is_capture=True))
-                break  # Can't move through enemy
-            else:
-                break  # Blocked by friendly piece
-
-    return moves
+def generate_spiral_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List[Move]:
+    engine = get_integrated_movement_generator(cache)
+    return engine.generate_sliding_moves(
+        color=color,
+        piece_type=PieceType.SPIRAL,   # <-- NEW
+        position=(x, y, z),
+        directions=SPIRAL_DIRECTIONS,
+        max_steps=1,
+        allow_capture=True,
+        allow_self_block=False,
+        use_symmetry=True,
+        use_amd=True
+    )

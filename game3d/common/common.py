@@ -1,3 +1,4 @@
+#common.py
 # ------------------------------------------------------------------
 # Coordinate utilities – optimised drop-in replacements
 # ------------------------------------------------------------------
@@ -19,7 +20,6 @@ Coord = Tuple[int, int, int]
 WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
 BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
 CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
-
 # ------------------------------------------------------------------
 # Fast bounds check – branch-free, no Python-level tuple unpacking
 # ------------------------------------------------------------------

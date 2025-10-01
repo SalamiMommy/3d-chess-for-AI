@@ -4,21 +4,22 @@ from game3d.pieces.piece import Piece
 from game3d.pieces.enums import Color, PieceType
 from game3d.common.common import Coord, WHITE_SLICE, BLACK_SLICE, N_PLANES_PER_SIDE, SIZE_X, SIZE_Y, SIZE_Z
 import numpy as np
-
+import threading
 if TYPE_CHECKING:
     from game3d.board.board import Board  # Only for type checking
 else:
     Board = object  # Dummy type for runtime
 
 class PieceCache:
-    """Optimized piece cache using separate color dictionaries."""
-    __slots__ = ("_white_pieces", "_black_pieces", "_valid")
+    __slots__ = ("_white_pieces", "_black_pieces", "_valid", "_occ_view", "_lock")
 
     def __init__(self, board: "Board") -> None:
         self._white_pieces: Dict[Coord, PieceType] = {}
         self._black_pieces: Dict[Coord, PieceType] = {}
         self._valid = False
+        self._occ_view: Optional[np.ndarray] = None  # <-- NEW
         self.rebuild(board)
+        self._lock = threading.RLock()
 
     def get(self, coord: Coord) -> Optional[Piece]:
         """O(1) lookup with minimal overhead."""
@@ -42,6 +43,9 @@ class PieceCache:
             yield coord, Piece(color, ptype)
 
     def rebuild(self, board: "Board") -> None:
+        # Invalidate cached view
+        if hasattr(self, '_occ_view'):
+            delattr(self, '_occ_view')
         self._white_pieces.clear()
         self._black_pieces.clear()
 
@@ -97,3 +101,16 @@ class PieceCache:
             ptyp[x, y, z] = ptype.value
 
         return occ, ptyp
+
+    def get_occupancy_view(self) -> np.ndarray:
+        """Thread-safe occupancy view with copy-on-demand."""
+        with self._lock:
+            if not hasattr(self, '_occ_view') or not self._valid:
+                occ = np.zeros((9, 9, 9), dtype=np.uint8)
+                for (x, y, z), _ in self._white_pieces.items():
+                    occ[x, y, z] = 1
+                for (x, y, z), _ in self._black_pieces.items():
+                    occ[x, y, z] = 2
+                self._occ_view = occ
+            # Return a COPY to prevent external mutation
+            return self._occ_view.copy()  # ← Critical change

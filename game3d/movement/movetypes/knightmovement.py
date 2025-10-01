@@ -1,58 +1,54 @@
-"""3D Knight move generation logic — handles share-square rules."""
-
-from __future__ import annotations
+# ------------------------------------------------------------------
+#  New knight generator – share-square with *any* friendly
+# ------------------------------------------------------------------
 from typing import List
+import numpy as np
+
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.common.common import in_bounds, add_coords
-from game3d.movement.pathvalidation import validate_piece_at
+from game3d.movement.movetypes.jumpmovement import (
+    get_integrated_jump_movement_generator,
+)
 
-# Precomputed knight offsets for 3D (24 directions)
-KNIGHT_OFFSETS = [
+# 24 knight offsets (unchanged)
+KNIGHT_OFFSETS = np.array([
     (1, 2, 0), (1, -2, 0), (-1, 2, 0), (-1, -2, 0),
     (2, 1, 0), (2, -1, 0), (-2, 1, 0), (-2, -1, 0),
     (1, 0, 2), (1, 0, -2), (-1, 0, 2), (-1, 0, -2),
     (2, 0, 1), (2, 0, -1), (-2, 0, 1), (-2, 0, -1),
     (0, 1, 2), (0, 1, -2), (0, -1, 2), (0, -1, -2),
     (0, 2, 1), (0, 2, -1), (0, -2, 1), (0, -2, -1),
-]
+], dtype=np.int8)
 
-def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List['Move']:
-    """Generate all legal knight moves from (x, y, z) – Share-Square aware."""
+def generate_knight_moves(state: "GameState", x: int, y: int, z: int) -> List[Move]:
+    """Generate all legal knight moves from (x, y, z) – share-square with *any* friendly."""
     pos = (x, y, z)
 
-    # Validate that the piece at pos is a KNIGHT of the current side
-    if not validate_piece_at(state.cache, state.color, pos, PieceType.KNIGHT):
-        return []
+    # 2. delegate the heavy lifting to the integrated jump generator
+    gen = get_integrated_jump_movement_generator(state.cache)
+    raw_moves = gen.generate_jump_moves(
+        color=state.color,
+        position=pos,
+        directions=KNIGHT_OFFSETS,
+        allow_capture=True,          # we *do* want captures
+    )
 
-    cache = state.cache
-    color = state.color
-    moves: List['Move'] = []
+    # 3. filter out friendly-occupied squares *only* when they are **not** knights
+    #    (the kernel already removed illegal king captures when enemy has priests)
+    moves: List[Move] = []
+    for m in raw_moves:
+        occupants = state.cache.pieces_at(m.to_coord)
 
-    for offset in KNIGHT_OFFSETS:
-        target = add_coords(pos, offset)
-        if not in_bounds(target):
+        # empty or enemy → keep
+        if not occupants or any(p.color != state.color for p in occupants):
+            moves.append(m)
             continue
 
-        occupants = cache.pieces_at(target)
-
-        if not occupants:
-            # Empty square → normal move
-            moves.append(Move(from_coord=pos, to_coord=target, is_capture=False))
-        else:
-            # Filter out knights (they can share)
-            non_knights = [p for p in occupants if p.ptype != PieceType.KNIGHT]
-
-            if non_knights:
-                friendly_non_knights = [p for p in non_knights if p.color == color]
-                if friendly_non_knights:
-                    continue  # blocked by friendly non-knight
-
-                enemy_non_knights = [p for p in non_knights if p.color != color]
-                if enemy_non_knights:
-                    moves.append(Move(from_coord=pos, to_coord=target, is_capture=True))
-            else:
-                # Only knights occupy the square → sharing allowed
-                moves.append(Move(from_coord=pos, to_coord=target, is_capture=False))
+        # square contains only friendly pieces → always allowed (share)
+        if all(p.color == state.color for p in occupants):
+            # convert capture flag to False (it is not a capture)
+            moves.append(
+                Move(from_coord=m.from_coord, to_coord=m.to_coord, is_capture=False)
+            )
 
     return moves

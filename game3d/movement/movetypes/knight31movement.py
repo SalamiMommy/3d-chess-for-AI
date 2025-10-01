@@ -1,48 +1,47 @@
-"""Knight (3,1) leaper — 3-axis 3-D knight."""
+"""Knight (3,1,1) leaper — 3-D knight using the integrated jump engine."""
+from __future__ import annotations
 
 from typing import List
+import numpy as np
+
 from game3d.pieces.enums import PieceType, Color
-from game3d.movement.pathvalidation import validate_piece_at
-from game3d.movement.movepiece import Move  # ← Import Move
+ 
+from game3d.movement.movepiece import Move
 from game3d.cache.manager import OptimizedCacheManager
-# 24 unique (3,1,1) permutations with all sign combinations
-VECTORS_31 = [
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+
+# ------------------------------------------------------------------
+#  24 unique (3,1,1) permutations with all sign combinations
+# ------------------------------------------------------------------
+VECTORS_31 = np.array([
     # (3,1,1) family
     (3, 1, 1), (3, 1, -1), (3, -1, 1), (3, -1, -1),
-    (-3, 1, 1), (-3, 1, -1), (-3, -1, 1), (-3, -1, -1),
+    (-3, 1, 1), (-3, 1, -1), (-3, -1, 1), (-3, -1, -3),
     # (1,3,1) family
     (1, 3, 1), (1, 3, -1), (1, -3, 1), (1, -3, -1),
     (-1, 3, 1), (-1, 3, -1), (-1, -3, 1), (-1, -3, -1),
     # (1,1,3) family
     (1, 1, 3), (1, 1, -3), (1, -1, 3), (1, -1, -3),
     (-1, 1, 3), (-1, 1, -3), (-1, -1, 3), (-1, -1, -3),
-]
+], dtype=np.int8)
 
-def generate_knight31_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List['Move']:
-    """Generate all (3,1,1) knight leaps."""
-    start = (x, y, z)
+# ------------------------------------------------------------------
+#  Move generator
+# ------------------------------------------------------------------
+def generate_knight31_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    """Generate all legal (3,1,1) knight leaps."""
+    pos = (x, y, z)
 
-    # Validate piece at start position
-    if not validate_piece_at(cache, color, start, expected_type=PieceType.KNIGHT31):
-        return []
+      
 
-    moves = []
-
-    for offset in VECTORS_31:
-        target = (x + offset[0], y + offset[1], z + offset[2])
-        # Bounds check (BOARD_SIZE = 9)
-        if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
-            continue
-
-        occupant = cache.piece_cache.get(target)
-        if occupant is not None and occupant.color == color:
-            continue  # Skip friendly pieces
-
-        is_capture = occupant is not None and occupant.color != color
-        moves.append(Move(
-            from_coord=start,
-            to_coord=target,
-            is_capture=is_capture
-        ))
-
-    return moves
+    jump_gen = get_integrated_jump_movement_generator(cache)
+    return jump_gen.generate_jump_moves(
+        color=color,
+        position=pos,
+        directions=VECTORS_31,
+        allow_capture=True,
+    )

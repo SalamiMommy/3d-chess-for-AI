@@ -1,48 +1,44 @@
-"""Mirror Teleport Move — teleports piece to (8-x, 8-y, 8-z)."""
+"""Mirror Teleport Move — implemented as a 1-direction jump through the
+existing IntegratedJumpMovementGenerator so all caching/GPU paths stay intact.
+"""
+
+from __future__ import annotations
 
 from typing import List
-from game3d.pieces.enums import PieceType, Color
+import numpy as np
+
+from game3d.pieces.enums import Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import validate_piece_at
-from game3d.cache.manager import OptimizedCacheManager
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.cache.manager import CacheManager
 
 def generate_mirror_teleport_move(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    cache: CacheManager,
     color: Color,
     x: int, y: int, z: int
-) -> List['Move']:
+) -> List[Move]:
     """
-    Generate a single teleport move to mirrored coordinates: (8-x, 8-y, 8-z).
-
-    Rules:
-    - Cannot teleport to own square (e.g., center (4,4,4))
-    - Can land on empty squares or capture enemy pieces
-    - Cannot land on friendly pieces
+    Teleport to (8-x, 8-y, 8-z) by treating it as a single jump direction
+    and re-using the zero-redundancy jump engine.
     """
     start = (x, y, z)
-
-    if not validate_piece_at(cache, color, start, PieceType.MIRROR):  # ← cache, not board
-        return []
-
     target = (8 - x, 8 - y, 8 - z)
 
-    # Prevent no-op teleport
+    # no-op guard
     if start == target:
         return []
 
-    target_piece = cache.piece_cache.get(target)  # ← cache, not board
+    # single direction vector
+    dirs = np.array([[target[0] - start[0],
+                      target[1] - start[1],
+                      target[2] - start[2]]], dtype=np.int8)
 
-    # Cannot land on friendly pieces
-    if target_piece is not None and target_piece.color == color:
-        return []
-
-    # Capture if enemy piece
-    is_capture = target_piece is not None and target_piece.color != color
-
-    return [
-        Move(
-            from_coord=start,
-            to_coord=target,
-            is_capture=is_capture
-        )
-    ]
+    # hand off to the existing jump generator
+    gen = get_integrated_jump_movement_generator(cache)
+    return gen.generate_jump_moves(
+        color=color,
+        position=start,
+        directions=dirs,
+        allow_capture=True,      # teleport may capture
+        use_amd=True             # keep GPU path if available
+    )

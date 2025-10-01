@@ -330,3 +330,42 @@ class SymmetryManager:
             'cache_size': len(self.canonical_cache),
             'rotation_count': self.get_rotation_count()
         }
+
+    # Add these methods to SymmetryManager class:
+
+    def normalize_position(self, position: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        """Normalize position using board symmetry."""
+        x, y, z = position
+        center = (self.size_x - 1) // 2
+
+        # Map to first octant using symmetry
+        norm_x = min(x, self.size_x - 1 - x) if x < center else max(x, self.size_x - 1 - x)
+        norm_y = min(y, self.size_y - 1 - y) if y < center else max(y, self.size_y - 1 - y)
+        norm_z = min(z, self.size_z - 1 - z) if z < center else max(z, self.size_z - 1 - z)
+
+        return (norm_x, norm_y, norm_z)
+
+    def create_movement_symmetry_key(self, piece_type: Any, position: Tuple[int, int, int],
+                                    color: Any) -> Tuple:
+        """Create symmetry-aware cache key for movement generation."""
+        norm_pos = self.normalize_position(position)
+        return (piece_type, norm_pos, color)
+
+    def get_or_compute_with_symmetry(self, key: Any, compute_fn: Callable,
+                                    use_symmetry: bool = True) -> Any:
+        """Generic symmetry-aware caching with LRU eviction."""
+        if use_symmetry and key in self.canonical_cache:
+            self.cache_hits += 1
+            return self.canonical_cache[key]
+
+        self.cache_misses += 1
+        result = compute_fn()
+
+        if use_symmetry:
+            self.canonical_cache[key] = result
+            # LRU eviction if needed
+            if len(self.canonical_cache) > 5000:
+                oldest_key = next(iter(self.canonical_cache))
+                del self.canonical_cache[oldest_key]
+
+        return result

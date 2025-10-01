@@ -1,42 +1,40 @@
 # game3d/movement/movetypes/bishopmovement.py
-"""3D Bishop move generation logic — pure movement rules, no registration."""
+"""3D Bishop move generation — now symmetry-aware via slidermovement engine."""
 
 import numpy as np
 from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
 from game3d.cache.manager import OptimizedCacheManager
 
-# Precomputed constant: 20 unique 3D diagonal directions
+# --------------------------------------------------------------------------- #
+#  Geometry owned by the piece module                                        #
+# --------------------------------------------------------------------------- #
 BISHOP_DIRECTIONS = np.array([
-    # XY plane diagonals (z fixed)
     (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0),
-    # XZ plane diagonals (y fixed)
     (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1),
-    # YZ plane diagonals (x fixed)
-    (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1),
-    # Full 3D space diagonals
-    (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1),
-    (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1),
-])
+    (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1)
+], dtype=np.int8)
 
+# --------------------------------------------------------------------------- #
+#  Public API — signature unchanged                                          #
+# --------------------------------------------------------------------------- #
 def generate_bishop_moves(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    cache: OptimizedCacheManager,
     color: Color,
     x: int, y: int, z: int
-) -> List['Move']:
-    """Generate all legal bishop moves from (x, y, z)."""
-    pos = (x, y, z)
-
-    if not validate_piece_at(cache, color, pos, PieceType.BISHOP):  # ← cache, not board
-        return []
-
-    return slide_along_directions(
-        cache=cache,  # ← cache, not board
+) -> List[Move]:
+    """Generate all legal bishop moves from (x, y, z) with symmetry optimisation."""
+    engine = get_integrated_movement_generator(cache)
+    return engine.generate_sliding_moves(
         color=color,
-        start=pos,
+        piece_type=PieceType.BISHOP,   # <-- NEW
+        position=(x, y, z),
         directions=BISHOP_DIRECTIONS,
+        max_steps=9,
         allow_capture=True,
-        allow_self_block=False
+        allow_self_block=False,
+        use_symmetry=True,
+        use_amd=True
     )

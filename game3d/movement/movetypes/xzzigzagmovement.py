@@ -1,102 +1,58 @@
-"""XZ-Zig-Zag Slider — zig-zag rays along coordinate planes."""
+"""XZ-Zig-Zag Slider — zig-zag rays via slidermovement engine."""
 
+import numpy as np
 from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import validate_piece_at
+from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
 from game3d.cache.manager import OptimizedCacheManager
 
-SEGMENT_LENGTH = 3
+# ---------------------------------------------------------------------------
+#  Pre-build every square visited by every zig-zag ray
+#  (same logic as YZ-Zig-Zag, just different fixed axis)
+# ---------------------------------------------------------------------------
+def _build_xz_zigzag_vectors() -> np.ndarray:
+    vecs = []
+    for plane, fixed_axis in [('XZ', 1), ('XY', 2), ('YZ', 0)]:
+        for pri, sec in [(1, -1), (-1, 1)]:
+            seq = []
+            curr = np.zeros(3, dtype=np.int8)
+            move_primary = True
+            for seg in range(3):                    # 3 segments → 9 steps
+                step = np.zeros(3, dtype=np.int8)
+                if plane == 'XZ':
+                    step[0 if move_primary else 2] = pri if move_primary else sec
+                elif plane == 'XY':
+                    step[0 if move_primary else 1] = pri if move_primary else sec
+                else:                               # YZ
+                    step[1 if move_primary else 2] = pri if move_primary else sec
+                for _ in range(3):
+                    curr = curr + step
+                    seq.append(curr.copy())
+                move_primary ^= 1
+            vecs.extend(seq)
+    return np.array(vecs, dtype=np.int8)
 
-def _zigzag_ray(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
-    color: Color,
-    start: tuple[int, int, int],
-    plane: str,      # 'XZ', 'XY', 'YZ'
-    primary_dir: int,    # +1 or -1 for first axis
-    secondary_dir: int,  # +1 or -1 for second axis
-    fixed_coord: int
-) -> List['Move']:
-    """Generate one zig-zag ray in the specified plane."""
-    x, y, z = start
-    current_color = color
-    moves: List['Move'] = []
+XZ_ZIGZAG_DIRECTIONS = _build_xz_zigzag_vectors()
 
-    # Determine which coordinates are variable
-    if plane == 'XZ':  # Y fixed
-        var1, var2 = x, z
-        axis1, axis2 = 'x', 'z'
-    elif plane == 'XY':  # Z fixed
-        var1, var2 = x, y
-        axis1, axis2 = 'x', 'y'
-    else:  # 'YZ' - X fixed
-        var1, var2 = y, z
-        axis1, axis2 = 'y', 'z'
-
-    # Track current position
-    curr1, curr2 = var1, var2
-    move_axis_1 = True  # Start by moving along first axis
-
-    while True:
-        direction = primary_dir if move_axis_1 else secondary_dir
-        steps_taken = 0
-
-        while steps_taken < SEGMENT_LENGTH:
-            # Move along current axis
-            if move_axis_1:
-                curr1 += direction
-            else:
-                curr2 += direction
-
-            # Build target coordinate
-            if plane == 'XZ':
-                target = (curr1, fixed_coord, curr2)
-            elif plane == 'XY':
-                target = (curr1, curr2, fixed_coord)
-            else:  # YZ
-                target = (fixed_coord, curr1, curr2)
-
-            # Bounds check
-            if not (0 <= target[0] < 9 and 0 <= target[1] < 9 and 0 <= target[2] < 9):
-                return moves
-
-            occupant = cache.piece_cache.get(target)  # ← NOW cache is defined
-            if occupant is not None:
-                if occupant.color != current_color:
-                    moves.append(Move(from_coord=start, to_coord=target, is_capture=True))
-                return moves
-
-            moves.append(Move(from_coord=start, to_coord=target, is_capture=False))
-            steps_taken += 1
-
-        # Switch axis for next segment
-        move_axis_1 = not move_axis_1
-
+# ---------------------------------------------------------------------------
+# Public drop-in replacement
+# ---------------------------------------------------------------------------
 def generate_xz_zigzag_moves(
-    cache: OptimizedCacheManager,  # ← CHANGED: board → cache
+    cache: OptimizedCacheManager,
     color: Color,
-    x: int,
-    y: int,
-    z: int
-) -> List['Move']:
-    """Generate all zig-zag moves in XZ, XY, and YZ planes."""
-    start = (x, y, z)
-    if not validate_piece_at(cache, color, start, PieceType.XZZIGZAG):  # ← cache, not board
-        return []
-
-    moves: List['Move'] = []
-    directions = [(1, -1), (-1, 1)]
-
-    # XZ plane (Y fixed)
-    for pri, sec in directions:
-        moves.extend(_zigzag_ray(cache, color, start, 'XZ', pri, sec, y))  # ← cache, not board
-
-    # XY plane (Z fixed)
-    for pri, sec in directions:
-        moves.extend(_zigzag_ray(cache, color, start, 'XY', pri, sec, z))  # ← cache, not board
-
-    # YZ plane (X fixed)
-    for pri, sec in directions:
-        moves.extend(_zigzag_ray(cache, color, start, 'YZ', pri, sec, x))  # ← cache, not board
-
-    return moves
+    x: int, y: int, z: int
+) -> List[Move]:
+    """Generate all XZ-zig-zag moves via slidermovement engine."""
+    engine = get_integrated_movement_generator(cache)
+    return engine.generate_sliding_moves(
+        color=color,
+        piece_type=PieceType.XZZIGZAG,   # <-- NEW
+        position=(x, y, z),
+        directions=XZ_ZIGZAG_DIRECTIONS,
+        max_steps=1,
+        allow_capture=True,
+        allow_self_block=False,
+        use_symmetry=True,
+        use_amd=True
+    )
