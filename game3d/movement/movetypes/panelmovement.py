@@ -36,10 +36,10 @@ def generate_panel_moves(
     gen = get_integrated_jump_movement_generator(cache)
     return gen.generate_jump_moves(
         color=color,
-        position=(x, y, z),
+        pos=(x, y, z),
         directions=_PANEL_DIRECTIONS,
-        allow_capture=True,
-        use_amd=True          # keep GPU path when available
+       
+                  # keep GPU path when available
     )
 
 # Optional helper for external consumers

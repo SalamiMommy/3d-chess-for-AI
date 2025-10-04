@@ -100,8 +100,8 @@ def generate_edgerook_moves(
 
     legal_moves = jump_gen.generate_jump_moves(
         color=color,
-        position=start,
+        pos=start,
         directions=directions,
-        allow_capture=True,
+       
     )
     return legal_moves

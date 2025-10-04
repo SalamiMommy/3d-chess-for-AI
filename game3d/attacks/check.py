@@ -1,19 +1,30 @@
-"""Optimized check detector for 9×9×9 with enhanced caching and performance."""
-
+# game3d/attacks/check.py
 from __future__ import annotations
-from typing import Protocol, Optional, runtime_checkable, Dict, Set, Tuple, List
+from typing import Protocol, Optional, runtime_checkable, Dict, Set, Tuple, List, Any
 from dataclasses import dataclass
 from enum import Enum
 import weakref
 from typing import Iterable
-from game3d.common.common import Coord, N_PLANES_PER_SIDE, in_bounds
+from threading import local
+# -----------  bring in the constants that live in common  -----------
+from game3d.common.common import (
+    Coord,
+    in_bounds,
+    N_PIECE_TYPES,      #  ← this was missing
+    N_COLOR_PLANES,     #  (and the other new constants, just in case)
+    N_TOTAL_PLANES,
+    PIECE_SLICE,
+    COLOR_SLICE,
+)
+# --------------------------------------------------------------------
+
 from game3d.pieces.piece import Piece
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
-from game3d.pieces.enums import PieceType, Color
-
+from game3d.pieces.enums import PieceType, Color, Result
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
+_thread_local = local()
 
 @runtime_checkable
 class BoardProto(Protocol):
@@ -43,20 +54,11 @@ class CheckStatus(Enum):
 # ==============================================================================
 # OPTIMIZED CHECK DETECTION
 # ==============================================================================
-def _any_priest_alive(board: Board, king_color: Color = None, cache=None) -> bool:
-    """Fast check if any priest is alive using tensor sums."""
-    priest_idx = PieceType.PRIEST.value
-    white_priests = board._tensor[priest_idx].sum().item()
-    black_priests = board._tensor[N_PLANES_PER_SIDE + priest_idx].sum().item()
-
-    if king_color is not None:
-        # Check only for specific color's priests
-        if king_color == Color.WHITE:
-            return white_priests > 0
-        else:
-            return black_priests > 0
-
-    return (white_priests + black_priests) > 0
+def _any_priest_alive(board: BoardProto, king_color: Color | None = None, cache=None) -> bool:
+    # Check if we're already in move generation
+    if getattr(_thread_local, 'in_move_generation', False):
+        # Use a simpler check that doesn't generate moves
+        return _simple_priest_check(board, king_color)
 
 def _find_king_position(board: BoardProto, king_color: Color, cache=None) -> Optional[Tuple[int, int, int]]:
     """Find king position with caching."""
@@ -149,13 +151,28 @@ def square_attacked_by(
     attacked_squares = _get_attacked_squares_cached(board, attacker_color, cache)
     return square in attacked_squares
 
+def _is_king_attacked_directly(
+    board: BoardProto,
+    king_pos: Tuple[int, int, int],
+    attacker_color: Color,
+    cache=None
+) -> bool:
+    """Check if king is attacked without generating moves."""
+    for coord, piece in board.list_occupied():
+        if piece.color != attacker_color:
+            continue
+
+        # Check if this piece can attack the king
+        if _can_piece_attack_square(piece, coord, king_pos, board):
+            return True
+    return False
+
 def king_in_check(
     board: BoardProto,
     current_player: Color,
     king_color: Color,
     cache=None
 ) -> bool:
-    """Optimized incremental king check detection - NO full move generation."""
     # Fast path: if priests are alive, no check
     if _any_priest_alive(board, king_color, cache):
         return False
@@ -165,50 +182,8 @@ def king_in_check(
     if king_pos is None:
         return False
 
-    # Check if any enemy piece can attack the king position
-    attacker_color = king_color.opposite()
-
-    # Use piece cache for O(1) lookups
-    if cache and hasattr(cache, 'piece_cache'):
-        piece_cache = cache.piece_cache
-    else:
-        # Fallback to board iteration (slower but works)
-        piece_cache = None
-
-    if piece_cache is not None:
-        # Iterate only over occupied squares
-        for coord, piece in board.list_occupied():
-            if piece.color != attacker_color:
-                continue
-
-            # Quick distance check for non-sliding pieces
-            if piece.ptype in {PieceType.PAWN, PieceType.KNIGHT, PieceType.KNIGHT31,
-                              PieceType.KNIGHT32, PieceType.ARCHER}:
-                if _can_piece_attack_square(piece, coord, king_pos, board):
-                    return True
-            else:
-                # Sliding pieces - check ray to king
-                if _can_sliding_piece_attack_king(piece, coord, king_pos, board, piece_cache):
-                    return True
-    else:
-        # Fallback: iterate through all squares (much slower)
-        for x in range(9):
-            for y in range(9):
-                for z in range(9):
-                    piece = board.piece_at((x, y, z))
-                    if piece is None or piece.color != attacker_color:
-                        continue
-
-                    coord = (x, y, z)
-                    if piece.ptype in {PieceType.PAWN, PieceType.KNIGHT, PieceType.KNIGHT31,
-                                      PieceType.KNIGHT32, PieceType.ARCHER}:
-                        if _can_piece_attack_square(piece, coord, king_pos, board):
-                            return True
-                    else:
-                        if _can_sliding_piece_attack_king(piece, coord, king_pos, board, None):
-                            return True
-
-    return False
+    # Use direct attack calculation instead of move generation
+    return _is_king_attacked_directly(board, king_pos, king_color.opposite(), cache)
 
 def get_check_status(
     board: BoardProto,
@@ -414,6 +389,14 @@ def get_check_summary(
         summary['black_check'] = summary['black_king_position'] in summary['attacked_squares_white']
 
     return summary
+
+def _simple_priest_check(board: BoardProto, king_color: Color | None = None) -> bool:
+    """Simple priest check that doesn't generate moves."""
+    for coord, piece in board.list_occupied():
+        if piece.ptype == PieceType.PRIEST:
+            if king_color is None or piece.color == king_color:
+                return True
+    return False
 
 # ==============================================================================
 # PERFORMANCE MONITORING

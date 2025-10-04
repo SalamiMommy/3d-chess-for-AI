@@ -1,4 +1,5 @@
-#common.py
+#game3d/common/common.py
+#game3d/common/common.py
 # ------------------------------------------------------------------
 # Coordinate utilities – optimised drop-in replacements
 # ------------------------------------------------------------------
@@ -7,19 +8,27 @@ import torch
 from typing import Tuple, List, Optional
 from game3d.pieces.enums import PieceType
 
-SIZE_X = SIZE_Y = SIZE_Z = SIZE = 9
-VOLUME = SIZE ** 3  # 729
-N_PIECE_TYPES = len(PieceType)
-N_PLANES_PER_SIDE = N_PIECE_TYPES
-N_COLOR_PLANES = N_PLANES_PER_SIDE * 2
-N_AUX_PLANES = 1
-N_TOTAL_PLANES = N_COLOR_PLANES + N_AUX_PLANES
-N_CHANNELS = N_TOTAL_PLANES + 1
-X, Y, Z = 0, 1, 2
+
 Coord = Tuple[int, int, int]
-WHITE_SLICE   = slice(0, N_PLANES_PER_SIDE)
-BLACK_SLICE   = slice(N_PLANES_PER_SIDE, N_COLOR_PLANES)
-CURRENT_SLICE = slice(N_COLOR_PLANES, N_COLOR_PLANES + 1)
+
+# Board geometry
+SIZE = SIZE_X = SIZE_Y = SIZE_Z = 9
+VOLUME = SIZE ** 3
+
+# ----------------------------------------------------------
+# NEW colour-aware channel budget (41 planes total)
+
+N_PIECE_TYPES  = 40          # unchanged
+N_COLOR_PLANES = 1           # unchanged
+N_TOTAL_PLANES = 82
+# ------------------------------------------
+
+# slices the rest of the code expects
+PIECE_SLICE       = slice(0, N_PIECE_TYPES)
+COLOR_SLICE       = slice(N_PIECE_TYPES, N_PIECE_TYPES + N_COLOR_PLANES)
+CURRENT_SLICE     = slice(N_PIECE_TYPES + N_COLOR_PLANES, N_PIECE_TYPES + N_COLOR_PLANES + 1)
+EFFECT_SLICE      = slice(N_PIECE_TYPES + N_COLOR_PLANES + 1, N_PIECE_TYPES + N_COLOR_PLANES + 7)
+
 # ------------------------------------------------------------------
 # Fast bounds check – branch-free, no Python-level tuple unpacking
 # ------------------------------------------------------------------
@@ -119,7 +128,7 @@ def is_path_clear(board, start: Coord, end: Coord) -> bool:
     return True
 
 # ------------------------------------------------------------------
-# Tensor utilities (fixed)
+# Tensor utilities (updated for new structure)
 # ------------------------------------------------------------------
 def hash_board_tensor(tensor: torch.Tensor) -> int:
     """Content-based hash — slow but correct."""
@@ -128,19 +137,64 @@ def hash_board_tensor(tensor: torch.Tensor) -> int:
 
 def create_occupancy_mask_tensor(board_tensor: torch.Tensor) -> torch.Tensor:
     """Create boolean occupancy mask from board tensor."""
-    pieces = board_tensor[:N_COLOR_PLANES].sum(dim=0)
+    pieces = board_tensor[PIECE_SLICE].sum(dim=0)
     return pieces > 0
 
 def get_current_player(board_tensor: torch.Tensor) -> int:
     """Get current player (1=white, 0=black)."""
-    return int(board_tensor[N_COLOR_PLANES, 0, 0, 0].item() > 0.5)
+    return int(board_tensor[N_PIECE_TYPES + N_COLOR_PLANES, 0, 0, 0].item() > 0.5)
+
+def get_piece_color(board_tensor: torch.Tensor, coord: Coord) -> Optional[int]:
+    """Get color of piece at coordinate (1=white, 0=black, None=empty)."""
+    x, y, z = coord
+    # Check if any piece exists at this coordinate
+    piece_planes = board_tensor[PIECE_SLICE, z, y, x]
+    if piece_planes.sum() == 0:
+        return None
+
+    # Get color from color mask
+    color_value = board_tensor[N_PIECE_TYPES, z, y, x].item()
+    return 1 if color_value > 0.5 else 0
 
 def find_pieces_by_type(board_tensor: torch.Tensor, piece_type: int, color: int) -> List[Coord]:
     """Find all pieces of given type and color."""
-    plane_idx = piece_type if color == 0 else N_PLANES_PER_SIDE + piece_type
-    plane = board_tensor[plane_idx]
-    positions = torch.nonzero(plane, as_tuple=False)
+    piece_plane = board_tensor[piece_type]
+    color_plane = board_tensor[N_PIECE_TYPES]  # color mask
+
+    # Find positions where piece exists
+    piece_positions = piece_plane > 0.5
+
+    # Filter by color
+    if color == 1:  # white
+        color_positions = color_plane > 0.5
+    else:  # black
+        color_positions = color_plane <= 0.5
+
+    # Combine conditions
+    target_positions = piece_positions & color_positions
+    positions = torch.nonzero(target_positions, as_tuple=False)
     return [(int(x), int(y), int(z)) for z, y, x in positions.tolist()]
+
+def find_all_pieces_of_color(board_tensor: torch.Tensor, color: int) -> List[Tuple[int, Coord]]:
+    """Find all pieces of given color, returning (piece_type, coordinate) pairs."""
+    color_plane = board_tensor[N_PIECE_TYPES]  # color mask
+
+    # Filter by color
+    if color == 1:  # white
+        color_positions = color_plane > 0.5
+    else:  # black
+        color_positions = color_plane <= 0.5
+
+    results = []
+    for piece_type in range(N_PIECE_TYPES):
+        piece_plane = board_tensor[piece_type]
+        # Find positions where both piece exists and color matches
+        target_positions = (piece_plane > 0.5) & color_positions
+        positions = torch.nonzero(target_positions, as_tuple=False)
+        for z, y, x in positions.tolist():
+            results.append((piece_type, (int(x), int(y), int(z))))
+
+    return results
 
 # ------------------------------------------------------------------
 # Geometric utilities (fixed space_diag)
@@ -179,6 +233,8 @@ def get_distance_layers(start: Coord, max_distance: int) -> List[List[Coord]]:
                 if dist <= max_distance:
                     layers[dist].append((x, y, z))
     return layers
+
+N_CHANNELS = N_TOTAL_PLANES
 
 # ------------------------------------------------------------------
 # Validation and debugging

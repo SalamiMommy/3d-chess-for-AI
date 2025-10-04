@@ -7,11 +7,13 @@ Compatible with Board class tensor format: (N_TOTAL_PLANES, Z, Y, X)
 
 import torch
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Set, Callable
+from typing import List, Tuple, Dict, Optional, Set, Callable, Any
 from enum import Enum
 from dataclasses import dataclass
 
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_COLOR_PLANES, N_PLANES_PER_SIDE
+from game3d.common.common import (
+    SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_COLOR_PLANES
+)
 from game3d.pieces.enums import Color, PieceType
 
 class RotationType(Enum):

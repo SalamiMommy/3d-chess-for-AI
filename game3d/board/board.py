@@ -3,27 +3,25 @@ from __future__ import annotations
 game3d/board/board.py
 9×9×9 board – tensor-first, zero-copy, training-ready.
 """
-
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
 from game3d.common.common import (
-    SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_TOTAL_PLANES,
-    N_COLOR_PLANES, N_PLANES_PER_SIDE, X, Y, Z,
+    SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME,
+    N_PIECE_TYPES, N_COLOR_PLANES, N_TOTAL_PLANES,
     Coord, in_bounds, coord_to_idx, idx_to_coord,
-    hash_board_tensor, WHITE_SLICE, BLACK_SLICE, CURRENT_SLICE
+    hash_board_tensor, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS
 )
 from game3d.pieces.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
 from game3d.movement.movepiece import Move
 
-
-
 class Board:
-    """Thin wrapper around a single tensor of shape (N_TOTAL_PLANES, 9, 9, 9)."""
-
-    __slots__ = ("_tensor", "_hash", "symmetry_manager", "_occupancy_mask", "_occupied_list")
+    __slots__ = (
+        "_tensor", "_hash", "_symmetry_manager",
+        "_occupancy_mask", "_occupied_list", "_gen"
+    )
 
     def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
         if tensor is None:
@@ -35,10 +33,23 @@ class Board:
         self._hash: Optional[int] = None
         self._occupancy_mask: Optional[torch.Tensor] = None
         self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
+        self._gen = 0
+        # FIXED: Don't initialize here to avoid circular imports
+        self._symmetry_manager: Optional[SymmetryManager] = None
+        # Removed the problematic cache_manager line
 
-        # CRITICAL: Lazy symmetry manager
-        self.symmetry_manager = None  # Don't initialize here!
+    def _ensure_symmetry_manager(self) -> SymmetryManager:
+        """Lazy initialization of symmetry manager to avoid circular imports."""
+        if self._symmetry_manager is None:
+            self._symmetry_manager = SymmetryManager()
+        return self._symmetry_manager
 
+    @property
+    def symmetry_manager(self) -> SymmetryManager:
+        """Get symmetry manager, initializing lazily if needed."""
+        return self._ensure_symmetry_manager()
+
+    # UPDATE all symmetry methods to use the property:
     def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
         """Get all symmetric variants of current board position."""
         return self.symmetry_manager.get_symmetric_boards(self)
@@ -54,13 +65,6 @@ class Board:
     @staticmethod
     def empty() -> Board:
         return Board()
-
-    @classmethod
-    def startpos(cls) -> "Board":
-        """Return a board set up for the initial position."""
-        b = cls.empty()   # create an empty board
-        b.init_startpos() # fill it (existing instance method)
-        return b
 
 
     def init_startpos(self) -> None:
@@ -143,52 +147,62 @@ class Board:
 
     def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
         x, y, z = c
-        self._tensor[WHITE_SLICE, z, y, x] = 0.0
-        self._tensor[BLACK_SLICE, z, y, x] = 0.0
+        # Clear all piece planes at this coordinate
+        self._tensor[PIECE_SLICE, z, y, x] = 0.0
         if p is not None:
-            idx = p.ptype.value  # Fix: Use .value for IntEnum
+            idx = p.ptype.value  # Use .value for IntEnum
+            self._tensor[idx, z, y, x] = 1.0
+            # Set color in the color mask plane
             if p.color == Color.WHITE:
-                self._tensor[idx, z, y, x] = 1.0
+                self._tensor[N_PIECE_TYPES, z, y, x] = 1.0
             else:
-                self._tensor[N_PLANES_PER_SIDE + idx, z, y, x] = 1.0
+                self._tensor[N_PIECE_TYPES, z, y, x] = 0.0
         self._hash = None
         self._occupancy_mask = None  # Invalidate cache
         self._occupied_list = None   # Invalidate cache
 
     def piece_at(self, c: Coord) -> Optional[Piece]:
         x, y, z = c
-        white_vec = self._tensor[WHITE_SLICE, z, y, x]
-        black_vec = self._tensor[BLACK_SLICE, z, y, x]
+        # Check all piece planes at this coordinate
+        piece_planes = self._tensor[PIECE_SLICE, z, y, x]
+        max_val, max_idx = torch.max(piece_planes, dim=0)
 
-        white_max, white_idx = torch.max(white_vec, dim=0)
-        if white_max == 1.0:
-            return Piece(Color.WHITE, PieceType(white_idx.item()))
-
-        black_max, black_idx = torch.max(black_vec, dim=0)
-        if black_max == 1.0:
-            return Piece(Color.BLACK, PieceType(black_idx.item()))
+        if max_val == 1.0:
+            # Get the piece type
+            ptype = PieceType(max_idx.item())
+            # Get the color from the color mask
+            color_val = self._tensor[N_PIECE_TYPES, z, y, x]
+            color = Color.WHITE if color_val > 0.5 else Color.BLACK
+            return Piece(color, ptype)
 
         return None
 
     def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        from game3d.cache.manager import get_share_square_cache
-        return get_share_square_cache().pieces_at(sq)
+        if self.cache_manager:
+            return self.cache_manager._effect["share_square"].pieces_at(sq)
+        else:
+            # Fallback for cases without cache manager
+            piece = self.piece_at(sq)
+            return [piece] if piece else []
 
     def mirror_z(self) -> Board:
-        return Board(self._tensor.flip(dims=(1,)))
+        # Mirror all planes (piece planes, color plane, current player, effect planes)
+        mirrored_tensor = self._tensor.flip(dims=(1,))
+        return Board(mirrored_tensor)
 
     def rotate_90(self, k: int = 1) -> Board:
-        t = torch.rot90(self._tensor, k, dims=(2, 3))
-        return Board(t)
+        # Rotate all planes (piece planes, color plane, current player, effect planes)
+        rotated_tensor = torch.rot90(self._tensor, k, dims=(2, 3))
+        return Board(rotated_tensor)
 
     def apply_player_plane(self, color: Color) -> None:
-        self._tensor[CURRENT_SLICE] = float(color.value)  # Fix: Use .value if Color is IntEnum
+        self._tensor[CURRENT_SLICE] = float(color.value)  # Use .value if Color is IntEnum
 
     def occupancy_mask(self) -> torch.Tensor:
         if self._occupancy_mask is None:
-            white_sum = self._tensor[WHITE_SLICE].sum(dim=0)
-            black_sum = self._tensor[BLACK_SLICE].sum(dim=0)
-            self._occupancy_mask = (white_sum + black_sum) > 0
+            # Sum all piece planes to get occupancy
+            piece_sum = self._tensor[PIECE_SLICE].sum(dim=0)
+            self._occupancy_mask = piece_sum > 0
         return self._occupancy_mask
 
     def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
@@ -205,14 +219,30 @@ class Board:
         return iter(self._occupied_list)
 
     def clone(self) -> Board:
-        clone = Board.__new__(Board)
-        clone._tensor = self._tensor.clone()
-        clone._hash = self._hash
-        clone.symmetry_manager = None  # Don't copy!
+        """
+        Create a deep copy of the board with all internal state.
 
-        # Don't clone caches - rebuild lazily
+        CRITICAL: This method uses __new__ to bypass __init__, so ALL
+        attributes must be explicitly copied or initialized.
+        """
+        clone = Board.__new__(Board)
+
+        # Core tensor data
+        clone._tensor = self._tensor.clone()
+
+        # Hash state (can be reused since tensor is cloned)
+        clone._hash = self._hash
+
+        # Generation counter
+        clone._gen = getattr(self, '_gen', 0)
+
+        # FIXED: Properly handle symmetry manager
+        clone._symmetry_manager = None  # Force lazy init on first use
+
+        # Cache invalidation (force rebuild on first access)
         clone._occupancy_mask = None
         clone._occupied_list = None
+
         return clone
 
     def share_memory_(self) -> Board:
@@ -248,21 +278,40 @@ class Board:
             self.set_piece(to_coord, piece)
 
         self._hash = None
+        self._gen += 1
         return True                     # ← success
 
     def validate_tensor(self) -> bool:
-        """Check that every (x,y,z) has at most one 1.0 in white/black planes."""
+        """Check that every (x,y,z) has at most one 1.0 in piece planes."""
         valid = True
         invalid_positions = []
         for z in range(SIZE_Z):
             for y in range(SIZE_Y):
                 for x in range(SIZE_X):
-                    white_vals = self._tensor[WHITE_SLICE, z, y, x]
-                    black_vals = self._tensor[BLACK_SLICE, z, y, x]
-                    total_ones = (white_vals == 1.0).sum().item() + (black_vals == 1.0).sum().item()
+                    piece_vals = self._tensor[PIECE_SLICE, z, y, x]
+                    total_ones = (piece_vals == 1.0).sum().item()
                     if total_ones > 1:
                         invalid_positions.append((x, y, z))
                         valid = False
         if invalid_positions:
             print(f"Invalid positions found: {invalid_positions}")  # Or log; for debugging
         return valid
+
+    @classmethod
+    def startpos(cls) -> "Board":
+        """Return a board set up for the initial position."""
+        b = cls.empty()   # Goes through __init__
+        b.init_startpos()
+        return b
+
+    def _validate_board_state(self) -> None:
+        """Validate that all required attributes are present."""
+        required_attrs = ['_tensor', '_hash', '_gen', '_occupancy_mask', '_occupied_list', '_symmetry_manager']
+        missing = [attr for attr in required_attrs if not hasattr(self, attr)]
+        if missing:
+            raise AttributeError(f"Board missing required attributes: {missing}")
+
+    @property
+    def generation(self) -> int:
+        """Get the current generation number of the board."""
+        return self._gen

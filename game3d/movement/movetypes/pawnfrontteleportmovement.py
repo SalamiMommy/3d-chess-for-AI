@@ -47,8 +47,8 @@ def generate_pawn_front_teleport_moves(
     gen = get_integrated_jump_movement_generator(cache)
     return gen.generate_jump_moves(
         color=color,
-        position=start,
+        pos=start,
         directions=dirs,
         allow_capture=False,   # teleport never captures
-        use_amd=True           # keep GPU path
+                   # keep GPU path
     )

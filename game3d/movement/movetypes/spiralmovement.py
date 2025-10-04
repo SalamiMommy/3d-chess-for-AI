@@ -4,7 +4,7 @@ from typing import List, Tuple
 import numpy as np
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
+from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.cache.manager import OptimizedCacheManager
 
 # --------------------------------------------------------------------------- #
@@ -37,15 +37,15 @@ def generate_spiral_moves(
     y: int,
     z: int
 ) -> List[Move]:
-    engine = get_integrated_movement_generator(cache)
-    return engine.generate_sliding_moves(
+    engine = get_slider_generator(cache)
+    return engine.generate(
         color=color,
-        piece_type=PieceType.SPIRAL,   # <-- NEW
-        position=(x, y, z),
+        ptype=PieceType.SPIRAL,   # <-- NEW
+        pos=(x, y, z),
         directions=SPIRAL_DIRECTIONS,
         max_steps=1,
-        allow_capture=True,
-        allow_self_block=False,
-        use_symmetry=True,
-        use_amd=True
+       
+        
+        
+        
     )

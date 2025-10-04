@@ -1,133 +1,109 @@
-"""Reflecting Bishop — wall-bouncing diagonal rays via slidermovement engine."""
+# game3d/movement/movetypes/reflectingbishopmovement.py
+from __future__ import annotations
 
-from typing import List, Tuple, TYPE_CHECKING
+from typing import List, Tuple
 import numpy as np
-from numba import njit, prange
+from numba import njit
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import (
-    get_integrated_movement_generator,
-    IntegratedSlidingMovementGenerator,_build_compact
-)
-from game3d.cache.manager import OptimizedCacheManager
-
-if TYPE_CHECKING:
-    from game3d.cache.transposition import CompactMove
+from game3d.movement.movetypes.slidermovement import get_slider_generator
 
 # --------------------------------------------------------------------------- #
-#  Geometry  – 8 diagonal directions
+#  8 diagonal directions
 # --------------------------------------------------------------------------- #
-BISHOP_DIRECTIONS = np.array(
+BISHOP_DIRS = np.array(
     [(dx, dy, dz) for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)],
     dtype=np.int8,
 )
 
 # --------------------------------------------------------------------------- #
-#  NumPy bounce kernel – runs inside slidermovement engine
+#  bouncing kernel – returns packed uint64 moves
 # --------------------------------------------------------------------------- #
-@njit(cache=True, inline="always")
-def _occ_code(occ: np.ndarray, x: int, y: int, z: int) -> int:
-    return occ[x, y, z]
-
-MAX_BOUNCES = 3
-BOARD_SIZE  = 9
-MAX_STEPS   = 24          # we promised 24 steps max
-
-@njit(parallel=True, fastmath=True, nogil=False, cache=True)  # OPTIMIZED: Enabled parallel=True for potential perf gain on larger dir sets
-def _reflecting_slide_kernel(
-    starts: np.ndarray,          # (D,3)  int8
-    dirs: np.ndarray,            # (D,3)  int8
-    occ: np.ndarray,             # (9,9,9) uint8
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    D = starts.shape[0]
-    # pre-allocate with *literal* shape – Numba is happy
-    coords = np.empty((D, MAX_STEPS, 3), np.int8)
-    valid  = np.zeros((D, MAX_STEPS), np.bool_)
-    hit    = np.zeros((D, MAX_STEPS), np.uint8)
-
-    for d in prange(D):
-        sx, sy, sz = starts[d]
+@njit(fastmath=True, boundscheck=False, cache=True)
+def _bounce_kernel(
+    occ: np.ndarray,          # flat uint8[729]
+    start_idx: int,
+    dirs: np.ndarray,         # (N,3) int8
+    max_steps: int,
+    buf: np.ndarray,          # uint64[128]  pre-allocated
+) -> int:                     # number of moves written
+    ptr = 0
+    for d in range(len(dirs)):
         dx, dy, dz = dirs[d]
+        sx = sy = sz = start_idx
         bounces = 0
-        for s in range(MAX_STEPS):        # 0-based now
+        for _ in range(max_steps):
             tx = sx + dx
             ty = sy + dy
             tz = sz + dz
-
-            out = (tx < 0) | (tx >= BOARD_SIZE) | (ty < 0) | (ty >= BOARD_SIZE) | (tz < 0) | (tz >= BOARD_SIZE)
+            out = (tx < 0) | (tx >= 9) | (ty < 0) | (ty >= 9) | (tz < 0) | (tz >= 9)
             if out:
-                if bounces >= MAX_BOUNCES:
+                if bounces >= 3:
                     break
-                if tx < 0 or tx >= BOARD_SIZE:
+                # mirror direction
+                if tx < 0 or tx >= 9:
                     dx = -dx
-                if ty < 0 or ty >= BOARD_SIZE:
+                if ty < 0 or ty >= 9:
                     dy = -dy
-                if tz < 0 or tz >= BOARD_SIZE:
+                if tz < 0 or tz >= 9:
                     dz = -dz
                 bounces += 1
                 continue
 
-            coords[d, s] = (tx, ty, tz)
-            valid[d, s]  = True
-            code = _occ_code(occ, tx, ty, tz)
-            if code:
-                hit[d, s] = code
+            to_idx = tx * 81 + ty * 9 + tz
+            packed = (start_idx << 21) | to_idx
+            code = occ[to_idx]
+            if code == 0:                               # empty
+                buf[ptr] = packed
+                ptr += 1
+            else:                                       # blocked
+                if code & 0x80:                         # enemy
+                    buf[ptr] = packed | (1 << 42)       # capture flag
+                    ptr += 1
                 break
             sx, sy, sz = tx, ty, tz
-    return coords, valid, hit
+    return ptr
 
 # --------------------------------------------------------------------------- #
-#  Plug the new kernel into the engine
+#  public generator
 # --------------------------------------------------------------------------- #
-class ReflectingBishopGenerator(IntegratedSlidingMovementGenerator):
-    """Bouncing-ray kernel."""
+class ReflectingBishopGenerator:
+    __slots__ = ("cache", "_buf")
 
-    def _compute_compact(
-        self,
-        color: Color,
-        piece_type: PieceType,
-        pos: Tuple[int, int, int],
-        dirs: np.ndarray,
-        max_steps: int,
-        allow_capture: bool,
-        use_symmetry: bool,          # ← NEW
-        use_amd: bool,               # ← NEW
-    ) -> List['CompactMove']:
-        occ, _ = self.cache.piece_cache.export_arrays()
-        starts = np.repeat(np.array([pos], dtype=np.int8), len(dirs), axis=0)
-        coords, valid, hit = _reflecting_slide_kernel(starts, dirs, occ)
-        return _build_compact(color, piece_type, pos, coords, valid, hit, allow_capture)
+    def __init__(self, cache):
+        self.cache = cache
+        self._buf = np.empty(128, dtype=np.uint64)
 
-    # Re-use parent _build_compact / _expand_compact unchanged
-    def _build_compact(self, color, piece_type, pos, coords, valid, hit, allow_capture):  # FIXED: Added piece_type to signature and call
-        return _build_compact(color, piece_type, pos, coords, valid, hit, allow_capture)
+    def generate(self, color: Color, pos: Tuple[int, int, int]) -> List[Move]:
+        occ = self.cache.piece_cache.get_flat_occupancy()
+        f_idx = pos[0] * 81 + pos[1] * 9 + pos[2]
+        n = _bounce_kernel(occ, f_idx, BISHOP_DIRS, 24, self._buf)
+
+        moves: List[Move] = [None] * n
+        for i in range(n):
+            packed = self._buf[i]
+            fr_idx = (packed >> 21) & 0x1FF
+            to_idx = packed & 0x1FF
+            moves[i] = Move(
+                from_coord=(fr_idx // 81, (fr_idx // 9) % 9, fr_idx % 9),
+                to_coord=(to_idx // 81, (to_idx // 9) % 9, to_idx % 9),
+                is_capture=bool(packed & (1 << 42)),
+                captured_piece=None,
+            )
+        return moves
 
 # --------------------------------------------------------------------------- #
-#  Singleton helper
+#  singleton helper
 # --------------------------------------------------------------------------- #
-def get_reflecting_bishop_generator(cache: OptimizedCacheManager) -> ReflectingBishopGenerator:
+def get_reflecting_bishop_generator(cache) -> ReflectingBishopGenerator:
     if not hasattr(cache, "_reflecting_bishop_gen"):
         cache._reflecting_bishop_gen = ReflectingBishopGenerator(cache)
     return cache._reflecting_bishop_gen
 
 # --------------------------------------------------------------------------- #
-#  Public drop-in replacement
+#  drop-in dispatcher
 # --------------------------------------------------------------------------- #
 def generate_reflecting_bishop_moves(
-    cache: OptimizedCacheManager,
-    color: Color,
-    x: int,
-    y: int,
-    z: int
+    cache, color: Color, x: int, y: int, z: int
 ) -> List[Move]:
-    engine = get_reflecting_bishop_generator(cache)
-    return engine.generate_sliding_moves(
-        color=color,
-        piece_type=PieceType.REFLECTOR,
-        position=(x, y, z),
-        directions=BISHOP_DIRECTIONS,
-        max_steps=24,
-        allow_capture=True,
-        use_symmetry=True,
-        use_amd=True
-    )
+    return get_reflecting_bishop_generator(cache).generate(color, (x, y, z))

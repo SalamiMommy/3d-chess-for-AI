@@ -3,3 +3,4 @@ numpy
 sageattention
 tensorboard
 numba
+joblib

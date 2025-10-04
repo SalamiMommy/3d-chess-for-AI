@@ -42,7 +42,7 @@ def generate_king_moves(
     jump_gen = get_integrated_jump_movement_generator(cache)
     return jump_gen.generate_jump_moves(
         color=color,
-        position=pos,
+        pos=pos,
         directions=KING_DIRECTIONS_3D,
-        allow_capture=True,
+       
     )

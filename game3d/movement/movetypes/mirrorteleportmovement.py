@@ -37,8 +37,8 @@ def generate_mirror_teleport_move(
     gen = get_integrated_jump_movement_generator(cache)
     return gen.generate_jump_moves(
         color=color,
-        position=start,
+        pos=start,
         directions=dirs,
-        allow_capture=True,      # teleport may capture
-        use_amd=True             # keep GPU path if available
+             # teleport may capture
+                     # keep GPU path if available
     )

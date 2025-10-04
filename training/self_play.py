@@ -1,820 +1,159 @@
+"""Self-play data generation for 3D chess training."""
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Optional
 from dataclasses import dataclass
-from pathlib import Path
-import json
-import time
-from contextlib import contextmanager
 import random
-import torch.nn.functional as F
-from dataclasses import dataclass
-from game3d.pieces.enums import Color
-from game3d.game3d import Game3D
 from game3d.game.gamestate import GameState
 from game3d.pieces.enums import Color, Result
-from game3d.common.common import N_TOTAL_PLANES, SIZE_X, SIZE_Y, SIZE_Z
-from models.resnet3d import OptimizedResNet3D, LightweightResNet3D
-from game3d.policy_encoder import MoveEncoder
+from game3d.cache.manager import OptimizedCacheManager
 from game3d.movement.movepiece import Move
-# ==============================================================================
-# CHESS DATASET FOR TRAINING
-# ==============================================================================
+from game3d.game3d import OptimizedGame3D  # Import the game controller
+from training.types import TrainingExample  # Shared dataclass
+from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
 
-@dataclass
-class TrainingExample:
-    """Single training example from self-play with player perspective."""
-    state_tensor: torch.Tensor  # Board state (C,9,9,9)
-    policy_target: torch.Tensor  # Move probabilities (size n_moves)
-    value_target: float          # Game outcome relative to current player (-1, 0, 1)
-    game_phase: float           # 0.0 (opening) to 1.0 (endgame)
-    player_sign: float           # 1.0 if white to move, -1.0 if black
+class MoveEncoder:
+    def coord_to_index(self, coord: Coord) -> int:
+        return coord_to_idx(coord)
 
-class ChessDataset(Dataset):
-    """Dataset for chess training examples with 3D augmentation."""
+def move_to_index(from_coord: Coord, to_coord: Coord) -> int:
+    return coord_to_idx(from_coord) * VOLUME + coord_to_idx(to_coord)
 
-    def __init__(self, examples: list[TrainingExample], augment: bool = True, validate: bool = True):
-        self.examples = examples
-        self.augment = augment
-        if validate:
-            self._validate_examples()
+def index_to_move(idx: int) -> tuple[Coord, Coord]:
+    to_idx = idx % VOLUME
+    from_idx = idx // VOLUME
+    return idx_to_coord(from_idx), idx_to_coord(to_idx)
 
-    def _validate_examples(self):
-        for i, ex in enumerate(self.examples):
-            if not isinstance(ex.state_tensor, torch.Tensor) or ex.state_tensor.shape != (N_TOTAL_PLANES + 1, 9, 9, 9):
-                raise ValueError(f"Invalid state_tensor in example {i}")
-            if not isinstance(ex.policy_target, torch.Tensor) or ex.policy_target.shape != (531_441,):
-                raise ValueError(f"Invalid policy_target in example {i}")
-            if not (-1 <= ex.value_target <= 1):
-                raise ValueError(f"Invalid value_target in example {i}")
-            if ex.player_sign not in {-1.0, 1.0}:
-                raise ValueError(f"Invalid player_sign in example {i}")
-
-    def __len__(self) -> int:
-        return len(self.examples)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        ex = self.examples[idx]
-        state = ex.state_tensor.clone()  # Avoid modifying original
-
-        if self.augment:
-            # 3D rotations (random around X, Y, Z axes)
-            axes = random.choice([(1,2), (1,3), (2,3)])  # Depth, Height, Width
-            k = random.randint(0, 3)
-            state = torch.rot90(state, k, dims=axes)
-
-            # Random flips along axes
-            if random.random() > 0.5:
-                state = torch.flip(state, dims=[1])  # Flip depth
-            if random.random() > 0.5:
-                state = torch.flip(state, dims=[2])  # Flip height
-            if random.random() > 0.5:
-                state = torch.flip(state, dims=[3])  # Flip width
-
-            # Player color flip (swap players, flip value)
-            if random.random() > 0.5:
-                # Assume inverting certain planes swaps players; stub for actual impl
-                # state = swap_player_planes(state)  # Implement based on encoding
-                value_target = -ex.value_target
-                player_sign = -ex.player_sign
-            else:
-                value_target = ex.value_target
-                player_sign = ex.player_sign
-        else:
-            value_target = ex.value_target
-            player_sign = ex.player_sign
-
-        return (
-            state,
-            ex.policy_target,
-            torch.tensor(value_target, dtype=torch.float32),
-            torch.tensor(ex.game_phase, dtype=torch.float32)
-        )
-
-    def _augment_state(self, state: torch.Tensor) -> torch.Tensor:
-        """Apply chess-specific augmentations (rotations, reflections)."""
-        # Random rotation (90°, 180°, 270°) around Z-axis
-        k = random.choice([0, 1, 2, 3])
-        if k > 0:
-            # Rotate the spatial dimensions (last 3 dims, assuming (C, Z, Y, X))
-            state = torch.rot90(state, k, dims=[2, 3])
-
-        # Random reflection (flip along X or Y)
-        if random.random() > 0.5:
-            state = torch.flip(state, dims=[3])  # Flip X-axis
-        elif random.random() > 0.5:
-            state = torch.flip(state, dims=[2])  # Flip Y-axis
-
-        return state
-
-# ==============================================================================
-# LOSS FUNCTIONS FOR CHESS
-# ==============================================================================
-
-class ChessLoss(nn.Module):
-    """Combined loss for policy and value heads with phase weighting."""
-
-    def __init__(self, policy_weight: float = 1.0, value_weight: float = 1.0,
-                 phase_weight: float = 0.1):
-        super().__init__()
-        self.policy_weight = policy_weight
-        self.value_weight = value_weight
-        self.phase_weight = phase_weight
-
-        # Value loss
-        self.value_loss = nn.MSELoss()
-
-    def forward(
-        self,
-        from_logits: torch.Tensor,      # (B, 729)
-        to_logits: torch.Tensor,        # (B, 729)
-        legal_from_indices: List[torch.Tensor],  # list of (n_legal,)
-        legal_to_indices: List[torch.Tensor],    # list of (n_legal,)
-        policy_targets: List[torch.Tensor],      # list of (n_legal,) target probs
-        value_pred: torch.Tensor,
-        value_target: torch.Tensor,
-        game_phase: torch.Tensor
-    ) -> torch.Tensor:
-        policy_loss = 0.0
-        for i in range(len(legal_from_indices)):
-            # Compute logits for legal moves
-            logits = from_logits[i][legal_from_indices[i]] + to_logits[i][legal_to_indices[i]]
-            targets = policy_targets[i]
-            loss = -(targets * F.log_softmax(logits, dim=0)).sum()
-            policy_loss += loss
-        policy_loss /= len(legal_from_indices)
-
-        # Value loss with phase-based weighting
-        # Middle game gets higher weight than opening/endgame
-        phase_weights = 1.0 + self.phase_weight * torch.sin(game_phase * 3.14159)
-        value_loss = torch.mean(phase_weights * (value_pred - value_target) ** 2)
-
-        # Combined loss
-        total_loss = (self.policy_weight * policy_loss +
-                      self.value_weight * value_loss)
-
-        loss_dict = {
-            'total_loss': total_loss.item(),
-            'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item(),
-        }
-
-        return total_loss
-
-class PolicyDistillationLoss(nn.Module):
-    """Policy distillation for transfer learning between models."""
-
-    def __init__(self, temperature: float = 3.0):
-        super().__init__()
-        self.temperature = temperature
-        self.kl_div = nn.KLDivLoss(reduction='batchmean')
-
-    def forward(self, student_policy: torch.Tensor, teacher_policy: torch.Tensor) -> torch.Tensor:
-        """Distill knowledge from teacher to student model."""
-        # Apply temperature scaling
-        student_soft = F.log_softmax(student_policy / self.temperature, dim=1)
-        teacher_soft = F.softmax(teacher_policy / self.temperature, dim=1)
-
-        # KL divergence loss
-        loss = self.kl_div(student_soft, teacher_soft) * (self.temperature ** 2)
-
-        return loss
-
-# ==============================================================================
-# OPTIMIZED TRAINER
-# ==============================================================================
-
-@dataclass
-class TrainingConfig:
-    """Configuration for chess neural network training."""
-    # Model architecture
-    model_type: str = "optimized"  # "optimized" or "lightweight"
-    blocks: int = 15
-    channels: int = 256
-    n_moves: int = 531_441
-
-    # Training hyperparameters
-    batch_size: int = 32
-    learning_rate: float = 0.001
-    weight_decay: float = 1e-4
-    epochs: int = 100
-    warmup_epochs: int = 5
-
-    # Loss configuration
-    policy_weight: float = 1.0
-    value_weight: float = 1.0
-    phase_weight: float = 0.1
-
-    # Data configuration
-    train_split: float = 0.8
-    augment_data: bool = True
-    max_examples: Optional[int] = None
-
-    # Hardware configuration
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    mixed_precision: bool = True
-    compile_model: bool = True
-
-    # Logging and checkpointing
-    log_dir: str = "logs"
-    checkpoint_dir: str = "checkpoints"
-    save_every: int = 10
-    validate_every: int = 1
-
-    # Advanced settings
-    gradient_clipping: float = 1.0
-    use_ema: bool = True  # Exponential moving average
-    ema_decay: float = 0.999
-
-class ChessTrainer:
-    """Optimized trainer for chess neural networks."""
-
-    def __init__(self, config: TrainingConfig):
-        self.config = config
-        self.device = torch.device(config.device)
-
-        # Create directories
-        Path(config.log_dir).mkdir(exist_ok=True)
-        Path(config.checkpoint_dir).mkdir(exist_ok=True)
-
-        # Initialize model
-        self.model = self._create_model()
-        self.model.to(self.device)
-
-        # Compile model for faster inference (PyTorch 2.0+)
-        if config.compile_model and hasattr(torch, 'compile'):
-            self.model = torch.compile(self.model)
-
-        # Initialize optimizer and scheduler
-        self.optimizer = self._create_optimizer()
-        self.scheduler = self._create_scheduler()
-
-        # Loss function
-        self.criterion = ChessLoss(
-            policy_weight=config.policy_weight,
-            value_weight=config.value_weight,
-            phase_weight=config.phase_weight
-        )
-
-        # Scaler for mixed precision training
-        self.scaler = torch.cuda.amp.GradScaler() if config.mixed_precision else None
-
-        # Exponential moving average
-        if config.use_ema:
-            self.ema_model = self._create_ema_model()
-        else:
-            self.ema_model = None
-
-        # TensorBoard writer
-        self.writer = SummaryWriter(config.log_dir)
-
-        # Training state
-        self.epoch = 0
-        self.global_step = 0
-        self.best_val_loss = float('inf')
-
-    def _create_model(self) -> nn.Module:
-        """Create the neural network model."""
-        if self.config.model_type == "optimized":
-            return OptimizedResNet3D(
-                blocks=self.config.blocks,
-                n_moves=self.config.n_moves,
-                channels=self.config.channels
-            )
-        else:
-            return LightweightResNet3D(
-                blocks=self.config.blocks,
-                n_moves=self.config.n_moves,
-                channels=self.config.channels
-            )
-
-    def _create_optimizer(self) -> optim.Optimizer:
-        """Create optimizer with weight decay configuration."""
-        # Use AdamW for better weight decay handling
-        return optim.AdamW(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-            betas=(0.9, 0.999),
-            eps=1e-8
-        )
-
-    def _create_scheduler(self) -> optim.lr_scheduler._LRScheduler:
-        """Create learning rate scheduler with warmup."""
-        # Cosine annealing with warmup
-        main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.config.epochs - self.config.warmup_epochs,
-            eta_min=self.config.learning_rate * 0.01
-        )
-
-        if self.config.warmup_epochs > 0:
-            warmup_scheduler = optim.lr_scheduler.LinearLR(
-                self.optimizer,
-                start_factor=0.1,
-                total_iters=self.config.warmup_epochs
-            )
-            return optim.lr_scheduler.SequentialLR(
-                self.optimizer,
-                schedulers=[warmup_scheduler, main_scheduler],
-                milestones=[self.config.warmup_epochs]
-            )
-
-        return main_scheduler
-
-    def _create_ema_model(self) -> nn.Module:
-        """Create exponential moving average of the model."""
-        ema_model = self._create_model()
-        ema_model.load_state_dict(self.model.state_dict())
-        ema_model.to(self.device)
-        ema_model.eval()
-        return ema_model
-
-    def update_ema(self) -> None:
-        """Update exponential moving average."""
-        if self.ema_model is None:
-            return
-
-        with torch.no_grad():
-            for ema_param, model_param in zip(self.ema_model.parameters(), self.model.parameters()):
-                ema_param.data.mul_(self.config.ema_decay).add_(model_param.data, alpha=1 - self.config.ema_decay)
-
-    def prepare_data(self, examples: List[TrainingExample]) -> tuple[ChessDataset, ChessDataset]:
-        """Prepare training and validation datasets."""
-        if self.config.max_examples:
-            examples = examples[:self.config.max_examples]
-
-        # Split into train/validation
-        split_idx = int(len(examples) * self.config.train_split)
-        train_examples = examples[:split_idx]
-        val_examples = examples[split_idx:]
-
-        train_dataset = ChessDataset(train_examples, augment=self.config.augment_data)
-        val_dataset = ChessDataset(val_examples, augment=False)
-
-        return train_dataset, val_dataset
-
-    def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
-        """Train for one epoch with mixed precision."""
-        self.model.train()
-
-        total_loss = 0.0
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        num_batches = 0
-
-        for batch_idx, (states, policy_targets, value_targets, game_phases) in enumerate(train_loader):
-            # Move to device
-            states = states.to(self.device, non_blocking=True)
-            policy_targets = policy_targets.to(self.device, non_blocking=True)
-            value_targets = value_targets.to(self.device, non_blocking=True)
-            game_phases = game_phases.to(self.device, non_blocking=True)
-
-            self.optimizer.zero_grad(set_to_none=True)
-
-            # Mixed precision forward
-            with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
-                policy_pred, value_pred = self.model(states)
-                loss, loss_dict = self.criterion(policy_pred, value_pred, policy_targets, value_targets, game_phases)
-
-            # Backward with scaling
-            if self.scaler:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
-                self.optimizer.step()
-
-            # EMA update
-            self.update_ema()
-
-            # Track losses
-            total_loss += loss_dict['total_loss']
-            total_policy_loss += loss_dict['policy_loss']
-            total_value_loss += loss_dict['value_loss']
-            num_batches += 1
-
-        return {
-            'loss': total_loss / num_batches,
-            'policy_loss': total_policy_loss / num_batches,
-            'value_loss': total_value_loss / num_batches
-        }
-
-    def validate(self, val_loader: DataLoader) -> Dict[str, float]:
-        """Validate the model."""
-        self.model.eval()
-
-        total_loss = 0.0
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        num_batches = 0
-
-        with torch.no_grad():
-            for states, policy_targets, value_targets, game_phases in val_loader:
-                states = states.to(self.device, non_blocking=True)
-                policy_targets = policy_targets.to(self.device, non_blocking=True)
-                value_targets = value_targets.to(self.device, non_blocking=True)
-                game_phases = game_phases.to(self.device, non_blocking=True)
-
-                with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
-                    policy_pred, value_pred = self.model(states)
-                    loss, loss_dict = self.criterion(policy_pred, value_pred, policy_targets, value_targets, game_phases)
-
-                total_loss += loss_dict['total_loss']
-                total_policy_loss += loss_dict['policy_loss']
-                total_value_loss += loss_dict['value_loss']
-                num_batches += 1
-
-        return {
-            'loss': total_loss / num_batches,
-            'policy_loss': total_policy_loss / num_batches,
-            'value_loss': total_value_loss / num_batches
-        }
-
-    def train(self, examples: List[TrainingExample]) -> Dict[str, Any]:
-        """Train the model with early stopping."""
-        train_dataset, val_dataset = self.prepare_data(examples)
-
-        train_loader = DataLoader(
-            train_dataset, batch_size=self.config.batch_size,
-            shuffle=True, num_workers=4, pin_memory=True
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=self.config.batch_size,
-            shuffle=False, num_workers=4, pin_memory=True
-        )
-
-        training_history = []
-        patience = 10  # Early stopping patience
-        no_improvement = 0
-
-        for epoch in range(self.config.epochs):
-            train_metrics = self.train_epoch(train_loader)
-            self.scheduler.step()
-
-            if (epoch + 1) % self.config.validate_every == 0:
-                val_metrics = self.validate(val_loader)
-                self._log_epoch_metrics(epoch, train_metrics, val_metrics)
-
-                # Checkpointing
-                if (epoch + 1) % self.config.save_every == 0:
-                    self._save_checkpoint(epoch, val_metrics)
-
-                # Best model saving and early stopping
-                if val_metrics['loss'] < self.best_val_loss:
-                    self.best_val_loss = val_metrics['loss']
-                    self._save_best_model(epoch, val_metrics)
-                    no_improvement = 0
-                else:
-                    no_improvement += 1
-                    if no_improvement >= patience:
-                        print(f"Early stopping at epoch {epoch + 1}")
-                        break
-
-            training_history.append({
-                'epoch': epoch,
-                'train': train_metrics,
-                'val': val_metrics if (epoch + 1) % self.config.validate_every == 0 else None,
-                'lr': self.optimizer.param_groups[0]['lr']
-            })
-
-        return {
-            'best_val_loss': self.best_val_loss,
-            'training_history': training_history,
-            'final_model_path': self._get_best_model_path(),
-        }
-
-    def _log_epoch_metrics(self, epoch: int, train_metrics: Dict[str, float],
-                           val_metrics: Dict[str, float]) -> None:
-        """Log metrics to TensorBoard and console."""
-        # Console logging
-        print(f"Epoch {epoch+1}/{self.config.epochs}")
-        print(f"  Train - Loss: {train_metrics['loss']:.4f}, "
-              f"Policy: {train_metrics['policy_loss']:.4f}, "
-              f"Value: {train_metrics['value_loss']:.4f}")
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, "
-              f"Policy: {val_metrics['policy_loss']:.4f}, "
-              f"Value: {val_metrics['value_loss']:.4f}")
-        print(f"  LR: {self.optimizer.param_groups[0]['lr']:.6f}")
-
-        # TensorBoard logging
-        for metric_name, metric_value in train_metrics.items():
-            self.writer.add_scalar(f'Train/{metric_name.capitalize()}', metric_value, epoch)
-
-        for metric_name, metric_value in val_metrics.items():
-            self.writer.add_scalar(f'Val/{metric_name.capitalize()}', metric_value, epoch)
-
-        self.writer.add_scalar('Learning_Rate', self.optimizer.param_groups[0]['lr'], epoch)
-
-    def _save_checkpoint(self, epoch: int, metrics: Dict[str, float]) -> None:
-        """Save training checkpoint."""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'metrics': metrics,
-            'config': self.config,
-        }
-
-        if self.ema_model is not None:
-            checkpoint['ema_model_state_dict'] = self.ema_model.state_dict()
-
-        if self.scaler is not None:
-            checkpoint['scaler_state_dict'] = self.scaler.state_dict()
-
-        checkpoint_path = Path(self.config.checkpoint_dir) / f"checkpoint_epoch_{epoch+1}.pt"
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
-
-    def _save_best_model(self, epoch: int, metrics: Dict[str, float]) -> None:
-        """Save the best model."""
-        best_model_path = self._get_best_model_path()
-
-        # Save full model
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'ema_model_state_dict': self.ema_model.state_dict() if self.ema_model else None,
-            'config': self.config,
-            'epoch': epoch,
-            'metrics': metrics,
-        }, best_model_path)
-
-        print(f"Best model saved: {best_model_path}")
-
-    def _get_best_model_path(self) -> str:
-        """Get path for best model."""
-        return str(Path(self.config.checkpoint_dir) / "best_model.pt")
-
-    def load_best_model(self) -> None:
-        """Load the best model."""
-        best_model_path = self._get_best_model_path()
-        checkpoint = torch.load(best_model_path, map_location=self.device)
-
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-
-        if self.ema_model is not None and checkpoint.get('ema_model_state_dict'):
-            self.ema_model.load_state_dict(checkpoint['ema_model_state_dict'])
-
-        print(f"Best model loaded from: {best_model_path}")
-
-
-def play_game(net: torch.nn.Module, mcts_depth: int = 0) -> List[TrainingExample]:
-    """
-    Play a single game and return training examples.
-
-    Args:
-        net: Neural network model
-        mcts_depth: MCTS simulations per move (0 = random play)
-
-    Returns:
-        List of TrainingExample objects
-    """
-    device = next(net.parameters()).device
-    generator = SelfPlayGenerator(net, device=device, temperature=1.0)
-    initial_state = GameState.start()
-    return generator.generate_game(initial_state, max_moves=531_441)
-# ==============================================================================
-# SELF-PLAY DATA GENERATION
-# ==============================================================================
 class SelfPlayGenerator:
-    """Generate training data through self-play with proper policy mapping."""
+    """Generate training data through self-play with robust cache handling."""
 
-    def __init__(self, model: torch.nn.Module, device: str = "cuda", temperature: float = 1.0, mcts_depth: int = 0):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        device: str = "cuda",
+        temperature: float = 1.0,
+    ):
         self.model = model.to(device).eval()
         self.device = device
         self.temperature = temperature
-        self.mcts_depth = mcts_depth  # If >0, stub for MCTS (not implemented)
-        self.move_encoder = MoveEncoder(max_actions=600_000)
+        self.move_encoder = MoveEncoder()
 
-    def generate_game(self, initial_state: GameState, max_moves: int = 200) -> List[TrainingExample]:
+    def generate_game(self, max_moves: int = 200) -> List[TrainingExample]:
+        """Generate a single game with robust error handling using OptimizedGame3D."""
+        game = OptimizedGame3D()  # Create a new game instance
+        game.toggle_debug_turn_info(False)  # Disable debug for self-play
         examples = []
-        state = initial_state
         move_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
-        while not state.is_game_over() and move_count < max_moves:
-            state_tensor = state.to_tensor().unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                # Get separate from/to logits
-                from_logits, to_logits, value_pred, *_ = self.model(state_tensor)
-                from_logits = from_logits / self.temperature
-                to_logits = to_logits / self.temperature
+        while not game.is_game_over() and move_count < max_moves:
+            try:
+                # Get current state tensor
+                state_tensor = game.state.to_tensor(device=self.device).unsqueeze(0)
 
-            legal_moves = state.legal_moves()
-            if not legal_moves:
-                break
+                # Verify the state is valid
+                if game.state is None:
+                    print(f"[ERROR] Game state is None at move {move_count}")
+                    break
 
-            # Compute combined logits for legal moves
-            legal_move_logits = []
-            legal_from_indices = []
-            legal_to_indices = []
+                with torch.no_grad():
+                    from_logits, to_logits, value_pred = self.model(state_tensor)
+                    from_logits = from_logits / self.temperature
+                    to_logits = to_logits / self.temperature
 
-            for move in legal_moves:
-                from_idx = self.move_encoder.coord_to_index(move.from_coord)  # 0-728
-                to_idx = self.move_encoder.coord_to_index(move.to_coord)      # 0-728
-                combined_logit = from_logits[0, from_idx] + to_logits[0, to_idx]
-                legal_move_logits.append(combined_logit)
-                legal_from_indices.append(from_idx)
-                legal_to_indices.append(to_idx)
+                # Get legal moves from the game
+                legal_moves = game.state.legal_moves()
+                if not legal_moves:
+                    break
 
-            legal_move_logits = torch.stack(legal_move_logits)
-            legal_probs = F.softmax(legal_move_logits, dim=0)
+                # Compute move logits
+                move_logits = []
+                from_indices = []
+                to_indices = []
+                for mv in legal_moves:
+                    f_idx = self.move_encoder.coord_to_index(mv.from_coord)
+                    t_idx = self.move_encoder.coord_to_index(mv.to_coord)
+                    logit = from_logits[0, f_idx] + to_logits[0, t_idx]
+                    move_logits.append(logit)
+                    from_indices.append(f_idx)
+                    to_indices.append(t_idx)
 
-            # Sample move
-            move_idx = torch.multinomial(legal_probs, num_samples=1).item()
-            move = legal_moves[move_idx]
+                move_logits = torch.stack(move_logits)
+                move_probs = torch.softmax(move_logits, dim=0)
 
-            # Create full policy target (531,441) for training
-            full_policy_target = torch.zeros(531_441, dtype=torch.float32)
-            for i, (from_idx, to_idx) in enumerate(zip(legal_from_indices, legal_to_indices)):
-                move_idx_full = from_idx * 729 + to_idx  # Convert to flat index
-                full_policy_target[move_idx_full] = legal_probs[i].cpu()
+                # Sample move
+                chosen_idx = torch.multinomial(move_probs, num_samples=1).item()
+                chosen_move = legal_moves[chosen_idx]
 
-            player_sign = 1.0 if state.color == Color.WHITE else -1.0
-            examples.append(TrainingExample(
-                state_tensor=state.to_tensor(),
-                policy_target=full_policy_target,
-                value_target=value_pred.item(),
-                game_phase=self._estimate_game_phase(state),
-                player_sign=player_sign
-            ))
+                # Compute marginal from and to targets
+                from_target = torch.zeros(729, device=self.device)
+                to_target   = torch.zeros(729, device=self.device)
+                for i in range(len(legal_moves)):
+                    prob = move_probs[i]
+                    from_target[from_indices[i]] += prob
+                    to_target[to_indices[i]] += prob
+                if from_target.sum() > 0:
+                    from_target /= from_target.sum()
+                if to_target.sum() > 0:
+                    to_target /= to_target.sum()
 
-            state = state.make_move(move)
-            move_count += 1
+                # Player sign for this example
+                player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
 
-        # Update value targets with final outcome
-        final_outcome = state.outcome()
+                examples.append(
+                    TrainingExample(
+                        state_tensor=state_tensor.squeeze(0).cpu(),
+                        from_target=from_target.cpu(),
+                        to_target=to_target.cpu(),
+                        value_target=value_pred.item(),  # Will be overwritten with final outcome
+                        move_count=move_count,
+                        player_sign=player_sign  # Store per example
+                    )
+                )
+
+                # Submit the move to the game
+                receipt = game.submit_move(chosen_move)
+                if not receipt.is_legal:
+                    raise ValueError(receipt.message)
+
+                move_count += 1
+                consecutive_errors = 0
+
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"[ERROR] Move {move_count} failed: {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    break
+
+        # Assign final outcomes
+        if game.is_game_over():
+            result = game.result()
+            if result == Result.WHITE_WIN:
+                final_outcome = 1.0
+            elif result == Result.BLACK_WIN:
+                final_outcome = -1.0
+            else:
+                final_outcome = 0.0
+        else:
+            final_outcome = 0.0
+
         for ex in examples:
-            ex.value_target = final_outcome * ex.player_sign
+            ex.value_target = final_outcome * ex.player_sign  # Use per-example player_sign
 
         return examples
 
-    def _map_policy_to_moves(self, policy_probs: torch.Tensor, legal_moves: List,
-                             state: GameState) -> List[float]:
-        """Map neural network policy output to legal moves."""
-        # This is a simplified mapping - you'd need a proper move indexing system
-        move_probs = [0.0] * len(legal_moves)
+def play_game(model: torch.nn.Module, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+    """Self-play a single game."""
+    generator = SelfPlayGenerator(model, device=device)
+    return generator.generate_game(max_moves)
 
-        # For now, use uniform distribution over legal moves
-        # In practice, you'd map each move to a specific index in the policy output
-        uniform_prob = 1.0 / len(legal_moves)
-        for i in range(len(legal_moves)):
-            move_probs[i] = uniform_prob
-
-        return move_probs
-
-    def _sample_move(self, legal_moves: List, move_probs: List[float]) -> Optional[Any]:
-        """Sample move from probability distribution."""
-        if not legal_moves:
-            return None
-
-        # Use numpy for efficient sampling
-        move_idx = np.random.choice(len(legal_moves), p=move_probs)
-        return legal_moves[move_idx]
-
-    def _estimate_game_phase(self, state: GameState) -> float:
-            move_count = len(state.history)
-            pieces_remaining = sum(1 for _ in state.board.list_occupied())
-            return min(move_count / 100.0, 1.0) * 0.5 + (1 - min(pieces_remaining / 50.0, 1.0)) * 0.5  # Inverted for endgame
-
-
-    def compute_move_logits(from_logits: torch.Tensor, to_logits: torch.Tensor, legal_moves: List[Move]) -> torch.Tensor:
-        """
-        Compute logits for legal moves using factorized policy.
-        Args:
-            from_logits: (729,)
-            to_logits:   (729,)
-            legal_moves: list of Move objects
-        Returns:
-            move_logits: (n_legal,)
-        """
-        move_logits = []
-        for move in legal_moves:
-            f_idx = move_encoder.move_from_to_index(move.from_coord)  # 0..728
-            t_idx = move_encoder.move_from_to_index(move.to_coord)    # 0..728
-            logit = from_logits[f_idx] + to_logits[t_idx]
-            move_logits.append(logit)
-        return torch.stack(move_logits) if move_logits else torch.tensor([])
-# ==============================================================================
-# TRAINING PIPELINE
-# ==============================================================================
-
-class ChessTrainingPipeline:
-    """Complete training pipeline for chess neural networks."""
-
-    def __init__(self, config: TrainingConfig):
-        self.config = config
-        self.trainer = ChessTrainer(config)
-        self.data_generator = None
-
-    def generate_training_data(self, num_games: int, model: Optional[nn.Module] = None) -> List[TrainingExample]:
-        """Generate training data through self-play."""
-        if model is None:
-            # Use random play for initial data generation
-            model = self.trainer.model
-
-        generator = SelfPlayGenerator(model, self.config.device)
-
-        all_examples = []
-        for game_idx in range(num_games):
-            print(f"Generating game {game_idx + 1}/{num_games}")
-
-            initial_state = GameState.start()
-            game_examples = generator.generate_game(initial_state)
-            all_examples.extend(game_examples)
-
-            if (game_idx + 1) % 10 == 0:
-                print(f"Generated {len(all_examples)} examples so far")
-
-        print(f"Total examples generated: {len(all_examples)}")
-        return all_examples
-
-    def train(self, examples: Optional[List[TrainingExample]] = None,
-              num_games: int = 1000) -> Dict[str, Any]:
-        """Complete training pipeline."""
-        if examples is None:
-            print("Generating training data...")
-            examples = self.generate_training_data(num_games)
-
-        print(f"Training on {len(examples)} examples...")
-        results = self.trainer.train(examples)
-
-        return results
-
-    def iterative_training(self, iterations: int = 5, games_per_iteration: int = 100) -> Dict[str, Any]:
-        """Iterative training with self-play data generation."""
-        all_results = []
-
-        for iteration in range(iterations):
-            print(f"\n=== Iteration {iteration + 1}/{iterations} ===")
-
-            # Generate training data using current model
-            examples = self.generate_training_data(games_per_iteration)
-
-            # Train model
-            results = self.trainer.train(examples)
-            all_results.append(results)
-
-            # Update data generator with new model
-            self.trainer.load_best_model()
-
-            print(f"Iteration {iteration + 1} completed. Best val loss: {results['best_val_loss']:.4f}")
-
-        return {
-            'iterations': iterations,
-            'results': all_results,
-            'final_model_path': self.trainer._get_best_model_path(),
-        }
-
-# ==============================================================================
-# USAGE EXAMPLE
-# ==============================================================================
-
-def main():
-    """Example usage of the training pipeline."""
-
-    # Training configuration
-    config = TrainingConfig(
-        model_type="optimized",
-        blocks=15,
-        channels=256,
-        n_moves=531_441,
-        batch_size=32,
-        learning_rate=0.001,
-        epochs=50,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        mixed_precision=True,
-        augment_data=True,
-    )
-
-    # Create training pipeline
-    pipeline = ChessTrainingPipeline(config)
-
-    # Generate initial training data
-    print("Generating initial training data...")
-    initial_examples = pipeline.generate_training_data(num_games=100)
-
-    # Train model
-    print("Training model...")
-    results = pipeline.train(examples=initial_examples)
-
-    print(f"Training completed!")
-    print(f"Best validation loss: {results['best_val_loss']:.4f}")
-    print(f"Final model saved at: {results['final_model_path']}")
-
-    # Optional: iterative training
-    print("\nStarting iterative training...")
-    iterative_results = pipeline.iterative_training(iterations=3, games_per_iteration=50)
-
-    return results, iterative_results
-
-if __name__ == "__main__":
-    results, iterative_results = main()
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+    """Generate examples from multiple self-play games."""
+    all_examples = []
+    for game_idx in range(num_games):
+        print(f"Generating game {game_idx + 1}/{num_games}")
+        game_examples = play_game(model, max_moves, device)
+        all_examples.extend(game_examples)
+    print(f"Total examples generated: {len(all_examples)}")
+    return all_examples

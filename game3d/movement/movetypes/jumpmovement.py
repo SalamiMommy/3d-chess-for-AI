@@ -65,7 +65,7 @@ def _jump_kernel_direct(
 # ------------------------------------------------------------------
 def _build_jump_moves(
     color: Color,
-    piece_type: PieceType,
+    ptype: PieceType,
     start: Tuple[int, int, int],
     raw: List[Tuple[int, int, int, bool]],
 ) -> List[Move]:
@@ -92,7 +92,7 @@ class IntegratedJumpMovementGenerator:
         self,
         *,
         color: Color,
-        position: Tuple[int, int, int],
+        pos: Tuple[int, int, int],
         directions: np.ndarray,
         allow_capture: bool = True,
         use_amd: bool = True,  # ignored – CPU is faster
@@ -103,7 +103,7 @@ class IntegratedJumpMovementGenerator:
         enemy_has_priests = self._enemy_still_has_priests(color)
 
         raw = _jump_kernel_direct(
-            position,
+            pos,
             directions.astype(np.int16),
             occ,
             own_code,
@@ -111,7 +111,7 @@ class IntegratedJumpMovementGenerator:
             allow_capture,
             enemy_has_priests,
         )
-        return _build_jump_moves(color, PieceType.PAWN, position, raw)
+        return _build_jump_moves(color, PieceType.PAWN, pos, raw)
 
     def _enemy_still_has_priests(self, color: Color) -> bool:
         occ, piece_array = self.cache.piece_cache.export_arrays()

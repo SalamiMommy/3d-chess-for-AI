@@ -1,3 +1,4 @@
+# pseudo_legal.py
 """Optimized pseudo-legal move generator with enhanced caching and performance."""
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, List, Dict, Any, Optional, Set, Tuple
@@ -21,8 +22,6 @@ class PseudoLegalStats:
     """Statistics for pseudo-legal move generation."""
     total_calls: int = 0
     total_moves_generated: int = 0
-    cache_hits: int = 0
-    cache_misses: int = 0
     piece_breakdown: Dict[PieceType, int] = None
     average_time_ms: float = 0.0
 
@@ -32,71 +31,24 @@ class PseudoLegalStats:
 
 class PseudoLegalMode(Enum):
     STANDARD   = "standard"
-    CACHED     = "cached"
     BATCH      = "batch"        # <-- new
     INCREMENTAL= "incremental"
 
 # ==============================================================================
-# ENHANCED CACHING SYSTEM
-# ==============================================================================
-
-class PseudoLegalCache:
-    """Optimized cache for pseudo-legal moves."""
-
-    __slots__ = ("_cache", "_last_board_hash", "_last_color", "_move_count")
-
-    def __init__(self):
-        self._cache: Dict[int, List[Move]] = {}
-        self._last_board_hash: int = 0
-        self._last_color: Color = Color.WHITE
-        self._move_count: int = 0
-
-    def get(self, board_hash: int, color: Color) -> Optional[List[Move]]:
-        """Get cached moves if available and valid."""
-        if board_hash == self._last_board_hash and color == self._last_color:
-            return self._cache.get(board_hash)
-        return None
-
-    def store(self, board_hash: int, color: Color, moves: List[Move]) -> None:
-        """Store moves in cache."""
-        self._last_board_hash = board_hash
-        self._last_color = color
-        self._move_count = len(moves)
-        self._cache[board_hash] = moves.copy()
-
-    def clear(self) -> None:
-        """Clear cache."""
-        self._cache.clear()
-        self._last_board_hash = 0
-        self._last_color = Color.WHITE
-        self._move_count = 0
-
-    def is_valid(self, board_hash: int, color: Color) -> bool:
-        """Check if cache entry is valid."""
-        return (board_hash == self._last_board_hash and
-                color == self._last_color and
-                board_hash in self._cache)
-
-# Global cache instance
-_PSEUDO_LEGAL_CACHE = PseudoLegalCache()
-_STATS = PseudoLegalStats()
-
-# ==============================================================================
 # OPTIMIZED PSEUDO-LEGAL GENERATION
 # ==============================================================================
+_STATS = PseudoLegalStats()
+
 def _generate_pseudo_legal_moves_impl(
     state: GameState,
-    mode: PseudoLegalMode = PseudoLegalMode.CACHED,
-    use_cache: bool = True
+    mode: PseudoLegalMode = PseudoLegalMode.STANDARD
 ) -> List[Move]:
     """Optimized pseudo-legal move generation with multiple strategies."""
     start_time = time.perf_counter()
     _STATS.total_calls += 1
 
     try:
-        if mode == PseudoLegalMode.CACHED and use_cache:
-            moves = _generate_pseudo_legal_cached(state)
-        elif mode == PseudoLegalMode.BATCH:
+        if mode == PseudoLegalMode.BATCH:
             moves = _generate_pseudo_legal_batch(state)
         elif mode == PseudoLegalMode.INCREMENTAL:
             moves = _generate_pseudo_legal_incremental(state)
@@ -114,26 +66,8 @@ def _generate_pseudo_legal_moves_impl(
         return _generate_pseudo_legal_standard(state)
 
 def generate_pseudo_legal_moves(state: GameState) -> List[Move]:
-    """Entry-point that always uses the cached path."""
-    return _generate_pseudo_legal_moves_impl(state, mode=PseudoLegalMode.CACHED, use_cache=True)
-
-def _generate_pseudo_legal_cached(state: GameState) -> List[Move]:
-    """Cached pseudo-legal move generation."""
-    board_hash = state.board.byte_hash()
-
-    # Check cache
-    cached_moves = _PSEUDO_LEGAL_CACHE.get(board_hash, state.color)
-    if cached_moves is not None:
-        _STATS.cache_hits += 1
-        return cached_moves.copy()
-
-    _STATS.cache_misses += 1
-
-    # Generate and cache
-    moves = _generate_pseudo_legal_standard(state)
-    _PSEUDO_LEGAL_CACHE.store(board_hash, state.color, moves)
-
-    return moves
+    """Entry-point that always uses the standard path."""
+    return _generate_pseudo_legal_moves_impl(state, mode=PseudoLegalMode.STANDARD)
 
 def _generate_pseudo_legal_batch(state: GameState) -> list[Move]:
     """Batch pseudo-legal move generation – now *really* batched."""
@@ -148,16 +82,15 @@ def _generate_pseudo_legal_batch(state: GameState) -> list[Move]:
 
 def _generate_pseudo_legal_incremental(state: GameState) -> List[Move]:
     """Incremental pseudo-legal move generation (for small changes)."""
-    # This would use incremental updates from cache
-    # For now, fall back to cached version
-    return _generate_pseudo_legal_cached(state)
+    # For now, fall back to standard version
+    return _generate_pseudo_legal_standard(state)
 
 def _generate_pseudo_legal_standard(state: GameState) -> List[Move]:
     """Standard pseudo-legal move generation - CORRECTED."""
     all_moves: List[Move] = []
 
     for coord, piece in state.board.list_occupied():
-        if piece.color != state.color:  # This is correct, not state.current
+        if piece.color != state.color:
             continue
 
         dispatcher = get_dispatcher(piece.ptype)
@@ -182,7 +115,6 @@ def _generate_pseudo_legal_standard(state: GameState) -> List[Move]:
 # ==============================================================================
 # ENHANCED VALIDATION
 # ==============================================================================
-
 def _validate_piece_moves(
     moves: List[Move],
     expected_coord: Tuple[int, int, int],
@@ -194,15 +126,41 @@ def _validate_piece_moves(
         return moves
 
     validated_moves = []
+    cache_manager = state.cache
+
+    # Pre-check if piece is frozen
+    is_frozen = cache_manager.is_frozen(expected_coord, piece.color)
+    is_buffed = cache_manager.is_movement_buffed(expected_coord, piece.color)
+    is_debuffed = hasattr(cache_manager, "is_movement_debuffed") and cache_manager.is_movement_debuffed(expected_coord, piece.color)
 
     for move in moves:
         # Basic validation
-        if not _is_move_valid(move, expected_coord, piece, state):
+        if move.from_coord != expected_coord:
             continue
 
-        # Additional validation based on piece type
-        if not _is_move_legal_for_piece_type(move, piece, state):
+        # Check bounds
+        to_x, to_y, to_z = move.to_coord
+        if not (0 <= to_x < BOARD_SIZE and 0 <= to_y < BOARD_SIZE and 0 <= to_z < BOARD_SIZE):
             continue
+
+        # Check destination piece
+        dest_piece = cache_manager.piece_cache.get(move.to_coord)
+        if dest_piece and dest_piece.color == piece.color:
+            continue
+
+        # Check freeze effects
+        if is_frozen:
+            continue
+
+        # Check movement debuffs
+        if is_debuffed:
+            distance = max(
+                abs(move.to_coord[0] - move.from_coord[0]),
+                abs(move.to_coord[1] - move.from_coord[1]),
+                abs(move.to_coord[2] - move.from_coord[2])
+            )
+            if distance > 1:
+                continue
 
         validated_moves.append(move)
 
@@ -292,20 +250,10 @@ def get_pseudo_legal_stats() -> Dict[str, Any]:
     return {
         'total_calls': _STATS.total_calls,
         'total_moves_generated': _STATS.total_moves_generated,
-        'cache_hits': _STATS.cache_hits,
-        'cache_misses': _STATS.cache_misses,
-        'cache_hit_rate': _STATS.cache_hits / max(1, _STATS.total_calls),
         'average_time_ms': _STATS.average_time_ms,
         'piece_breakdown': _STATS.piece_breakdown.copy(),
         'registry_size': len(get_all_dispatchers()),
-        'cache_size': len(_PSEUDO_LEGAL_CACHE._cache),
     }
-
-def clear_pseudo_legal_cache() -> None:
-    """Clear pseudo-legal move cache."""
-    _PSEUDO_LEGAL_CACHE.clear()
-    _STATS.cache_hits = 0
-    _STATS.cache_misses = 0
 
 def reset_pseudo_legal_stats() -> None:
     """Reset performance statistics."""
@@ -318,4 +266,4 @@ def reset_pseudo_legal_stats() -> None:
 
 def generate_pseudo_legal_moves_legacy(state: GameState) -> List[Move]:
     """Legacy interface for backward compatibility."""
-    return _generate_pseudo_legal_moves_impl(state, mode=PseudoLegalMode.STANDARD, use_cache=False)
+    return _generate_pseudo_legal_moves_impl(state, mode=PseudoLegalMode.STANDARD)

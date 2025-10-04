@@ -28,9 +28,9 @@ def generate_knight_moves(state: "GameState", x: int, y: int, z: int) -> List[Mo
     gen = get_integrated_jump_movement_generator(state.cache)
     raw_moves = gen.generate_jump_moves(
         color=state.color,
-        position=pos,
+        pos=pos,
         directions=KNIGHT_OFFSETS,
-        allow_capture=True,          # we *do* want captures
+                 # we *do* want captures
     )
 
     # 3. filter out friendly-occupied squares *only* when they are **not** knights

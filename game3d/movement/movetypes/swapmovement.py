@@ -48,10 +48,10 @@ def generate_swapper_moves(
     gen = get_integrated_jump_movement_generator(cache)
     moves = gen.generate_jump_moves(
         color=color,
-        position=start,
+        pos=start,
         directions=dirs,
         allow_capture=False,
-        use_amd=True
+        
     )
 
     # 5. Mark as swap (optional)

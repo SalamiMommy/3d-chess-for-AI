@@ -1,4 +1,4 @@
-"""Optimized Move class - fixes the double _set_move_properties call and other bottlenecks."""
+"""Optimized Move class with MoveReceipt - fixes missing class."""
 
 from typing import Optional, Tuple, List, Dict, Any
 from enum import Enum
@@ -269,6 +269,40 @@ class Move:
         )
 
     @classmethod
+    def _create_special_move(
+        cls,
+        from_coord: Coord,
+        to_coord: Coord,
+        move_type: MoveType,
+        is_capture: bool = False,
+        captured_piece: Optional[PieceType] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> 'Move':
+        """Internal helper to create special moves with less duplication."""
+        kwargs = {
+            'from_coord': from_coord,
+            'to_coord': to_coord,
+            'is_capture': is_capture,
+            'captured_piece': captured_piece,
+            'metadata': metadata or {}
+        }
+
+        if move_type == MoveType.ARCHERY:
+            kwargs['is_archery'] = True
+            kwargs['metadata']['attack_type'] = 'sphere_surface'
+        elif move_type == MoveType.HIVE:
+            kwargs['is_hive'] = True
+            kwargs['metadata']['batch_move'] = True
+        elif move_type == MoveType.CASTLE:
+            kwargs['is_castle'] = True
+            # Ensure castle_side is in metadata
+            if 'castle_side' not in kwargs['metadata']:
+                raise ValueError("castle_side must be specified in metadata for castling moves")
+            kwargs['metadata']['is_king_side'] = kwargs['metadata']['castle_side'] == 'kingside'
+
+        return cls(**kwargs)
+
+    @classmethod
     def create_archery_move(
         cls,
         archer_coord: Coord,
@@ -276,13 +310,9 @@ class Move:
         captured_piece: Optional[PieceType] = None
     ) -> 'Move':
         """Create archery attack move."""
-        return cls(
-            from_coord=archer_coord,
-            to_coord=target_coord,
-            is_capture=True,
-            captured_piece=captured_piece,
-            is_archery=True,
-            metadata={'attack_type': 'sphere_surface'}
+        return cls._create_special_move(
+            archer_coord, target_coord, MoveType.ARCHERY,
+            is_capture=True, captured_piece=captured_piece
         )
 
     @classmethod
@@ -294,13 +324,9 @@ class Move:
         captured_piece: Optional[PieceType] = None
     ) -> 'Move':
         """Create hive piece move."""
-        return cls(
-            from_coord=from_coord,
-            to_coord=to_coord,
-            is_capture=is_capture,
-            captured_piece=captured_piece,
-            is_hive=True,
-            metadata={'batch_move': True}
+        return cls._create_special_move(
+            from_coord, to_coord, MoveType.HIVE,
+            is_capture=is_capture, captured_piece=captured_piece
         )
 
     @classmethod
@@ -311,9 +337,44 @@ class Move:
         castle_side: str
     ) -> 'Move':
         """Create castling move."""
-        return cls(
-            from_coord=king_from,
-            to_coord=king_to,
-            is_castle=True,
-            metadata={'castle_side': castle_side, 'is_king_side': castle_side == 'kingside'}
+        return cls._create_special_move(
+            king_from, king_to, MoveType.CASTLE,
+            metadata={'castle_side': castle_side}
         )
+# ==============================================================================
+# MOVE RECEIPT - Result object for move submission
+# ==============================================================================
+
+class MoveReceipt:
+    """Receipt returned after move submission with validation results."""
+
+    __slots__ = (
+        'new_state', 'is_legal', 'is_game_over', 'result',
+        'message', 'move_time_ms', 'cache_stats'
+    )
+
+    def __init__(
+        self,
+        new_state: Any,  # GameState type hint causes circular import
+        is_legal: bool,
+        is_game_over: bool,
+        result: Optional[Any],  # Result enum
+        message: str = "",
+        move_time_ms: float = 0.0,
+        cache_stats: Optional[Dict[str, Any]] = None
+    ):
+        self.new_state = new_state
+        self.is_legal = is_legal
+        self.is_game_over = is_game_over
+        self.result = result
+        self.message = message
+        self.move_time_ms = move_time_ms
+        self.cache_stats = cache_stats or {}
+
+    def __repr__(self) -> str:
+        status = "LEGAL" if self.is_legal else "ILLEGAL"
+        return f"MoveReceipt({status}, {self.move_time_ms:.2f}ms, {self.message})"
+
+    def __bool__(self) -> bool:
+        """Allow boolean checks: if receipt: ..."""
+        return self.is_legal

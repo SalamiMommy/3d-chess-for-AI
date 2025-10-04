@@ -5,7 +5,7 @@ from typing import List, Set, Tuple
 from math import gcd
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
+from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.cache.manager import OptimizedCacheManager
 
 # --------------------------------------------------------------------------- #
@@ -48,15 +48,15 @@ def generate_face_cone_slider_moves(
     y: int,
     z: int
 ) -> List[Move]:
-    engine = get_integrated_movement_generator(cache)
-    return engine.generate_sliding_moves(
+    engine = get_slider_generator(cache)
+    return engine.generate(
         color=color,
-        piece_type=PieceType.CONESLIDER,   # <-- NEW
-        position=(x, y, z),
+        ptype=PieceType.CONESLIDER,   # <-- NEW
+        pos=(x, y, z),
         directions=CONE_DIRECTIONS,
-        max_steps=9,
-        allow_capture=True,
-        allow_self_block=False,
-        use_symmetry=True,
-        use_amd=True
+        max_steps=8,
+       
+        
+        
+        
     )

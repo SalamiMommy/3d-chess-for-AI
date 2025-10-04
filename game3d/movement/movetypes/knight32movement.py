@@ -48,7 +48,7 @@ def generate_knight32_moves(
     jump_gen = get_integrated_jump_movement_generator(cache)
     return jump_gen.generate_jump_moves(
         color=color,
-        position=pos,
+        pos=pos,
         directions=VECTORS_32,
-        allow_capture=True,
+       
     )

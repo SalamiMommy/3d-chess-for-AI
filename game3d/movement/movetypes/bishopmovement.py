@@ -5,7 +5,7 @@ import numpy as np
 from typing import List
 from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import get_integrated_movement_generator
+from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.cache.manager import OptimizedCacheManager
 
 # --------------------------------------------------------------------------- #
@@ -26,15 +26,15 @@ def generate_bishop_moves(
     x: int, y: int, z: int
 ) -> List[Move]:
     """Generate all legal bishop moves from (x, y, z) with symmetry optimisation."""
-    engine = get_integrated_movement_generator(cache)
-    return engine.generate_sliding_moves(
+    engine = get_slider_generator(cache)
+    return engine.generate(
         color=color,
-        piece_type=PieceType.BISHOP,   # <-- NEW
-        position=(x, y, z),
+        ptype=PieceType.BISHOP,   # <-- NEW
+        pos=(x, y, z),
         directions=BISHOP_DIRECTIONS,
-        max_steps=9,
-        allow_capture=True,
-        allow_self_block=False,
-        use_symmetry=True,
-        use_amd=True
+        max_steps=8,
+       
+        
+        
+        
     )
