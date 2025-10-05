@@ -20,7 +20,7 @@ from game3d.movement.movepiece import Move
 class Board:
     __slots__ = (
         "_tensor", "_hash", "_symmetry_manager",
-        "_occupancy_mask", "_occupied_list", "_gen"
+        "_occupancy_mask", "_occupied_list", "_gen", "cache_manager"  # Added cache_manager
     )
 
     def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
@@ -36,7 +36,7 @@ class Board:
         self._gen = 0
         # FIXED: Don't initialize here to avoid circular imports
         self._symmetry_manager: Optional[SymmetryManager] = None
-        # Removed the problematic cache_manager line
+        self.cache_manager = None
 
     def _ensure_symmetry_manager(self) -> SymmetryManager:
         """Lazy initialization of symmetry manager to avoid circular imports."""
@@ -162,15 +162,17 @@ class Board:
         self._occupied_list = None   # Invalidate cache
 
     def piece_at(self, c: Coord) -> Optional[Piece]:
+        # Check if cache_manager exists and has piece_cache
+        if hasattr(self, 'cache_manager') and self.cache_manager and hasattr(self.cache_manager, 'piece_cache'):
+            return self.cache_manager.piece_cache.get(c)
+
+        # Fallback to direct tensor access if cache isn't ready
         x, y, z = c
-        # Check all piece planes at this coordinate
         piece_planes = self._tensor[PIECE_SLICE, z, y, x]
         max_val, max_idx = torch.max(piece_planes, dim=0)
 
         if max_val == 1.0:
-            # Get the piece type
             ptype = PieceType(max_idx.item())
-            # Get the color from the color mask
             color_val = self._tensor[N_PIECE_TYPES, z, y, x]
             color = Color.WHITE if color_val > 0.5 else Color.BLACK
             return Piece(color, ptype)
@@ -178,8 +180,8 @@ class Board:
         return None
 
     def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        if self.cache_manager:
-            return self.cache_manager._effect["share_square"].pieces_at(sq)
+        if hasattr(self, 'cache_manager') and self.cache_manager:
+            return self.cache_manager.effects._effect_caches["share_square"].pieces_at(sq)
         else:
             # Fallback for cases without cache manager
             piece = self.piece_at(sq)
@@ -242,6 +244,10 @@ class Board:
         # Cache invalidation (force rebuild on first access)
         clone._occupancy_mask = None
         clone._occupied_list = None
+
+        # Do not copy cache_manager
+        if hasattr(clone, 'cache_manager'):
+            del clone.cache_manager
 
         return clone
 

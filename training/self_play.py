@@ -129,9 +129,9 @@ class SelfPlayGenerator:
         # Assign final outcomes
         if game.is_game_over():
             result = game.result()
-            if result == Result.WHITE_WIN:
+            if result == Result.WHITE_WON:
                 final_outcome = 1.0
-            elif result == Result.BLACK_WIN:
+            elif result == Result.BLACK_WON:
                 final_outcome = -1.0
             else:
                 final_outcome = 0.0

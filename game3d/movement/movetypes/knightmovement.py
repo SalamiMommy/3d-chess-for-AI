@@ -48,7 +48,7 @@ def generate_knight_moves(state: "GameState", x: int, y: int, z: int) -> List[Mo
         if all(p.color == state.color for p in occupants):
             # convert capture flag to False (it is not a capture)
             moves.append(
-                Move(from_coord=m.from_coord, to_coord=m.to_coord, is_capture=False)
+                Move(from_coord=m.from_coord, to_coord=m.to_coord, flags=0)
             )
 
     return moves

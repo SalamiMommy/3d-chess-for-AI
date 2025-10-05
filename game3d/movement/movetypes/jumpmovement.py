@@ -11,7 +11,7 @@ from numba import njit, prange
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.common.common import in_bounds
-
+from game3d.movement.movepiece import MOVE_FLAGS
 if TYPE_CHECKING:
     from game3d.cache.manager import CacheManager
 
@@ -73,7 +73,7 @@ def _build_jump_moves(
         Move(
             from_coord=start,
             to_coord=(x, y, z),
-            is_capture=is_cap,
+            flags = MOVE_FLAGS['CAPTURE'] if is_cap else 0,
             captured_piece=None,
         )
         for x, y, z, is_cap in raw

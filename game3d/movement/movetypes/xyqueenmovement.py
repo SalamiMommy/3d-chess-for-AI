@@ -21,15 +21,12 @@ def generate_xy_queen_moves(
     x: int, y: int, z: int
 ) -> List[Move]:
     """Generate all legal XY-QUEEN moves from (x, y, z)."""
-    engine = get_slider_generator(cache)
-    return engine.generate(
-        color=color,
-        ptype=PieceType.XYQUEEN,   # <-- NEW
+    engine = get_slider_generator()  # Fixed: no arguments needed
+    return engine.generate_moves(    # Fixed: changed method name
+        piece_type='xy_queen',      # Added piece_type
         pos=(x, y, z),
-        directions=XY_QUEEN_DIRECTIONS,
-        max_steps=8,
-       
-        
-        
-        
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,              # Changed from max_steps
     )

@@ -9,7 +9,7 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.cache.manager import CacheManager
 from game3d.common.common import in_bounds
-
+from game3d.movement.movepiece import MOVE_FLAGS
 # ------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------
@@ -65,7 +65,7 @@ def generate_pawn_moves(
             if tgt_code == ARMOUR_CODE:
                 continue                      # armour block
             if (tgt_code & 0b111) == enemy_code:  # enemy piece
-                moves.append(_make_pawn_move(pos, tgt, color, is_capture=True))
+                moves.append(_make_pawn_move(pos, tgt, color, flags=MOVE_FLAGS['CAPTURE']))
 
     # (en-passant can be added here later by consulting cache.ep_square)
     return moves
@@ -85,7 +85,7 @@ def _make_pawn_move(
     return Move(
         from_coord=from_pos,
         to_coord=to_pos,
-        is_capture=is_capture,
+        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0,
         is_promotion=is_promotion,
         is_en_passant=is_en_passant,
         captured_piece=None

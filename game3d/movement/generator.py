@@ -59,7 +59,8 @@ def _generate_legal_moves_fallback(state: GameState) -> List[Move]:
                 if (0 <= move.to_coord[0] < 9 and
                     0 <= move.to_coord[1] < 9 and
                     0 <= move.to_coord[2] < 9):
-                    dest_piece = state.cache.piece_cache.get(move.to_coord)
+                    # Fix: Use occupancy cache instead of piece_cache
+                    dest_piece = state.cache.occupancy.get(move.to_coord)
                     if not dest_piece or dest_piece.color != current_color:
                         legal_moves.append(move)
     return legal_moves
@@ -375,11 +376,16 @@ def generate_legal_moves_excluding_checks(state: GameState) -> List[Move]:
 
 def generate_legal_moves_for_piece(state: GameState, coord: Tuple[int, int, int]) -> List[Move]:
     """Generate legal moves only for a specific piece."""
-    # Get all legal moves
-    all_legal = generate_legal_moves(state)
+    piece = state.cache.piece_cache.get(coord) if hasattr(state.cache, 'piece_cache') else state.cache.occupancy.get(coord)
+    if not piece or piece.color != state.color:
+        return []
 
-    # Filter for specific piece
-    return [mv for mv in all_legal if mv.from_coord == coord]
+    dispatcher = get_dispatcher(piece.ptype)
+    if not dispatcher:
+        return []
+
+    moves = dispatcher(state, coord[0], coord[1], coord[2])
+    return _filter_legal_moves(moves, state)
 
 def generate_legal_captures(state: GameState) -> List[Move]:
     """Generate only legal capturing moves."""

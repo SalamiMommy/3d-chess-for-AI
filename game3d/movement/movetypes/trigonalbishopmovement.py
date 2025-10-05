@@ -20,15 +20,12 @@ def generate_trigonal_bishop_moves(
     y: int,
     z: int
 ) -> List[Move]:
-    engine = get_slider_generator(cache)
-    return engine.generate(
-        color=color,
-        ptype=PieceType.TRIGONALBISHOP,   # <-- NEW
+    engine = get_slider_generator()  # FIXED: Removed argument
+    return engine.generate_moves(   # FIXED: Changed method name
+        piece_type='trigonal_bishop',  # Added piece_type
         pos=(x, y, z),
-        directions=TRIGONAL_BISHOP_DIRECTIONS,
-        max_steps=8,
-       
-        
-        
-        
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,  # Changed from max_steps
     )

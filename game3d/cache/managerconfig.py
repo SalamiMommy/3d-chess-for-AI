@@ -17,6 +17,7 @@ class ManagerConfig:
     cache_stats_interval: int = 1000
     enable_parallel: bool = True
     enable_vectorization: bool = True
+    enable_disk_cache: bool = False  # ADD THIS LINE - disk cache disabled by default
 
     def __post_init__(self):
         import os

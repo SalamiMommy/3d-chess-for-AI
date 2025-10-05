@@ -8,7 +8,7 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
 from game3d.pieces.piece import Piece
-
+from game3d.movement.movepiece import MOVE_FLAGS
 # Import shared utilities
 from .move_utils import (
     apply_hole_effects,
@@ -41,7 +41,7 @@ def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int
         archery_move = Move(
             from_coord=target_sq,
             to_coord=target_sq,
-            is_capture=True,
+            flags = MOVE_FLAGS['CAPTURE'],
             metadata={
                 "is_archery": True,
                 "archer_player": game_state.color,

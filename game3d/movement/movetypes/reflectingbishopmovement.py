@@ -6,7 +6,7 @@ import numpy as np
 from numba import njit
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import get_slider_generator
+from game3d.movement.movepiece import MOVE_FLAGS
 
 # --------------------------------------------------------------------------- #
 #  8 diagonal directions
@@ -22,15 +22,21 @@ BISHOP_DIRS = np.array(
 @njit(fastmath=True, boundscheck=False, cache=True)
 def _bounce_kernel(
     occ: np.ndarray,          # flat uint8[729]
-    start_idx: int,
+    start_x: int,
+    start_y: int,
+    start_z: int,
     dirs: np.ndarray,         # (N,3) int8
     max_steps: int,
     buf: np.ndarray,          # uint64[128]  pre-allocated
+    color_code: int,          # 1 for white, 2 for black
 ) -> int:                     # number of moves written
     ptr = 0
+    # Calculate the starting index in the flat array
+    start_idx = start_x + start_y * 9 + start_z * 81
+
     for d in range(len(dirs)):
         dx, dy, dz = dirs[d]
-        sx = sy = sz = start_idx
+        sx, sy, sz = start_x, start_y, start_z  # Start from actual coordinates
         bounces = 0
         for _ in range(max_steps):
             tx = sx + dx
@@ -50,14 +56,15 @@ def _bounce_kernel(
                 bounces += 1
                 continue
 
-            to_idx = tx * 81 + ty * 9 + tz
+            to_idx = tx + ty * 9 + tz * 81  # Correct flat indexing
+            # Pack the move: from_idx (21 bits) | to_idx (21 bits)
             packed = (start_idx << 21) | to_idx
             code = occ[to_idx]
             if code == 0:                               # empty
                 buf[ptr] = packed
                 ptr += 1
             else:                                       # blocked
-                if code & 0x80:                         # enemy
+                if code != color_code:                  # enemy (not same color)
                     buf[ptr] = packed | (1 << 42)       # capture flag
                     ptr += 1
                 break
@@ -76,18 +83,25 @@ class ReflectingBishopGenerator:
 
     def generate(self, color: Color, pos: Tuple[int, int, int]) -> List[Move]:
         occ = self.cache.piece_cache.get_flat_occupancy()
-        f_idx = pos[0] * 81 + pos[1] * 9 + pos[2]
-        n = _bounce_kernel(occ, f_idx, BISHOP_DIRS, 24, self._buf)
+        x, y, z = pos
+        color_code = 1 if color == Color.WHITE else 2
+        n = _bounce_kernel(occ, x, y, z, BISHOP_DIRS, 24, self._buf, color_code)
 
         moves: List[Move] = [None] * n
         for i in range(n):
             packed = self._buf[i]
             fr_idx = (packed >> 21) & 0x1FF
             to_idx = packed & 0x1FF
+            is_capture = bool(packed & (1 << 42))
+
+            # Convert flat indices back to 3D coordinates
+            from_coord = (fr_idx % 9, (fr_idx // 9) % 9, fr_idx // 81)
+            to_coord = (to_idx % 9, (to_idx // 9) % 9, to_idx // 81)
+
             moves[i] = Move(
-                from_coord=(fr_idx // 81, (fr_idx // 9) % 9, fr_idx % 9),
-                to_coord=(to_idx // 81, (to_idx // 9) % 9, to_idx % 9),
-                is_capture=bool(packed & (1 << 42)),
+                from_coord=from_coord,
+                to_coord=to_coord,
+                flags=MOVE_FLAGS['CAPTURE'] if is_capture else 0,
                 captured_piece=None,
             )
         return moves

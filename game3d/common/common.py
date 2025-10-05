@@ -21,6 +21,7 @@ VOLUME = SIZE ** 3
 N_PIECE_TYPES  = 40          # unchanged
 N_COLOR_PLANES = 1           # unchanged
 N_TOTAL_PLANES = 82
+N_PLANES_PER_SIDE = N_PIECE_TYPES + N_COLOR_PLANES
 # ------------------------------------------
 
 # slices the rest of the code expects

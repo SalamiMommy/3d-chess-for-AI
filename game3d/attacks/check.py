@@ -21,6 +21,7 @@ from game3d.common.common import (
 from game3d.pieces.piece import Piece
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.pieces.enums import PieceType, Color, Result
+from game3d.movement.movepiece import MOVE_FLAGS
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -228,10 +229,11 @@ def get_all_pieces_in_check(
 
 def _can_piece_attack_square(piece: Piece, from_coord: Coord, to_coord: Coord, board: BoardProto) -> bool:
     """Check if a non-sliding piece can attack a square."""
-    from game3d.movement.movepiece import Move
+    from game3d.movement.movepiece import Move, MOVE_FLAGS  # Import MOVE_FLAGS
 
-    # Create a dummy move
-    dummy_move = Move(from_coord=from_coord, to_coord=to_coord, is_capture=True)
+    # Create a dummy move using the new flags parameter
+    flags = MOVE_FLAGS['CAPTURE']  # Set the capture flag
+    dummy_move = Move(from_coord=from_coord, to_coord=to_coord, flags=flags)
 
     # Get the dispatcher for this piece type
     from game3d.movement.registry import get_dispatcher

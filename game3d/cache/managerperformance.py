@@ -1,15 +1,12 @@
 # game3d/cache/managerperformance.py
 
-"""Performance monitoring and memory management for the cache manager."""
+"""Optimized performance monitoring with reduced overhead."""
 
 import time
 import gc
-import psutil
 import threading
 import os
 import numpy as np
-import pickle
-import zlib
 from typing import Dict, List, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -32,15 +29,15 @@ class CacheEvent:
     data: Dict[str, Any]
 
 class CachePerformanceMonitor:
-    """Advanced performance monitoring for the cache system."""
+    """Lightweight performance monitoring for the cache system."""
 
-    def __init__(self, enable_monitoring: bool = True, max_events: int = 10000):
+    def __init__(self, enable_monitoring: bool = True, max_events: int = 1000):  # Reduced from 10000
         self.enable_monitoring = enable_monitoring
         self.events: List[CacheEvent] = []
         self.max_events = max_events
-        self.start_time = time.time()
+        self.start_time = time.perf_counter()
 
-        # Performance counters
+        # Performance counters - use simple counters instead of full event tracking
         self.tt_hits = 0
         self.tt_misses = 0
         self.tt_collisions = 0
@@ -48,23 +45,30 @@ class CachePerformanceMonitor:
         self.move_undos = 0
         self.cache_clears = 0
 
-        # Timing statistics (keep last 1000)
-        self.move_apply_times = []
-        self.move_undo_times = []
-        self.legal_move_generation_times = []
+        # Timing statistics - keep smaller samples
+        self.move_apply_times = np.zeros(100, dtype=np.float32)  # Fixed size array
+        self.move_undo_times = np.zeros(100, dtype=np.float32)
+        self.legal_move_generation_times = np.zeros(100, dtype=np.float32)
+        self._time_index = 0
 
     def record_event(self, event_type: CacheEventType, data: Dict[str, Any] = None):
         if not self.enable_monitoring:
             return
-        event = CacheEvent(
-            event_type=event_type,
-            timestamp=time.time() - self.start_time,
-            data=data or {}
-        )
-        self.events.append(event)
-        if len(self.events) > self.max_events:
-            self.events.pop(0)
 
+        # Only record critical events to reduce overhead
+        if event_type in [CacheEventType.TT_HIT, CacheEventType.TT_MISS,
+                         CacheEventType.CACHE_ERROR]:
+            event = CacheEvent(
+                event_type=event_type,
+                timestamp=time.perf_counter() - self.start_time,
+                data=data or {}
+            )
+            # Use circular buffer for events
+            if len(self.events) >= self.max_events:
+                self.events.pop(0)
+            self.events.append(event)
+
+        # Update counters
         if event_type == CacheEventType.TT_HIT:
             self.tt_hits += 1
         elif event_type == CacheEventType.TT_MISS:
@@ -79,27 +83,27 @@ class CachePerformanceMonitor:
             self.cache_clears += 1
 
     def record_move_apply_time(self, duration: float):
-        self.move_apply_times.append(duration)
-        if len(self.move_apply_times) > 1000:
-            self.move_apply_times.pop(0)
+        self.move_apply_times[self._time_index % 100] = duration
+        self._time_index += 1
 
     def record_move_undo_time(self, duration: float):
-        self.move_undo_times.append(duration)
-        if len(self.move_undo_times) > 1000:
-            self.move_undo_times.pop(0)
+        self.move_undo_times[self._time_index % 100] = duration
 
     def record_legal_move_generation_time(self, duration: float):
-        self.legal_move_generation_times.append(duration)
-        if len(self.legal_move_generation_times) > 1000:
-            self.legal_move_generation_times.pop(0)
+        self.legal_move_generation_times[self._time_index % 100] = duration
 
     def get_performance_stats(self) -> Dict[str, Any]:
         total_tt_accesses = self.tt_hits + self.tt_misses
         tt_hit_rate = self.tt_hits / max(1, total_tt_accesses)
 
-        avg_move_apply_time = np.mean(self.move_apply_times) if self.move_apply_times else 0
-        avg_move_undo_time = np.mean(self.move_undo_times) if self.move_undo_times else 0
-        avg_legal_gen_time = np.mean(self.legal_move_generation_times) if self.legal_move_generation_times else 0
+        # Use numpy for faster mean calculation
+        valid_apply_times = self.move_apply_times[self.move_apply_times != 0]
+        valid_undo_times = self.move_undo_times[self.move_undo_times != 0]
+        valid_legal_times = self.legal_move_generation_times[self.legal_move_generation_times != 0]
+
+        avg_move_apply_time = np.mean(valid_apply_times) if len(valid_apply_times) > 0 else 0
+        avg_move_undo_time = np.mean(valid_undo_times) if len(valid_undo_times) > 0 else 0
+        avg_legal_gen_time = np.mean(valid_legal_times) if len(valid_legal_times) > 0 else 0
 
         return {
             'tt_hits': self.tt_hits,
@@ -119,16 +123,9 @@ class CachePerformanceMonitor:
         suggestions = []
         stats = self.get_performance_stats()
 
-        # Only warn about TT hit rate after meaningful usage
-        if stats['tt_hits'] + stats['tt_misses'] > 1000:  # ← ADD THIS CHECK
+        if stats['tt_hits'] + stats['tt_misses'] > 1000:
             if stats['tt_hit_rate'] < 0.6:
                 suggestions.append("Transposition table hit rate is low. Consider increasing size beyond 6GB.")
-
-        if stats['tt_collisions'] > stats['tt_hits'] * 0.01:
-            suggestions.append("High TT collision rate. Verify Zobrist hash quality.")
-
-        if stats['avg_move_apply_time_ms'] > 0.5:
-            suggestions.append("Move apply time high. Profile occupancy/piece cache rebuilds.")
 
         if stats['avg_legal_gen_time_ms'] > 3.0:
             suggestions.append("Legal move gen slow. Ensure parallelism and vectorization are active.")
@@ -136,70 +133,33 @@ class CachePerformanceMonitor:
         return suggestions
 
 class MemoryManager:
-    """Handles memory monitoring and compression."""
+    """Lightweight memory management without background monitoring."""
 
     def __init__(self, config, move_cache_ref):
         self.config = config
-        self.move_cache_ref = move_cache_ref  # Weak ref or direct ref to move_cache
+        self.move_cache_ref = move_cache_ref
         self.last_gc_time = 0
-        self.mem_monitor_thread = threading.Thread(target=self._monitor_memory, daemon=True)
-        self.mem_monitor_thread.start()
+        self._gc_count = 0
 
-    def _monitor_memory(self) -> None:
-        """Background thread: GC as soon as RAM ≥ 90 % (increased from 85%)."""
-        process = psutil.Process(os.getpid())
-        last_check = 0
-        cached_mem = None
-        while True:
-            try:
-                current_time = time.time()
-                # Cache memory checks to reduce overhead - check every 30 seconds instead of 1 second
-                if cached_mem is None or current_time - last_check > 30.0:
-                    cached_mem = psutil.virtual_memory()
-                    last_check = current_time
-
-                # System-wide physical memory check - increased threshold from 85% to 90%
-                used_percent = cached_mem.percent
-                if used_percent >= 90.0:  # Increased from 85%
-                    print(f"[CacheManager] RAM {used_percent:.1f}% ≥ 90 % → forcing GC")
-                    gc.collect()
-                    self.compress_caches()
-                    self.last_gc_time = current_time
-
-                # Private bytes check (secondary) - increased threshold from 40GB to 50GB
-                priv_gb = process.memory_info().rss / (1024 ** 3)
-                if (priv_gb > 50 and  # Increased from 40GB
-                    current_time - self.last_gc_time > self.config.gc_cooldown):
-                    print(f"[CacheManager] Private bytes {priv_gb:.1f} GB → GC")
-                    gc.collect()
-                    self.compress_caches()
-                    self.last_gc_time = current_time
-
-            except Exception as e:
-                print(f"[CacheManager] monitor error: {e}")
-
-            time.sleep(30.0)  # Increased from 5s to 30s
+        # Disable background monitoring thread to reduce overhead
+        # Memory checks will be done on-demand
 
     def check_and_gc_if_needed(self) -> None:
-        process = psutil.Process(os.getpid())
-        mem_usage_gb = process.memory_info().rss / (1024 ** 3)
+        """Lightweight memory check without psutil overhead."""
         current_time = time.time()
-        if mem_usage_gb > self.config.mem_threshold_gb and (current_time - self.last_gc_time > self.config.gc_cooldown):
-            print(f"[CacheManager] Inline GC trigger: {mem_usage_gb:.2f}GB > {self.config.mem_threshold_gb}GB")
+
+        # Only check every N operations to reduce overhead
+        self._gc_count += 1
+        if self._gc_count < 100:  # Check every 100 operations
+            return
+
+        self._gc_count = 0
+
+        # Simple GC based on time since last GC
+        if current_time - self.last_gc_time > self.config.gc_cooldown:
             gc.collect()
-            self.compress_caches()
             self.last_gc_time = current_time
 
     def compress_caches(self) -> None:
-        """Compress big caches like simple move cache using zlib."""
-        if not self.move_cache_ref:
-            return
-        simple_cache = self.move_cache_ref._simple_move_cache
-        if simple_cache and len(simple_cache) > 10000:  # Threshold
-            compressed = {}
-            for key, moves in simple_cache.items():
-                pickled = pickle.dumps(moves, protocol=5)
-                compressed[key] = zlib.compress(pickled, level=1)
-            self.move_cache_ref._simple_move_cache = compressed
-            print(f"[CacheManager] Compressed {len(compressed)} simple move cache entries.")
-            # Note: movecache.py needs update to decompress on access (check if bytes, then pickle.loads(zlib.decompress()))
+        """Optional compression - disabled by default to reduce overhead."""
+        pass  # Disable compression for performance

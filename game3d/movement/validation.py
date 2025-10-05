@@ -187,22 +187,24 @@ def along_pin_line(move: Move, pin_direction: Tuple[int, int, int]) -> bool:
 # BATCH VALIDATION
 # ==============================================================================
 def batch_check_validation(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch validation with early termination."""
+    """Optimized batch validation."""
     if not moves:
         return []
 
-    # Early exit if not in check
+    # Cache expensive lookups
     check_summary = get_check_summary(state.board, state.cache)
-    if not check_summary[f'{state.color.name.lower()}_check']:
-        # Only basic validation needed
+    in_check = check_summary[f'{state.color.name.lower()}_check']
+
+    if not in_check:
+        # Fast path - only basic validation needed
         return [mv for mv in moves if is_basic_legal(mv, state)]
 
     # Full validation only when in check
-    legal_moves = []
-    for move in moves:
-        if is_basic_legal(move, state) and not leaves_king_in_check(move, state):
-            legal_moves.append(move)
-    return legal_moves
+    # Use list comprehension instead of loop for performance
+    return [
+        mv for mv in moves
+        if is_basic_legal(mv, state) and not leaves_king_in_check(mv, state)
+    ]
 
 
 def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:

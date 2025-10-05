@@ -35,7 +35,6 @@ def generate_vector_slider_moves(
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """Generate all legal vector-slider moves from (x, y, z)."""
     # Validate inputs
     if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):
         raise ValueError(f"Invalid position: ({x}, {y}, {z})")
@@ -54,11 +53,12 @@ def generate_vector_slider_moves(
     if piece.ptype != PieceType.VECTORSLIDER:
         return []
 
-    engine = get_slider_generator(cache)
-    return engine.generate(
-        color=color,
-        ptype=PieceType.VECTORSLIDER,
+    engine = get_slider_generator()  # FIXED: Removed argument
+    return engine.generate_moves(   # FIXED: Changed method name
+        piece_type='vector_slider',  # Added piece_type
         pos=(x, y, z),
-        directions=VECTOR_SLIDER_DIRECTIONS,
-        max_steps=8,
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,  # Changed from max_steps
     )

@@ -20,18 +20,15 @@ def generate_rook_moves(
     x: int,
     y: int,
     z: int,
-    max_steps: int = 9
+    max_steps: int = 8
 ) -> List[Move]:
     """Generate all legal rook moves from (x, y, z) up to max_steps."""
-    engine = get_slider_generator(cache)
-    return engine.generate(
-        color=color,
-        ptype=PieceType.ROOK,   # <-- NEW
+    engine = get_slider_generator()  # Fixed: removed cache argument
+    return engine.generate_moves(    # Fixed: changed method name
+        piece_type='rook',           # Added piece_type
         pos=(x, y, z),
-        directions=ROOK_DIRECTIONS_3D,
-        max_steps=max_steps,
-       
-        
-        
-        
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=max_steps,      # Changed from max_steps to max_distance
     )

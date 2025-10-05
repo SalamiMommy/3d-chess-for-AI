@@ -76,7 +76,7 @@ def apply_movement_effects(
 
     try:
         # Quick freeze check (highest priority)
-        if cache_manager.is_frozen(start, state.color):  # Fixed state.current -> state.color
+        if cache_manager.is_frozen(start, state.color):  # Fixed state.color -> state.color
             _STATS.debuffs_applied += 1
             return [], 0
 
@@ -179,7 +179,7 @@ def _filter_wall_capture_directions(
 
     # Check wall capture restrictions
     if (hasattr(cache_manager, "can_capture_wall") and
-        not cache_manager.can_capture_wall(start, start, state.current)):
+        not cache_manager.can_capture_wall(start, start, state.color)):
         _STATS.wall_captures_prevented += 1
         return []  # Can't capture wall, no valid directions
 
@@ -196,16 +196,16 @@ def _fallback_movement_effects(
     directions = raw_directions.copy()
 
     # 1. range buffs / debuffs
-    if cache_manager.is_movement_buffed(start, state.color):  # Fixed state.current
+    if cache_manager.is_movement_buffed(start, state.color):  # Fixed state.color
         max_steps += 1
 
     if (hasattr(cache_manager, "is_movement_slowed") and
-        cache_manager.is_movement_slowed(start, state.color)):  # Fixed state.current
+        cache_manager.is_movement_slowed(start, state.color)):  # Fixed state.color
         max_steps = max(1, max_steps - 1)
 
     # 2. direction filters
     if (hasattr(cache_manager, "is_diagonal_blocked") and
-        cache_manager.is_diagonal_blocked(start, state.color)):  # Fixed state.current
+        cache_manager.is_diagonal_blocked(start, state.color)):  # Fixed state.color
         directions = [d for d in directions if sum(1 for coord in d if coord != 0) <= 1]
 
     # 4. geomancy blocked squares
@@ -222,7 +222,7 @@ def _fallback_movement_effects(
     victim = state.cache.piece_cache.get(start)
     if victim is not None and victim.ptype == PieceType.WALL:
         if (hasattr(cache_manager, "can_capture_wall") and
-            not cache_manager.can_capture_wall(start, start, state.color)):  # Fixed state.current
+            not cache_manager.can_capture_wall(start, start, state.color)):  # Fixed state.color
             return [], max_steps
 
     return directions, max_steps

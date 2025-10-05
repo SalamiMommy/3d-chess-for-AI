@@ -48,15 +48,12 @@ def generate_face_cone_slider_moves(
     y: int,
     z: int
 ) -> List[Move]:
-    engine = get_slider_generator(cache)
-    return engine.generate(
-        color=color,
-        ptype=PieceType.CONESLIDER,   # <-- NEW
+    engine = get_slider_generator()  # FIXED: Removed argument
+    return engine.generate_moves(   # FIXED: Changed method name
+        piece_type='cone_slider',  # Added piece_type
         pos=(x, y, z),
-        directions=CONE_DIRECTIONS,
-        max_steps=8,
-       
-        
-        
-        
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,  # Changed from max_steps
     )

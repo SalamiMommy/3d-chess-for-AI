@@ -5,6 +5,9 @@ import random
 import time
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING, Set, Any
 from dataclasses import dataclass
+import gzip
+import pickle
+import msgpack
 
 if TYPE_CHECKING:
     from game3d.cache.manager import CacheManager
@@ -18,7 +21,7 @@ from game3d.game.zobrist import compute_zobrist, ZobristHash
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 from game3d.cache.caches.transposition import TranspositionTable
-from game3d.movement.generator import generate_legal_moves
+from game3d.movement.generator import generate_legal_moves, generate_legal_moves_for_piece
 # Add this to avoid circular import
 class CompactMove:
     """Simple move representation for TT entries."""
@@ -171,7 +174,7 @@ class OptimizedMoveCache:
                 raise ValueError(f"Move {mv} not in legal moves for {color}")
 
         # Now safe to proceed
-        captured_piece = self._board.piece_at(to_coord) if getattr(mv, 'is_capture', False) else None
+        captured_piece = self._board.piece_at(to_coord) if mv.is_capture else None
 
         # Update zobrist BEFORE board mutation
         self._zobrist_hash = self._zobrist.update_hash_move(
