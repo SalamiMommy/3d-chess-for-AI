@@ -65,7 +65,7 @@ _move_pool = MovePool()
 
 
 class Move:
-    __slots__ = ('_data', '_cached_hash', 'metadata')
+    # __slots__ = ('_data', '_cached_hash', 'metadata')
 
     # Class-level lookup tables for coordinate packing/unpacking
     _coord_to_idx = {}

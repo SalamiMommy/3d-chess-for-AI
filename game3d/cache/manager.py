@@ -167,6 +167,10 @@ class OptimizedCacheManager:
             # Batch cache updates
             self._batch_update_caches(mv, from_piece, captured_piece, mover, current_ply)
 
+            # Mark network teleport targets as dirty
+            self._mark_network_teleport_dirty()
+            self._mark_swap_dirty()
+
             self._current = mover.opposite()
             self._age_counter += 1
 
@@ -188,6 +192,71 @@ class OptimizedCacheManager:
         except CacheDesyncError as e:
             print(f"[ERROR] {str(e)}")
             raise
+        except Exception as e:
+            self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
+                'error': str(e),
+                'move': str(mv),
+                'color': mover.name
+            })
+            raise
+
+    def undo_move(self, mv: 'Move', mover: Color, current_ply: int = 0) -> None:
+        """
+        Undo a move with proper Zobrist hash rollback and cache updates.
+        CRITICAL: Order matters - hash update uses current board state.
+        """
+        start_time = time.time()
+        self.memory_manager.check_and_gc_if_needed()
+
+        try:
+            # FIXED: Read state BEFORE mutating board
+            piece = self.occupancy.get(mv.to_coord)  # Piece that arrived here
+            if piece is None:
+                raise ValueError(f"No piece at move target {mv.to_coord} during undo")
+
+            captured_piece = None
+            if getattr(mv, "is_capture", False):
+                captured_type = getattr(mv, "captured_ptype", None)
+                if captured_type is not None:
+                    captured_piece = Piece(mover.opposite(), captured_type)
+
+            # Update Zobrist hash BEFORE board mutation
+            self._current_zobrist_hash = self._zobrist.update_hash_move(
+                self._current_zobrist_hash, mv, piece, captured_piece
+            )
+
+            # Now mutate the board
+            self._undo_move_optimized(mv, mover, piece, captured_piece)
+
+            # Update caches incrementally
+            unpromoted_piece = Piece(piece.color, PieceType.PAWN) if getattr(mv, "is_promotion", False) else piece
+            self.occupancy.set_position(mv.from_coord, unpromoted_piece)
+            self.occupancy.set_position(mv.to_coord, captured_piece)
+
+            # Update effect caches
+            affected_caches = self.effects.get_affected_caches_for_undo(mv, mover)
+            affected_caches.add("attacks")
+            self.effects.update_effect_caches_for_undo(mv, mover, affected_caches, current_ply)
+
+            # Update move cache
+            if self._move_cache:
+                self._move_cache.undo_move(mv, mover)
+
+            # Mark network teleport targets as dirty
+            self._mark_network_teleport_dirty()
+            self._mark_swap_dirty()
+
+            self._current = mover
+            self._age_counter += 1
+
+            duration = time.time() - start_time
+            self.performance_monitor.record_move_undo_time(duration)
+            self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
+                'move': str(mv),
+                'color': mover.name,
+                'duration_ms': duration * 1000
+            })
+
         except Exception as e:
             self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
                 'error': str(e),
@@ -233,67 +302,6 @@ class OptimizedCacheManager:
         # Simple check based on object count
         if len(gc.get_objects()) > 500000:  # Arbitrary threshold, adjust based on usage
             gc.collect()
-
-    def undo_move(self, mv: 'Move', mover: Color, current_ply: int = 0) -> None:
-        """
-        Undo a move with proper Zobrist hash rollback and cache updates.
-        CRITICAL: Order matters - hash update uses current board state.
-        """
-        start_time = time.time()
-        self.memory_manager.check_and_gc_if_needed()
-
-        try:
-            # FIXED: Read state BEFORE mutating board
-            piece = self.occupancy.get(mv.to_coord)  # Piece that arrived here
-            if piece is None:
-                raise ValueError(f"No piece at move target {mv.to_coord} during undo")
-
-            captured_piece = None
-            if getattr(mv, "is_capture", False):
-                captured_type = getattr(mv, "captured_ptype", None)
-                if captured_type is not None:
-                    captured_piece = Piece(mover.opposite(), captured_type)
-
-            # Update Zobrist hash BEFORE board mutation
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, piece, captured_piece
-            )
-
-            # Now mutate the board
-            self._undo_move_optimized(mv, mover, piece, captured_piece)
-
-            # Update caches incrementally
-            unpromoted_piece = Piece(piece.color, PieceType.PAWN) if getattr(mv, "is_promotion", False) else piece
-            self.occupancy.set_position(mv.from_coord, unpromoted_piece)
-            self.occupancy.set_position(mv.to_coord, captured_piece)
-
-            # Update effect caches
-            affected_caches = self.effects.get_affected_caches_for_undo(mv, mover)
-            affected_caches.add("attacks")
-            self.effects.update_effect_caches_for_undo(mv, mover, affected_caches, current_ply)
-
-            # Update move cache
-            if self._move_cache:
-                self._move_cache.undo_move(mv, mover)
-
-            self._current = mover
-            self._age_counter += 1
-
-            duration = time.time() - start_time
-            self.performance_monitor.record_move_undo_time(duration)
-            self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
-                'move': str(mv),
-                'color': mover.name,
-                'duration_ms': duration * 1000
-            })
-
-        except Exception as e:
-            self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
-                'error': str(e),
-                'move': str(mv),
-                'color': mover.name
-            })
-            raise
 
     def _undo_move_optimized(self, mv: 'Move', mover: Color, piece: Piece, captured_piece: Optional[Piece]) -> None:
         """FIXED: Handle piece restoration properly."""
@@ -453,7 +461,10 @@ class OptimizedCacheManager:
         return self.effects.top_piece(sq)
 
     def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        return self.effects.get_attacked_squares(color)
+        """Get all squares attacked by pieces of the given color."""
+        if self._move_cache:
+            return self._move_cache.get_attacked_squares(color)
+        return set()
 
     def is_pinned(self, coord: Tuple[int, int, int], color: Optional[Color] = None) -> bool:
         if color is None:
@@ -528,6 +539,11 @@ class OptimizedCacheManager:
             }
         }
 
+    def _mark_network_teleport_dirty(self) -> None:
+        """Mark network teleport targets as dirty for both colors."""
+        if hasattr(self, '_network_teleport_dirty'):
+            self._network_teleport_dirty[Color.WHITE] = True
+            self._network_teleport_dirty[Color.BLACK] = True
 # ==============================================================================
 # AI-SAFE DATA EXPORT METHODS (DELEGATED TO export.py)
 # ==============================================================================
@@ -579,6 +595,12 @@ class OptimizedCacheManager:
     def piece_cache(self):
         """Return the occupancy cache for backward compatibility."""
         return self.occupancy
+
+    def _mark_swap_dirty(self) -> None:
+        """Mark swap targets as dirty for both colors."""
+        if hasattr(self, '_swap_targets_dirty'):
+            self._swap_targets_dirty[Color.WHITE] = True
+            self._swap_targets_dirty[Color.BLACK] = True
 # ==============================================================================
 # FACTORY & BACKWARD COMPATIBILITY
 # ==============================================================================

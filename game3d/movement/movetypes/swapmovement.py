@@ -1,3 +1,4 @@
+# swapmovement.py
 # game3d/movement/movetypes/swapmovement.py
 
 from __future__ import annotations
@@ -14,47 +15,58 @@ def generate_swapper_moves(
     color: Color,
     x: int, y: int, z: int
 ) -> List['Move']:
-    """Swap with any friendly piece using the jump engine."""
+    """Swap with any friendly piece using cached targets and jump engine."""
     start = (x, y, z)
 
-    # 1. Export occupancy (color-only: 0=empty, 1=white, 2=black)
-    occ, _ = cache.piece_cache.export_arrays()
-    own_code = 1 if color == Color.WHITE else 2
+    # Initialize cache attributes if not present
+    if not hasattr(cache, '_swap_targets'):
+        cache._swap_targets = {Color.WHITE: set(), Color.BLACK: set()}
+        cache._swap_targets_dirty = {Color.WHITE: True, Color.BLACK: True}
 
-    # Validate starting square
-    if occ[x, y, z] != own_code:
+    # Recalculate targets if cache is dirty
+    if cache._swap_targets_dirty[color]:
+        _update_swap_targets(cache, color)
+        cache._swap_targets_dirty[color] = False
+
+    # Get cached targets for this color
+    targets = cache._swap_targets[color]
+
+    # Remove the starting position if present
+    if start in targets:
+        targets_without_start = targets - {start}
+    else:
+        targets_without_start = targets
+
+    if not targets_without_start:
         return []
 
-    # 2. Find all other friendly pieces
-    targets: List[Tuple[int, int, int]] = []
-    for tx in range(9):
-        for ty in range(9):
-            for tz in range(9):
-                if (tx, ty, tz) == start:
-                    continue
-                if occ[tx, ty, tz] == own_code:
-                    targets.append((tx, ty, tz))
+    # Convert to numpy array for direction computation
+    targets_array = np.array(list(targets_without_start), dtype=np.int16)
+    start_array = np.array(start, dtype=np.int16)
+    directions = targets_array - start_array
 
-    if not targets:
-        return []
-
-    # 3. Build directions (use int16 to avoid overflow in later indexing)
-    start_arr = np.array(start, dtype=np.int16)
-    dirs = np.empty((len(targets), 3), dtype=np.int16)
-    for i, t in enumerate(targets):
-        dirs[i] = np.array(t, dtype=np.int16) - start_arr
-
-    # 4. Use jump generator (no capture)
+    # Hand off to jump movement generator
     gen = get_integrated_jump_movement_generator(cache)
-    moves = gen.generate_jump_moves(
+    swap_moves = gen.generate_jump_moves(
         color=color,
         pos=start,
-        directions=dirs,
+        directions=directions,
         allow_capture=False,
-        
     )
 
-    # 5. Mark as swap (optional)
-    for m in moves:
+    # Mark as swap
+    for m in swap_moves:
         m.is_swap = True
-    return moves
+    return swap_moves
+
+def _update_swap_targets(cache: CacheManager, color: Color) -> None:
+    """
+    Update the cached swap targets (friendly pieces) for the given color.
+    """
+    targets = set()
+
+    # Get all friendly pieces for color
+    if hasattr(cache.piece_cache, "iter_color"):
+        targets = {coord for coord, _ in cache.piece_cache.iter_color(color)}
+
+    cache._swap_targets[color] = targets

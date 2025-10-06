@@ -69,7 +69,7 @@ class OptimizedMoveCache:
         "_zobrist_hash", "_age_counter",
         "_simple_move_cache", "symmetry_manager", "symmetry_tt",
         "_save_dir", "_main_tt_size_mb", "_sym_tt_size_mb",
-        "_needs_rebuild"  # ADD THIS LINE
+        "_needs_rebuild", "_attacked_squares", "_attacked_squares_valid"
     )
 
     def __init__(
@@ -116,6 +116,15 @@ class OptimizedMoveCache:
         self._save_dir = "/home/salamimommy/Documents/code/3d/game3d/cache/caches/movescachedisk"  # Directory for save files
         os.makedirs(self._save_dir, exist_ok=True)
         self._needs_rebuild = False
+        self._attacked_squares: Dict[Color, Set[Tuple[int, int, int]]] = {
+            Color.WHITE: set(),
+            Color.BLACK: set()
+        }
+        self._attacked_squares_valid: Dict[Color, bool] = {
+            Color.WHITE: False,
+            Color.BLACK: False
+        }
+
 
     @property
     def _board(self) -> "Board":
@@ -321,6 +330,8 @@ class OptimizedMoveCache:
 
         # Update only affected pieces
         self._batch_update_pieces(affected_squares, color.opposite())
+        self._attacked_squares_valid[Color.WHITE] = False
+        self._attacked_squares_valid[Color.BLACK] = False
 
     def _batch_update_pieces(self, affected_squares: Set[Tuple[int, int, int]], color: Color) -> None:
         # Clear affected pieces from cache
@@ -383,6 +394,8 @@ class OptimizedMoveCache:
             self._legal_per_piece.setdefault(move.from_coord, []).append(move)
 
         self._rebuild_color_lists()
+        self._attacked_squares_valid[Color.WHITE] = False
+        self._attacked_squares_valid[Color.BLACK] = False
 
     def _find_king(self, color: Color) -> Optional[Tuple[int, int, int]]:
         if self._king_pos[color]:
@@ -416,8 +429,28 @@ class OptimizedMoveCache:
             if k:
                 affected.add(k)
         self._batch_update_pieces(affected, color)
+        self._attacked_squares_valid[Color.WHITE] = False
+        self._attacked_squares_valid[Color.BLACK] = False
 
 
+    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
+        """Get all squares attacked by pieces of the given color."""
+        if not self._attacked_squares_valid[color]:
+            self._update_attacked_squares(color)
+        return self._attacked_squares[color].copy()
+
+    def _update_attacked_squares(self, color: Color) -> None:
+        """Update attacked squares for a color using legal moves."""
+        self._attacked_squares[color].clear()
+
+        # Get all legal moves for this color
+        legal_moves = self._legal_by_color[color]
+
+        # Extract all destination coordinates (attacked squares)
+        for move in legal_moves:
+            self._attacked_squares[color].add(move.to_coord)
+
+        self._attacked_squares_valid[color] = True
 # ==============================================================================
 # FACTORY
 # ==============================================================================
