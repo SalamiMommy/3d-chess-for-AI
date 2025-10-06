@@ -70,7 +70,6 @@ class OptimizedCacheManager:
 
         self.config = ManagerConfig()
         self.board = board
-        self._board = board
         self.board.cache_manager = self  # Set reference on board
 
         # Now initialize other caches that depend on piece_cache
@@ -85,18 +84,13 @@ class OptimizedCacheManager:
         self._current_zobrist_hash = self._zobrist.compute_from_scratch(board, Color.WHITE)
 
         self.parallel = ParallelManager(self.config)
-        self.occupancy = OccupancyCache(board)
         self._move_cache: Optional[OptimizedMoveCache] = None
         self._move_counter = 0
         self._age_counter = 0  # Add missing attribute
         self._current = Color.WHITE  # Add missing attribute
 
-        # Memory management - disable background monitoring to reduce overhead
-        self.memory_manager = None  # We'll handle memory management differently
-        self._needs_rebuild = False
-
-        # Disable background save thread - save only on explicit calls
-        self._save_thread = None
+        # Memory management - lightweight, instantiated here
+        self.memory_manager = MemoryManager(self.config, None)  # move_cache_ref not used, set to None
 
     @property
     def cache(self):
@@ -110,7 +104,7 @@ class OptimizedCacheManager:
             self.board, current, self
         )
 
-        # Perform rebuild after initialization
+        # Perform rebuild after initialization (necessary for initial setup)
         if self._move_cache:
             self._move_cache._full_rebuild()
 
@@ -134,8 +128,8 @@ class OptimizedCacheManager:
             raise CacheDesyncError("Cache inconsistent before move")
         start_time = time.perf_counter()  # More precise timing
 
-        # Lightweight memory check instead of full GC
-        self._light_memory_check()
+        # Use consistent memory check
+        self.memory_manager.check_and_gc_if_needed()
 
         try:
             # Validate move with faster piece lookup
@@ -220,26 +214,16 @@ class OptimizedCacheManager:
         affected_caches.add("attacks")
         self.effects.update_effect_caches(mv, mover, affected_caches, current_ply)
 
-        # Update move cache incrementally
+        # Update move cache incrementally (avoid full rebuild unless absolutely necessary)
         if self._move_cache:
             self._move_cache.apply_move(mv, mover)
-            if self._needs_rebuild:
-                self._move_cache._full_rebuild()
-                self._needs_rebuild = False
-
-    def _light_memory_check(self):
-        """Lightweight memory check instead of full psutil calls."""
-        import sys
-        # Simple check based on object count
-        if len(gc.get_objects()) > 500000:  # Arbitrary threshold, adjust based on usage
-            gc.collect()
 
     def undo_move(self, mv: 'Move', mover: Color, current_ply: int = 0) -> None:
         """
         Undo a move with proper Zobrist hash rollback and cache updates.
         CRITICAL: Order matters - hash update uses current board state.
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         self.memory_manager.check_and_gc_if_needed()
 
         try:
@@ -279,13 +263,16 @@ class OptimizedCacheManager:
             self._current = mover
             self._age_counter += 1
 
-            duration = time.time() - start_time
+            duration = time.perf_counter() - start_time
             self.performance_monitor.record_move_undo_time(duration)
-            self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
-                'move': str(mv),
-                'color': mover.name,
-                'duration_ms': duration * 1000
-            })
+
+            # Only record detailed events for slow operations
+            if duration > 0.001:  # Only log if > 1ms
+                self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
+                    'move': str(mv),
+                    'color': mover.name,
+                    'duration_ms': duration * 1000
+                })
 
         except Exception as e:
             self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {

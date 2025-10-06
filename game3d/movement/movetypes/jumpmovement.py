@@ -1,7 +1,7 @@
 from __future__ import annotations
 """
 game3d/movement/movetypes/jumpmovement.py
-Zero-redundancy JUMP-move engine – 5600-X optimised, GPU code removed.
+Ultra-fast JUMP-move engine for 9x9x9 chess. Optimized for batch directions and minimal Python overhead.
 """
 
 from typing import List, Tuple, TYPE_CHECKING
@@ -22,17 +22,14 @@ if TYPE_CHECKING:
 def _occ_code(occ: np.ndarray, x: int, y: int, z: int) -> int:
     return occ[x, y, z]
 
-# ------------------------------------------------------------------
-#  Inline alias for Numba – keeps same logic, zero call overhead
-# ------------------------------------------------------------------
 @njit(cache=True, inline="always")
 def _in_bounds(x: int, y: int, z: int) -> bool:
     return 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9
 
 # ------------------------------------------------------------------
-#  Kernel – use the local alias
+#  Optimized Kernel – outputs flat arrays for batch Move creation
 # ------------------------------------------------------------------
-@njit(parallel=False, fastmath=True, nogil=False, cache=True)
+@njit(parallel=True, fastmath=True, nogil=True, cache=True)
 def _jump_kernel_direct(
     start: Tuple[int, int, int],
     dirs: np.ndarray,
@@ -41,46 +38,51 @@ def _jump_kernel_direct(
     enemy_code: int,
     allow_capture: bool,
     enemy_has_priests: bool,
-) -> List[Tuple[int, int, int, bool]]:
-    out: List[Tuple[int, int, int, bool]] = []
+):
+    # Preallocate output arrays (max possible size)
+    n = dirs.shape[0]
+    out_coords = np.empty((n, 3), dtype=np.int16)
+    out_captures = np.zeros(n, dtype=np.bool_)
+    out_count = 0
+
     sx, sy, sz = start
-    for d in prange(dirs.shape[0]):
+    for d in prange(n):
         dx, dy, dz = dirs[d]
         tx = sx + dx
         ty = sy + dy
         tz = sz + dz
-        if not _in_bounds(tx, ty, tz):          # <-- local alias
+        if not _in_bounds(tx, ty, tz):
             continue
         h = occ[tx, ty, tz]
         if h == 0:
-            out.append((tx, ty, tz, False))
+            out_coords[out_count] = (tx, ty, tz)
+            out_captures[out_count] = False
+            out_count += 1
         elif allow_capture and h != own_code:
             if h == enemy_code and enemy_has_priests:
                 continue
-            out.append((tx, ty, tz, True))
-    return out
+            out_coords[out_count] = (tx, ty, tz)
+            out_captures[out_count] = True
+            out_count += 1
+
+    # Slice to used portion
+    return out_coords[:out_count], out_captures[:out_count]
 
 # ------------------------------------------------------------------
-#  Public wrapper – zero Python loops
+#  Batch Move creation — uses MovePool for low overhead
 # ------------------------------------------------------------------
 def _build_jump_moves(
     color: Color,
     ptype: PieceType,
     start: Tuple[int, int, int],
-    raw: List[Tuple[int, int, int, bool]],
+    coords: np.ndarray,
+    captures: np.ndarray
 ) -> List[Move]:
-    return [
-        Move(
-            from_coord=start,
-            to_coord=(x, y, z),
-            flags = MOVE_FLAGS['CAPTURE'] if is_cap else 0,
-            captured_piece=None,
-        )
-        for x, y, z, is_cap in raw
-    ]
+    # Use object pool for fast allocation, batch creation is much faster
+    return Move.create_batch(start, coords, captures)
 
 # ------------------------------------------------------------------
-#  Main generator – CUDA path removed
+#  Main generator – only CPU path (no GPU, no loops)
 # ------------------------------------------------------------------
 class IntegratedJumpMovementGenerator:
     __slots__ = ("cache",)
@@ -102,7 +104,7 @@ class IntegratedJumpMovementGenerator:
         enemy_code = PieceType.KING.value | ((3 - own_code) << 3)
         enemy_has_priests = self._enemy_still_has_priests(color)
 
-        raw = _jump_kernel_direct(
+        coords, captures = _jump_kernel_direct(
             pos,
             directions.astype(np.int16),
             occ,
@@ -111,7 +113,7 @@ class IntegratedJumpMovementGenerator:
             allow_capture,
             enemy_has_priests,
         )
-        return _build_jump_moves(color, PieceType.PAWN, pos, raw)
+        return _build_jump_moves(color, PieceType.PAWN, pos, coords, captures)
 
     def _enemy_still_has_priests(self, color: Color) -> bool:
         occ, piece_array = self.cache.piece_cache.export_arrays()

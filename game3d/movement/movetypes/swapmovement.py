@@ -1,5 +1,3 @@
-# game3d/movement/movetypes/swapmovement.py
-
 from __future__ import annotations
 
 from typing import List
@@ -14,45 +12,51 @@ def generate_swapper_moves(
     color: Color,
     x: int, y: int, z: int
 ) -> List['Move']:
-    """Swap with any friendly piece using the jump engine."""
+    """
+    Optimized: Generate all legal swapper moves (swap with any friendly piece) using batch numpy logic.
+    """
     start = (x, y, z)
 
-    # 1. Export occupancy (color-only: 0=empty, 1=white, 2=black)
+    # Export occupancy array: occ[x, y, z] == 1 (white), 2 (black), 0 (empty)
     occ, _ = cache.piece_cache.export_arrays()
     own_code = 1 if color == Color.WHITE else 2
 
-    # Validate starting square
+    # Validate starting square is occupied by own piece
     if occ[x, y, z] != own_code:
         return []
 
-    # 2. Find all other friendly pieces
-    targets: List[Tuple[int, int, int]] = []
-    for tx in range(9):
-        for ty in range(9):
-            for tz in range(9):
-                if (tx, ty, tz) == start:
-                    continue
-                if occ[tx, ty, tz] == own_code:
-                    targets.append((tx, ty, tz))
-
-    if not targets:
+    # Find all friendly piece coordinates (excluding self) in one batch
+    coords = np.stack(np.where(occ == own_code), axis=-1)  # shape (N, 3), order: z, y, x
+    if coords.shape[0] == 0:
         return []
 
-    # 3. Build directions (use int16 to avoid overflow in later indexing)
-    start_arr = np.array(start, dtype=np.int16)
-    dirs = np.empty((len(targets), 3), dtype=np.int16)
-    for i, t in enumerate(targets):
-        dirs[i] = np.array(t, dtype=np.int16) - start_arr
+    # Convert to (x, y, z) order
+    coords_xyz = coords[:, [2, 1, 0]]
+    # Exclude starting position
+    mask_not_self = ~np.all(coords_xyz == np.array(start), axis=1)
+    targets = coords_xyz[mask_not_self]
 
-    # 4. Use jump generator (no capture)
+    if targets.shape[0] == 0:
+        return []
+
+    # Batch direction calculation: targets - start
+    start_array = np.array(start, dtype=np.int16)
+    dirs = targets.astype(np.int16) - start_array
+
+    # Use jump generator (no capture)
     gen = get_integrated_jump_movement_generator(cache)
     moves = gen.generate_jump_moves(
         color=color,
         pos=start,
         directions=dirs,
         allow_capture=False,
-        
     )
+
+    # Mark as swap (optional metadata for downstream use)
+    for m in moves:
+        m.is_swap = True
+
+    return moves
 
     # 5. Mark as swap (optional)
     for m in moves:
