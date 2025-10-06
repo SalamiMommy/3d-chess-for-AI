@@ -256,39 +256,6 @@ def _full_undo(game_state: 'GameState') -> 'GameState':
     # You would need to store initial state or replay from scratch
     raise NotImplementedError("Full undo requires storing initial state")
 
-# ------------------------------------------------------------------
-# SPECIAL GAME MODES
-# ------------------------------------------------------------------
-def apply_hive_moves(game_state: 'GameState', moves: List[Move]) -> 'GameState':
-    """Apply multiple hive moves atomically."""
-    with track_operation_time(game_state._metrics, 'total_make_move_time'):
-        game_state._metrics.make_move_calls += 1
-
-        new_board = game_state.board.clone()
-
-        # Apply all moves to board
-        for move in moves:
-            new_board.apply_move(move)
-            game_state.cache.apply_move(move, game_state.color)
-
-        # Import here to avoid circular dependency
-        from .gamestate import GameState
-
-        # Create new state
-        new_state = GameState(
-            board=new_board,
-            color=game_state.color.opposite(),
-            cache=game_state.cache,
-            history=game_state.history + tuple(moves),
-            halfmove_clock=0,  # Reset halfmove clock for hive moves
-            game_mode=game_state.game_mode,
-            turn_number=game_state.turn_number + 1,
-        )
-
-        # Recompute zobrist key
-        new_state._zkey = compute_zobrist(new_board, new_state.color)
-        return new_state
-
 @dataclass
 class EnrichedMove:
     """Move with side effects and undo information."""

@@ -1,3 +1,4 @@
+# validation.py
 """
 game3d/movement/validation.py
 Centralized validation logic for move generation and game rules.
@@ -216,6 +217,42 @@ def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
             if not future.result():
                 legal_batch.append(move)
     return legal_batch
+
+
+# ==============================================================================
+# LEGAL MOVE FILTERING
+# ==============================================================================
+def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
+    """Optimized batch legal move filtering with incremental validation."""
+    if not moves:
+        return moves
+
+    # Get position state ONCE for all moves
+    check_summary = get_check_summary(state.board, state.cache)
+    legal_moves = []
+
+    # Pre-compute attacked squares for efficiency
+    attacked_squares = check_summary[f'attacked_squares_{state.color.opposite().name.lower()}']
+    king_pos = check_summary[f'{state.color.name.lower()}_king_position']
+    in_check = check_summary[f'{state.color.name.lower()}_check']
+
+    for move in moves:
+        # Basic legality check
+        if not is_basic_legal(move, state):
+            continue
+
+        # Fast check for king moves
+        if move.from_coord == king_pos:
+            if move.to_coord in attacked_squares:
+                continue
+        # If in check, only allow moves that resolve the check
+        elif in_check:
+            if not resolves_check(move, state, check_summary):
+                continue
+
+        legal_moves.append(move)
+
+    return legal_moves
 
 
 # ==============================================================================

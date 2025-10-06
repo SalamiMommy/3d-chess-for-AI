@@ -15,9 +15,9 @@ from game3d.common.common import Coord, in_bounds
 from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.attacks.check import king_in_check, get_check_summary
-from game3d.movement.validation import (  # NEW IMPORT
+from game3d.movement.validation import (  # UPDATED IMPORT
     is_basic_legal, leaves_king_in_check, leaves_king_in_check_optimized,
-    resolves_check, batch_check_validation, validate_move_batch
+    resolves_check, batch_check_validation, validate_move_batch, filter_legal_moves  # Added filter_legal_moves
 )
 import sys
 from functools import wraps
@@ -69,8 +69,6 @@ def _generate_legal_moves_fallback(state: GameState) -> List[Move]:
 # ==============================================================================
 X, Y, Z = 0, 1, 2
 BOARD_SIZE = 9
-
-# REMOVED: _is_between function (moved to validation.py)
 
 @dataclass(slots=True)
 class MoveGenStats:
@@ -171,7 +169,7 @@ def _generate_legal_moves_batch(state: GameState) -> List[Move]:
                 moves = _apply_movement_modifiers(moves, coord, state, cache_manager)
 
                 # Filter legal moves
-                legal_moves.extend(_filter_legal_moves(moves, state))
+                legal_moves.extend(filter_legal_moves(moves, state))  # UPDATED: use validation function
 
     return legal_moves
 
@@ -206,7 +204,7 @@ def _generate_legal_moves_parallel(state: GameState) -> List[Move]:
 def _generate_legal_moves_standard(state: GameState) -> List[Move]:
     """Standard legal move generation with optimized filtering."""
     pseudo_moves = generate_pseudo_legal_moves(state)
-    return _filter_legal_moves(pseudo_moves, state)  # Now uses batch version
+    return filter_legal_moves(pseudo_moves, state)  # UPDATED: use validation function
 
 # ==============================================================================
 # MOVEMENT MODIFIERS
@@ -288,44 +286,6 @@ def _restrict_move_range(move: Move, start_sq: Tuple[int, int, int], state: Game
     return None
 
 # ==============================================================================
-# LEGAL MOVE FILTERING
-# ==============================================================================
-def _filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch legal move filtering with incremental validation."""
-    if not moves:
-        return moves
-
-    # Get position state ONCE for all moves
-    check_summary = get_check_summary(state.board, state.cache)
-    legal_moves = []
-
-    # Pre-compute attacked squares for efficiency
-    attacked_squares = check_summary[f'attacked_squares_{state.color.opposite().name.lower()}']
-    king_pos = check_summary[f'{state.color.name.lower()}_king_position']
-    in_check = check_summary[f'{state.color.name.lower()}_check']
-
-    for move in moves:
-        # Basic legality check
-        if not is_basic_legal(move, state):  # UPDATED
-            continue
-
-        # Fast check for king moves
-        if move.from_coord == king_pos:
-            if move.to_coord in attacked_squares:
-                continue
-        # If in check, only allow moves that resolve the check
-        elif in_check:
-            if not resolves_check(move, state, check_summary):  # UPDATED
-                continue
-
-        legal_moves.append(move)
-
-    return legal_moves
-
-# REMOVED: _is_basic_legal, _leaves_king_in_check_optimized, _leaves_king_in_check,
-# _blocks_check, _along_pin_line, _batch_check_validation, _validate_move_batch functions
-
-# ==============================================================================
 # PIECE-SPECIFIC OPTIMIZATIONS
 # ==============================================================================
 def get_max_steps(piece_type: PieceType, start_sq: Tuple[int, int, int], state: GameState) -> int:
@@ -385,7 +345,7 @@ def generate_legal_moves_for_piece(state: GameState, coord: Tuple[int, int, int]
         return []
 
     moves = dispatcher(state, coord[0], coord[1], coord[2])
-    return _filter_legal_moves(moves, state)
+    return filter_legal_moves(moves, state)  # UPDATED: use validation function
 
 def generate_legal_captures(state: GameState) -> List[Move]:
     """Generate only legal capturing moves."""
@@ -424,8 +384,6 @@ def reset_move_gen_stats() -> None:
     """Reset performance statistics."""
     global _STATS
     _STATS = MoveGenStats()
-
-# REMOVED: _resolves_check function (moved to validation.py)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY

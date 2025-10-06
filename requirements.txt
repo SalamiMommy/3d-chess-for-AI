@@ -4,3 +4,4 @@ sageattention
 tensorboard
 numba
 joblib
+msgpack
