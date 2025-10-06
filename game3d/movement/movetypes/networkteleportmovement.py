@@ -1,6 +1,7 @@
+# networkteleportmovement.py
 """
 Network Teleporter — teleport to any empty square adjacent to any friendly piece.
-Optimized using existing caches and batch processing.
+Optimized using existing caches and incremental updates.
 """
 
 from __future__ import annotations
@@ -29,72 +30,44 @@ def generate_network_teleport_moves(
     x: int, y: int, z: int
 ) -> List['Move']:
     """
-    Generate all legal network-teleport moves from (x, y, z) using batch processing.
+    Generate all legal network-teleport moves from (x, y, z) using cached targets.
 
     Optimizations:
-    - Avoid Python-level loops for neighbor finding and deduplication.
-    - Use numpy arrays for all geometry math and occupancy checks.
-    - Avoid set and list conversions except at the very end.
-    - Short-circuit early if no friendly pieces, no empty targets, etc.
-    - Batch handoff to jump movement generator.
+    - Cache network teleport targets per color and update incrementally
+    - Only recalculate targets when cache is dirty
+    - Use numpy arrays for efficient operations
+    - Batch handoff to jump movement generator
     """
     start = (x, y, z)
 
-    # Fast batch: Get all friendly piece positions as a numpy array
-    friendly_positions = np.empty((0, 3), dtype=np.int8)
-    if hasattr(cache.piece_cache, "iter_color"):
-        # Use list comprehension for direct numpy construction
-        friendly_positions = np.array(
-            [coord for coord, _ in cache.piece_cache.iter_color(color)],
-            dtype=np.int8
-        )
-    if friendly_positions.shape[0] == 0:
+    # Initialize cache attributes if not present
+    if not hasattr(cache, '_network_teleport_targets'):
+        cache._network_teleport_targets = {Color.WHITE: set(), Color.BLACK: set()}
+        cache._network_teleport_dirty = {Color.WHITE: True, Color.BLACK: True}
+
+    # Recalculate targets if cache is dirty
+    if cache._network_teleport_dirty[color]:
+        _update_network_teleport_targets(cache, color)
+        cache._network_teleport_dirty[color] = False
+
+    # Get cached targets for this color
+    targets = cache._network_teleport_targets[color]
+
+    # Remove the starting position if present
+    if start in targets:
+        targets_without_start = targets - {start}
+    else:
+        targets_without_start = targets
+
+    if not targets_without_start:
         return []
 
-    # Occupancy mask – direct reference, don't copy
-    occupancy_mask = cache.occupancy.mask
-
-    # Batch neighbor generation: vectorized addition
-    # friendly_positions: (N, 3), _NEIGHBOR_DIRECTIONS: (26, 3)
-    # Output: (N, 26, 3)
-    all_neighbors = friendly_positions[:, np.newaxis, :] + _NEIGHBOR_DIRECTIONS
-    neighbors_flat = all_neighbors.reshape(-1, 3)
-
-    # Filter out-of-bounds positions (logical AND, vectorized)
-    valid_mask = (
-        (neighbors_flat[:, 0] >= 0) & (neighbors_flat[:, 0] < 9) &
-        (neighbors_flat[:, 1] >= 0) & (neighbors_flat[:, 1] < 9) &
-        (neighbors_flat[:, 2] >= 0) & (neighbors_flat[:, 2] < 9)
-    )
-    valid_neighbors = neighbors_flat[valid_mask]
-
-    if valid_neighbors.shape[0] == 0:
-        return []
-
-    # Batch occupancy check: not occupied (mask is True if occupied)
-    z_idx, y_idx, x_idx = valid_neighbors.T
-    empty_mask = ~occupancy_mask[z_idx, y_idx, x_idx]
-    empty_neighbors = valid_neighbors[empty_mask]
-
-    if empty_neighbors.shape[0] == 0:
-        return []
-
-    # Deduplicate targets with numpy.unique (avoid Python sets)
-    unique_targets = np.unique(empty_neighbors, axis=0)
-    if unique_targets.shape[0] == 0:
-        return []
-
-    # Exclude the starting position (can't teleport to self)
-    not_self_mask = ~np.all(unique_targets == np.array(start), axis=1)
-    unique_targets = unique_targets[not_self_mask]
-    if unique_targets.shape[0] == 0:
-        return []
-
-    # Compute direction vectors for jump generator (batch)
+    # Convert to numpy array for direction computation
+    targets_array = np.array(list(targets_without_start), dtype=np.int8)
     start_array = np.array(start, dtype=np.int8)
-    directions = unique_targets - start_array
+    directions = targets_array - start_array
 
-    # Hand off to jump movement generator (batch, fast)
+    # Hand off to jump movement generator
     gen = get_integrated_jump_movement_generator(cache)
     return gen.generate_jump_moves(
         color=color,
@@ -102,3 +75,47 @@ def generate_network_teleport_moves(
         directions=directions,
         allow_capture=False,
     )
+
+def _update_network_teleport_targets(cache: CacheManager, color: Color) -> None:
+    """
+    Update the cached network teleport targets for the given color.
+    Uses vectorized operations for efficiency.
+    """
+    targets = set()
+
+    # Get all friendly pieces for color
+    friendly_positions = []
+    if hasattr(cache.piece_cache, "iter_color"):
+        friendly_positions = [coord for coord, _ in cache.piece_cache.iter_color(color)]
+
+    if not friendly_positions:
+        cache._network_teleport_targets[color] = targets
+        return
+
+    # Convert to numpy array for vectorized operations
+    friendly_positions = np.array(friendly_positions, dtype=np.int8)
+
+    # Generate all neighbors
+    all_neighbors = friendly_positions[:, np.newaxis, :] + _NEIGHBOR_DIRECTIONS
+    neighbors_flat = all_neighbors.reshape(-1, 3)
+
+    # Filter out-of-bounds
+    valid_mask = (
+        (neighbors_flat[:, 0] >= 0) & (neighbors_flat[:, 0] < 9) &
+        (neighbors_flat[:, 1] >= 0) & (neighbors_flat[:, 1] < 9) &
+        (neighbors_flat[:, 2] >= 0) & (neighbors_flat[:, 2] < 9)
+    )
+    valid_neighbors = neighbors_flat[valid_mask]
+
+    if valid_neighbors.shape[0] > 0:
+        # Check occupancy
+        occupancy_mask = cache.occupancy.mask
+        z_idx, y_idx, x_idx = valid_neighbors.T
+        empty_mask = ~occupancy_mask[z_idx, y_idx, x_idx]
+        empty_neighbors = valid_neighbors[empty_mask]
+
+        # Deduplicate
+        unique_targets = np.unique(empty_neighbors, axis=0)
+        targets = {tuple(coord) for coord in unique_targets}
+
+    cache._network_teleport_targets[color] = targets
