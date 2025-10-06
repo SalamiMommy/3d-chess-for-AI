@@ -13,4 +13,4 @@ __all__ = ['generate_trigonal_bishop_moves']
 
 @register(PieceType.TRIGONALBISHOP)
 def trigonal_bishop_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_trigonal_bishop_moves(state, x, y, z)
+    return generate_trigonal_bishop_moves(state.cache, state.color, x, y, z)

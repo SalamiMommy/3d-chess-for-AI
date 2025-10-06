@@ -1,111 +1,159 @@
-from game3d.game3d import Game3D
-from game3d.game.gamestate import GameState
-from game3d.pieces.enums import Color
-from game3d.common.common import N_PLANES_PER_SIDE
+"""Self-play data generation for 3D chess training."""
+import torch
+import numpy as np
+from typing import List, Optional
+from dataclasses import dataclass
 import random
+from game3d.game.gamestate import GameState
+from game3d.pieces.enums import Color, Result
+from game3d.cache.manager import OptimizedCacheManager
+from game3d.movement.movepiece import Move
+from game3d.game3d import OptimizedGame3D  # Import the game controller
+from training.types import TrainingExample  # Shared dataclass
+from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
 
-# ------------------------------------------------------------------
-# 1.  tiny helper – crash early with full context
-# ------------------------------------------------------------------
-def _assert_legal(state: GameState, legal_moves: list) -> None:
-    board = state.board
-    WHITE_SLICE = slice(0, N_PLANES_PER_SIDE)
-    BLACK_SLICE = slice(N_PLANES_PER_SIDE, 2 * N_PLANES_PER_SIDE)
+class MoveEncoder:
+    def coord_to_index(self, coord: Coord) -> int:
+        return coord_to_idx(coord)
 
-    for m in legal_moves:
-        from_coord = m.from_coord
-        piece = board.piece_at(from_coord)
-        if piece is None:
-            x, y, z = from_coord
-            white_vals = board._tensor[WHITE_SLICE, z, y, x]
-            black_vals = board._tensor[BLACK_SLICE, z, y, x]
+def move_to_index(from_coord: Coord, to_coord: Coord) -> int:
+    return coord_to_idx(from_coord) * VOLUME + coord_to_idx(to_coord)
 
-            w_max = white_vals.max().item()
-            b_max = black_vals.max().item()
-            occ = (white_vals.sum() + black_vals.sum()).item() > 0
+def index_to_move(idx: int) -> tuple[Coord, Coord]:
+    to_idx = idx % VOLUME
+    from_idx = idx // VOLUME
+    return idx_to_coord(from_idx), idx_to_coord(to_idx)
 
-            print("=" * 79)
-            print(f"BUGGY LEGAL MOVE: {m}")
-            print(f"board key        : 0x{board.byte_hash():016x}")
-            print(f"history length   : {len(state.history)}")
-            print(f"occupancy (sum)  : {white_vals.sum().item():.6f} + {black_vals.sum().item():.6f} = {white_vals.sum().item() + black_vals.sum().item():.6f}")
-            print(f"white max        : {w_max:.6f}")
-            print(f"black max        : {b_max:.6f}")
-            print(f"is occupied?     : {occ}")
-            print("=" * 79)
-            raise AssertionError(f"Legal list contains empty-square move: {m}")
+class SelfPlayGenerator:
+    """Generate training data through self-play with robust cache handling."""
 
-# ------------------------------------------------------------------
-# 2.  MCTS stub – depth == 0  →  uniform random, no cache touched
-# ------------------------------------------------------------------
-def mcts_search(net, state, depth: int):
-    legal_moves = state.legal_moves()
-    if not legal_moves:
-        return None
-    _assert_legal(state, legal_moves)
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        device: str = "cuda",
+        temperature: float = 1.0,
+    ):
+        self.model = model.to(device).eval()
+        self.device = device
+        self.temperature = temperature
+        self.move_encoder = MoveEncoder()
 
-    if depth == 0:                      # MCTS disabled
-        pi = [1.0 / len(legal_moves) for _ in legal_moves]
-        return pi
+    def generate_game(self, max_moves: int = 200) -> List[TrainingExample]:
+        """Generate a single game with robust error handling using OptimizedGame3D."""
+        game = OptimizedGame3D()  # Create a new game instance
+        game.toggle_debug_turn_info(False)  # Disable debug for self-play
+        examples = []
+        move_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
-    # -----  depth > 0  →  placeholder MCTS (no game-cache used) -----
-    pi = [1.0 / len(legal_moves) for _ in legal_moves]
-    return pi
+        while not game.is_game_over() and move_count < max_moves:
+            try:
+                # Get current state tensor
+                state_tensor = game.state.to_tensor(device=self.device).unsqueeze(0)
 
-# ------------------------------------------------------------------
-# 3.  sampler – only pick moves that *really* start on a piece
-# ------------------------------------------------------------------
-def sample_pi(pi, legal_moves, state: GameState):
-    """Return a move whose from-square is *still* occupied, or None."""
-    if not legal_moves:
-        return None
-    choices = list(zip(legal_moves, pi))
-    random.shuffle(choices)
-    for mv, _ in choices:
-        if state.board.piece_at(mv.from_coord) is not None:
-            return mv
-    return None
+                # Verify the state is valid
+                if game.state is None:
+                    print(f"[ERROR] Game state is None at move {move_count}")
+                    break
 
-# ------------------------------------------------------------------
-# 4.  self-play loop – FULL rebuild before every move
-# ------------------------------------------------------------------
-def play_game(net, mcts_depth: int) -> list:
-    # Start with initial state
-    initial_state = GameState.start()
-    current_state = initial_state
-    examples = []
+                with torch.no_grad():
+                    from_logits, to_logits, value_pred = self.model(state_tensor)
+                    from_logits = from_logits / self.temperature
+                    to_logits = to_logits / self.temperature
 
-    while not current_state.is_game_over():
-        board_hash_before = current_state.board.byte_hash()
-        print(f"Board hash: {board_hash_before:016x}")
+                # Get legal moves from the game
+                legal_moves = game.state.legal_moves()
+                if not legal_moves:
+                    break
 
-        legal_moves = current_state.legal_moves()
-        if not legal_moves:
-            break
+                # Compute move logits
+                move_logits = []
+                from_indices = []
+                to_indices = []
+                for mv in legal_moves:
+                    f_idx = self.move_encoder.coord_to_index(mv.from_coord)
+                    t_idx = self.move_encoder.coord_to_index(mv.to_coord)
+                    logit = from_logits[0, f_idx] + to_logits[0, t_idx]
+                    move_logits.append(logit)
+                    from_indices.append(f_idx)
+                    to_indices.append(t_idx)
 
-        pi = mcts_search(net, current_state, depth=mcts_depth)
-        move = sample_pi(pi, legal_moves, current_state)
-        if move is None:
-            break
+                move_logits = torch.stack(move_logits)
+                move_probs = torch.softmax(move_logits, dim=0)
 
-        # Validate move before applying
-        if current_state.board.piece_at(move.from_coord) is None:
-            print(f"CRITICAL: Selected move from empty square: {move}")
-            break
+                # Sample move
+                chosen_idx = torch.multinomial(move_probs, num_samples=1).item()
+                chosen_move = legal_moves[chosen_idx]
 
-        examples.append((current_state.to_tensor(), pi, None))
-        piece_before = current_state.board.piece_at(move.from_coord)
-        print(f"Piece at {move.from_coord}: {piece_before}")
+                # Compute marginal from and to targets
+                from_target = torch.zeros(729, device=self.device)
+                to_target   = torch.zeros(729, device=self.device)
+                for i in range(len(legal_moves)):
+                    prob = move_probs[i]
+                    from_target[from_indices[i]] += prob
+                    to_target[to_indices[i]] += prob
+                if from_target.sum() > 0:
+                    from_target /= from_target.sum()
+                if to_target.sum() > 0:
+                    to_target /= to_target.sum()
 
-        # Apply move to create NEW state
-        try:
-            new_state = current_state.make_move(move)
-            current_state = new_state  # Only update if successful
-        except Exception as e:
-            print(f"Move application failed: {e}")
-            print(f"Board hash after failed move: {current_state.board.byte_hash():016x}")
-            print(f"Piece at {move.from_coord} after: {current_state.board.piece_at(move.from_coord)}")
-            break
+                # Player sign for this example
+                player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
 
-    z = current_state.outcome()
-    return [(x, pi, z) for x, pi, _ in examples]
+                examples.append(
+                    TrainingExample(
+                        state_tensor=state_tensor.squeeze(0).cpu(),
+                        from_target=from_target.cpu(),
+                        to_target=to_target.cpu(),
+                        value_target=value_pred.item(),  # Will be overwritten with final outcome
+                        move_count=move_count,
+                        player_sign=player_sign  # Store per example
+                    )
+                )
+
+                # Submit the move to the game
+                receipt = game.submit_move(chosen_move)
+                if not receipt.is_legal:
+                    raise ValueError(receipt.message)
+
+                move_count += 1
+                consecutive_errors = 0
+
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"[ERROR] Move {move_count} failed: {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    break
+
+        # Assign final outcomes
+        if game.is_game_over():
+            result = game.result()
+            if result == Result.WHITE_WON:
+                final_outcome = 1.0
+            elif result == Result.BLACK_WON:
+                final_outcome = -1.0
+            else:
+                final_outcome = 0.0
+        else:
+            final_outcome = 0.0
+
+        for ex in examples:
+            ex.value_target = final_outcome * ex.player_sign  # Use per-example player_sign
+
+        return examples
+
+def play_game(model: torch.nn.Module, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+    """Self-play a single game."""
+    generator = SelfPlayGenerator(model, device=device)
+    return generator.generate_game(max_moves)
+
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+    """Generate examples from multiple self-play games."""
+    all_examples = []
+    for game_idx in range(num_games):
+        print(f"Generating game {game_idx + 1}/{num_games}")
+        game_examples = play_game(model, max_moves, device)
+        all_examples.extend(game_examples)
+    print(f"Total examples generated: {len(all_examples)}")
+    return all_examples

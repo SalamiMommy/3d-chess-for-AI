@@ -13,9 +13,9 @@ __all__ = ['generate_archer_moves']
 
 @register(PieceType.ARCHER)
 def archer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_king_moves(state, x, y, z)
+    return generate_king_moves(state.cache, state.color, x, y, z)
 
 
 def generate_archer_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     """Alias for king moves since Archer uses the same movement pattern."""
-    return generate_king_moves(state, x, y, z)
+    return generate_king_moves(state.cache, state.color, x, y, z)

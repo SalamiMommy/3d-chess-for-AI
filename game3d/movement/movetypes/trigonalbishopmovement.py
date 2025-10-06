@@ -1,39 +1,31 @@
-# game3d/movement/movetypes/trigonalbishopmovement.py
-"""3D Trigonal-Bishop move generation — pure movement rules, no registration."""
+"""3D Trigonal-Bishop move generation — space-diagonal rays via slidermovement."""
 
+import numpy as np
 from typing import List
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-# Only the four true 3-D diagonals (equal step on every axis)
-TRIGONAL_BISHOP_DIRECTIONS = [
-    ( 1,  1,  1),
-    ( 1,  1, -1),
-    ( 1, -1,  1),
-    ( 1, -1, -1),
-    (-1,  1,  1),
-    (-1,  1, -1),
-    (-1, -1,  1),
-    (-1, -1, -1),
-]
+from game3d.movement.movetypes.slidermovement import get_slider_generator
+from game3d.cache.manager import OptimizedCacheManager
 
+# 8 true 3-D space diagonals (equal step on all three axes)
+TRIGONAL_BISHOP_DIRECTIONS = np.array([
+    ( 1,  1,  1), ( 1,  1, -1), ( 1, -1,  1), ( 1, -1, -1),
+    (-1,  1,  1), (-1,  1, -1), (-1, -1,  1), (-1, -1, -1),
+], dtype=np.int8)
 
-def generate_trigonal_bishop_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal trigonal-bishop moves from (x, y, z).
-    Uses centralized sliding logic from pathvalidation.py.
-    Returns empty list if no valid trigonal-bishop is at start position.
-    """
-    pos = (x, y, z)
-
-    if not validate_piece_at(state, pos, PieceType.TRIGONALBISHOP):   # or reuse BISHOP if you prefer
-        return []
-
-    return slide_along_directions(
-        state,
-        start=pos,
-        directions=TRIGONAL_BISHOP_DIRECTIONS,
-        allow_capture=True,
-        allow_self_block=False
+def generate_trigonal_bishop_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int,
+    y: int,
+    z: int
+) -> List[Move]:
+    engine = get_slider_generator()  # FIXED: Removed argument
+    return engine.generate_moves(   # FIXED: Changed method name
+        piece_type='trigonal_bishop',  # Added piece_type
+        pos=(x, y, z),
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,  # Changed from max_steps
     )

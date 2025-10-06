@@ -1,2 +1,7 @@
 torch
 numpy
+sageattention
+tensorboard
+numba
+joblib
+msgpack

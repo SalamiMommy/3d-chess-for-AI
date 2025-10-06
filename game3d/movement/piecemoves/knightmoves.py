@@ -6,7 +6,7 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.knightmovement import generate_knight_moves
 from game3d.movement.movepiece import Move
 
-# Re-export the move generator for use by other modules (e.g., attacks, UI, AI)
+# Re-export core function for external use (e.g., AI, UI, testing)
 __all__ = ['generate_knight_moves']
 
 

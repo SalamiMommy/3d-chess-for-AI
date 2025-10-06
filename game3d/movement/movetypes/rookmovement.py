@@ -1,37 +1,34 @@
-# game3d/movement/movetypes/rookmovement.py
+"""3D Rook move generation — orthogonal rays via slidermovement engine."""
 
-"""3D Rook move generation logic — pure movement rules, no registration."""
-
+import numpy as np
 from typing import List
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-# Define rook directions — could also go in directions.py later
-ROOK_DIRECTIONS_3D = [
-    (1, 0, 0), (-1, 0, 0),  # X axis
-    (0, 1, 0), (0, -1, 0),  # Y axis
-    (0, 0, 1), (0, 0, -1)   # Z axis
-]
+from game3d.movement.movetypes.slidermovement import get_slider_generator
+from game3d.cache.manager import OptimizedCacheManager
 
+# 6 orthogonal directions (±X, ±Y, ±Z)
+ROOK_DIRECTIONS_3D = np.array([
+    (1, 0, 0), (-1, 0, 0),
+    (0, 1, 0), (0, -1, 0),
+    (0, 0, 1), (0, 0, -1)
+], dtype=np.int8)
 
-def generate_rook_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal rook moves from (x, y, z).
-    Uses centralized sliding logic from pathvalidation.py.
-    Returns empty list if no valid rook is at start position.
-    """
-    pos = (x, y, z)
-
-    # Validate piece exists and is correct type/color
-    if not validate_piece_at(state, pos, PieceType.ROOK):
-        return []
-
-    # Delegate to shared sliding logic
-    return slide_along_directions(
-        state,
-        start=pos,
-        directions=ROOK_DIRECTIONS_3D,
-        allow_capture=True,      # Rooks can capture
-        allow_self_block=False   # Rooks cannot move through or onto friendly pieces
+def generate_rook_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int,
+    y: int,
+    z: int,
+    max_steps: int = 8
+) -> List[Move]:
+    """Generate all legal rook moves from (x, y, z) up to max_steps."""
+    engine = get_slider_generator()  # Fixed: removed cache argument
+    return engine.generate_moves(    # Fixed: changed method name
+        piece_type='rook',           # Added piece_type
+        pos=(x, y, z),
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=max_steps,      # Changed from max_steps to max_distance
     )

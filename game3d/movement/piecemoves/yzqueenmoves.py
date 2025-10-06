@@ -1,4 +1,3 @@
-# game3d/movement/piecemoves/yzqueenmoves.py
 """Exports YZ queen move generator (queen + king moves in YZ plane) and registers it."""
 
 from typing import List
@@ -10,8 +9,8 @@ from game3d.movement.movepiece import Move
 
 
 def generate_yz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    queen_moves = generate_yz_queen_moves(state, x, y, z)
-    king_moves = generate_king_moves(state, x, y, z)
+    queen_moves = generate_yz_queen_moves(state.cache, state.color, x, y, z)
+    king_moves = generate_king_moves(state.cache, state.color, x, y, z)
 
     in_plane_king_moves = [
         move for move in king_moves
@@ -31,6 +30,7 @@ def generate_yz_queen_with_king_moves(state: 'GameState', x: int, y: int, z: int
 
 @register(PieceType.YZQUEEN)
 def yz_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    # ✅ Pass 'state', not board/color
     return generate_yz_queen_with_king_moves(state, x, y, z)
 
 

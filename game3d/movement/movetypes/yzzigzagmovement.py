@@ -1,80 +1,121 @@
-"""YZ-Zig-Zag Slider — zig-zag rays along X-, Y-, Z-axis normals (no king)."""
+"""YZ-Zig-Zag Slider — zig-zag rays via slidermovement engine."""
 
-from typing import List, Tuple
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
-from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import validate_piece_at
-from game3d.common.common import in_bounds
+import numpy as np
+from typing import List
+from game3d.pieces.enums import Color
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movetypes.slidermovement import generate_slider_moves_kernel
+from game3d.cache.manager import OptimizedCacheManager
 
+# ---------------------------------------------------------------------------
+#  Pre-build every square visited by every zig-zag ray
+#  (aligned to match XZ implementation for consistency)
+# ---------------------------------------------------------------------------
+def _build_yz_zigzag_vectors() -> np.ndarray:
+    vecs = []
+    for plane, fixed_axis in [('YZ', 0), ('XZ', 1), ('XY', 2)]:
+        for pri, sec in [(1, -1), (-1, 1)]:
+            seq = []
+            curr = np.zeros(3, dtype=np.int8)
+            move_primary = True
+            for seg in range(3):                    # 3 segments → 9 steps
+                step = np.zeros(3, dtype=np.int8)
+                if plane == 'YZ':
+                    step[1 if move_primary else 2] = pri if move_primary else sec
+                elif plane == 'XZ':
+                    step[0 if move_primary else 2] = pri if move_primary else sec
+                else:                               # XY
+                    step[0 if move_primary else 1] = pri if move_primary else sec
+                for _ in range(3):
+                    curr = curr + step
+                    seq.append(curr.copy())
+                move_primary ^= 1
+            vecs.extend(seq)
+    return np.array(vecs, dtype=np.int8)
 
-SEGMENT = 3          # steps before direction flip
-DIRECTIONS = [(1, -1), (-1, 1)]   # (primary, flip) pairs
+YZ_ZIGZAG_DIRECTIONS = _build_yz_zigzag_vectors()
 
+# ---------------------------------------------------------------------------
+# Custom zigzag generator that uses the slider kernel directly
+# (reused from XZ for consistency; could share a global if needed)
+# ---------------------------------------------------------------------------
+class ZigzagMovementGenerator:
+    __slots__ = ("_move_cache", "_cache_hits", "_cache_misses")
 
-def _zigzag_ray(
-    state: GameState,
-    start: Tuple[int, int, int],
-    plane: str,                # 'YZ' | 'XZ' | 'XY'
-    primary: int,              # +1 or –1 for first 3-step leg
-    secondary: int,            # +1 or –1 for second 3-step leg
-    fixed: int                 # coordinate that stays constant
+    def __init__(self):
+        self._move_cache = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def generate_moves(
+        self,
+        pos: tuple[int, int, int],
+        board_occupancy: np.ndarray,
+        color: int,
+        directions: np.ndarray,
+        max_distance: int = 16
+    ) -> List[Move]:
+        """Generate zigzag moves using the slider kernel directly."""
+        # Create cache key
+        cache_key = (pos, board_occupancy.tobytes(), color, directions.tobytes())
+
+        # Check cache
+        if cache_key in self._move_cache:
+            self._cache_hits += 1
+            return self._move_cache[cache_key]
+
+        self._cache_misses += 1
+
+        # Generate moves using Numba kernel
+        raw_moves = generate_slider_moves_kernel(
+            pos, directions, board_occupancy, color, max_distance
+        )
+
+        # Convert to Move objects
+        moves = []
+        for nx, ny, nz, is_capture in raw_moves:
+            moves.append(Move(
+                from_coord=pos,
+                to_coord=(nx, ny, nz),
+                flags=MOVE_FLAGS['CAPTURE'] if is_capture else 0
+                # Removed captured_piece=None (unnecessary and causes attribute issues)
+            ))
+
+        # Cache result
+        if len(self._move_cache) > 5000:  # Prevent unbounded growth
+            self._move_cache.clear()
+        self._move_cache[cache_key] = moves
+
+        return moves
+
+# Global instance for reuse
+_global_zigzag_gen = None
+
+def get_zigzag_generator():
+    """Get or create global zigzag generator instance."""
+    global _global_zigzag_gen
+    if _global_zigzag_gen is None:
+        _global_zigzag_gen = ZigzagMovementGenerator()
+    return _global_zigzag_gen
+
+# ---------------------------------------------------------------------------
+# Public drop-in replacement
+# ---------------------------------------------------------------------------
+def generate_yz_zigzag_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
 ) -> List[Move]:
-    """Cast one zig-zag ray in the chosen plane until blocked or edge."""
-    moves: List[Move] = []
-    x, y, z = start
-    board = state.board
-    current_color = state.color
+    """Generate all YZ-zig-zag moves via slidermovement engine."""
+    engine = get_zigzag_generator()
 
-    # axis mapping
-    if plane == 'YZ':           # X fixed
-        idx_a, idx_b = 1, 2
-        get_coord = lambda a, b: (fixed, a, b)
-    elif plane == 'XZ':         # Y fixed
-        idx_a, idx_b = 0, 2
-        get_coord = lambda a, b: (a, fixed, b)
-    else:                       # 'XY'  Z fixed
-        idx_a, idx_b = 0, 1
-        get_coord = lambda a, b: (a, b, fixed)
+    # Get the occupancy array with color codes from the piece cache
+    piece_occ = cache.piece_cache.export_arrays()[0]  # This is a 9x9x9 array with 0,1,2
 
-    coords = [x, y, z]
-    a, b = coords[idx_a], coords[idx_b]
-
-    flip = False
-    while True:
-        step = secondary if flip else primary
-        for _ in range(SEGMENT):
-            a += step
-            target = get_coord(a, b)
-            if not in_bounds(target):
-                return moves
-            occupant = board.piece_at(target)
-            if occupant is not None:
-                if occupant.color != current_color:   # capture
-                    moves.append(Move(start, target, is_capture=True))
-                return moves
-            moves.append(Move(start, target, is_capture=False))
-        flip = not flip
-
-
-def generate_yz_zigzag_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """Generate all YZ-zig-zag moves (no king)."""
-    start = (x, y, z)
-    if not validate_piece_at(state, start, PieceType.YZZIGZAG):
-        return []
-
-    moves: List[Move] = []
-
-    # X-normal faces  →  X fixed  →  YZ plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'YZ', pri, sec, x))
-
-    # Y-normal faces  →  Y fixed  →  XZ plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'XZ', pri, sec, y))
-
-    # Z-normal faces  →  Z fixed  →  XY plane
-    for pri, sec in DIRECTIONS:
-        moves.extend(_zigzag_ray(state, start, 'XY', pri, sec, z))
-
-    return moves
+    return engine.generate_moves(
+        pos=(x, y, z),
+        board_occupancy=piece_occ,
+        color=color.value if isinstance(color, Color) else color,
+        directions=YZ_ZIGZAG_DIRECTIONS,
+        max_distance=16
+    )

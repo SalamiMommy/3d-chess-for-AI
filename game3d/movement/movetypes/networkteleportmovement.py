@@ -1,67 +1,94 @@
-"""Network Teleporter — teleports to any empty square adjacent to any friendly piece."""
+"""
+Network Teleporter — teleport to any empty square adjacent to any friendly piece.
+Optimized using existing caches and batch processing.
+"""
 
-from typing import List, Set, Tuple
-from game3d.game.gamestate import GameState
-from game3d.movement.movepiece import Move
-from game3d.common.common import in_bounds, add_coords
+from __future__ import annotations
 
+from typing import List, Set
+import numpy as np
+import torch
 
-def generate_network_teleport_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all teleport moves to empty squares adjacent to ANY friendly piece.
-    Does NOT require the teleporter itself to be near anyone — it can be isolated!
-    """
-    moves = []
-    board = state.board
-    current_color = state.color
-    self_pos = (x, y, z)
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.cache.manager import CacheManager
+from game3d.common.common import in_bounds
 
-    # Verify this piece exists and belongs to current player
-    piece = board.piece_at(self_pos)
-    if piece is None or piece.color != current_color:
-        return moves
+# Precomputed neighbor directions (26 directions in 3D space)
+_NEIGHBOR_DIRECTIONS = np.array([
+    (dx, dy, dz)
+    for dx in (-1, 0, 1)
+    for dy in (-1, 0, 1)
+    for dz in (-1, 0, 1)
+    if not (dx == dy == dz == 0)
+], dtype=np.int8)
 
-    # We will collect all candidate target squares
-    candidate_targets: Set[Tuple[int, int, int]] = set()
+def generate_network_teleport_moves(
+    cache: CacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
+    """Generate all legal network-teleport moves from (x, y, z) using batch processing."""
+    start = (x, y, z)
 
-    # Directions for 3D adjacency (26 neighbors)
-    directions = [
-        (dx, dy, dz)
-        for dx in (-1, 0, 1)
-        for dy in (-1, 0, 1)
-        for dz in (-1, 0, 1)
-        if not (dx == dy == dz == 0)
-    ]
+    # Get all friendly piece positions as a tensor for batch processing
+    friendly_positions = np.array([coord for coord, _ in cache.piece_cache.iter_color(color)], dtype=np.int8)
 
-    # Scan ENTIRE BOARD for friendly pieces
-    for check_x in range(9):
-        for check_y in range(9):
-            for check_z in range(9):
-                check_pos = (check_x, check_y, check_z)
-                neighbor_piece = board.piece_at(check_pos)
+    if len(friendly_positions) == 0:
+        return []
 
-                # If it's a friendly piece (any, including self)
-                if neighbor_piece is not None and neighbor_piece.color == current_color:
-                    # Add all its adjacent EMPTY squares
-                    for dx, dy, dz in directions:
-                        target = add_coords(check_pos, (dx, dy, dz))
+    # Get occupancy mask directly
+    occupancy_mask = cache.occupancy.mask
 
-                        if not in_bounds(target):
-                            continue
+    # Precompute all possible neighbor positions at once
+    all_neighbors = friendly_positions[:, np.newaxis, :] + _NEIGHBOR_DIRECTIONS
+    all_neighbors = all_neighbors.reshape(-1, 3)  # Flatten to (N*26, 3)
 
-                        # Only allow teleport to EMPTY squares
-                        if board.piece_at(target) is not None:
-                            continue
+    # Filter out-of-bounds positions
+    valid_mask = (
+        (all_neighbors[:, 0] >= 0) & (all_neighbors[:, 0] < 9) &
+        (all_neighbors[:, 1] >= 0) & (all_neighbors[:, 1] < 9) &
+        (all_neighbors[:, 2] >= 0) & (all_neighbors[:, 2] < 9)
+    )
+    valid_neighbors = all_neighbors[valid_mask]
 
-                        candidate_targets.add(target)
+    # Check occupancy for all valid neighbors at once
+    z_indices, y_indices, x_indices = valid_neighbors.T
+    empty_mask = ~occupancy_mask[z_indices, y_indices, x_indices]
+    empty_neighbors = valid_neighbors[empty_mask]
 
-    # Create teleport move for each unique target
-    for target in candidate_targets:
-        moves.append(Move(
-            from_coord=self_pos,
-            to_coord=target,
-            is_capture=False,
+    # Remove duplicates more efficiently
+    unique_targets = np.unique(empty_neighbors, axis=0)
 
-        ))
+    if len(unique_targets) == 0:
+        return []
 
-    return moves
+    # Convert to directions for the jump engine
+    start_array = np.array(start)
+    directions = unique_targets - start_array
+
+    # Hand off to the existing generator
+    gen = get_integrated_jump_movement_generator(cache)
+    return gen.generate_jump_moves(
+        color=color,
+        pos=start,
+        directions=directions,
+        allow_capture=False,  # network teleport never captures
+    )
+
+    if not unique_targets:
+        return []
+
+    # --- 4. Convert to directions for the jump engine ---
+    start_array = np.array(start, dtype=np.int8)
+    target_array = np.array(list(unique_targets), dtype=np.int8)
+    directions = target_array - start_array  # Shape: (M, 3)
+
+    # --- 5. Hand off to the existing generator ---
+    gen = get_integrated_jump_movement_generator(cache)
+    return gen.generate_jump_moves(
+        color=color,
+        pos=start,
+        directions=directions,
+        allow_capture=False,  # network teleport never captures
+    )

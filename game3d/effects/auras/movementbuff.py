@@ -12,7 +12,7 @@ def buffed_squares(board: BoardProto, buffer_colour: Color) -> Set[Tuple[int, in
     for coord, piece in board.list_occupied():
         if piece.color == buffer_colour and piece.ptype == PieceType.SPEEDER:
             for sq in sphere_centre(board, coord, radius=2):
-                target = board.piece_at(sq)
+                target = cache.piece_cache.get(sq)
                 if target is not None and target.color == buffer_colour:
                     buffed.add(sq)
     return buffed

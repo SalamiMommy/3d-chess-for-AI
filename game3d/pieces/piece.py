@@ -10,11 +10,14 @@ class Piece:
         self.ptype = ptype
 
     def to_tensor(self) -> torch.Tensor:
-        """Compressed 2-int tensor (color, type)."""
-        return torch.tensor([self.color, self.ptype], dtype=torch.int8)
+        """Returns shape (2,) int8 tensor: [color_value, ptype_value]."""
+        return torch.tensor([self.color.value, self.ptype.value], dtype=torch.int8)
 
     def __hash__(self):
         return hash((self.color, self.ptype))
 
     def __eq__(self, other):
         return isinstance(other, Piece) and self.color == other.color and self.ptype == other.ptype
+
+    def __repr__(self) -> str:
+        return f"Piece({self.color.name}, {self.ptype.name})"

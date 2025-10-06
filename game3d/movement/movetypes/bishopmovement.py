@@ -1,42 +1,42 @@
 # game3d/movement/movetypes/bishopmovement.py
+"""3D Bishop move generation — now symmetry-aware via slidermovement engine."""
 
-"""3D Bishop move generation logic — pure movement rules, no registration."""
-
+import numpy as np
+import torch
 from typing import List
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
-from game3d.movement.pathvalidation import slide_along_directions, validate_piece_at
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-# Define all 3D diagonal directions for bishop
-BISHOP_DIRECTIONS = [
-    # Diagonals in XY plane (dz=0)
-    *( (dx, dy, 0) for dx in (-1, 1) for dy in (-1, 1) ),
-    # Diagonals in XZ plane (dy=0)
-    *( (dx, 0, dz) for dx in (-1, 1) for dz in (-1, 1) ),
-    # Diagonals in YZ plane (dx=0)
-    *( (0, dy, dz) for dy in (-1, 1) for dz in (-1, 1) ),
-    # Full 3D diagonals (all axes non-zero)
-    *( (dx, dy, dz) for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1) ),
-]
+from game3d.movement.movetypes.slidermovement import get_slider_generator
+from game3d.cache.manager import OptimizedCacheManager
+import torch  # Add this import at the top if not present
+from game3d.movement.movepiece import Move
+# --------------------------------------------------------------------------- #
+#  Public API — signature unchanged                                          #
+# --------------------------------------------------------------------------- #
+def generate_bishop_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    """Generate all legal bishop moves from (x, y, z) with symmetry optimisation."""
+    engine = get_slider_generator()
 
+    # Use the existing occupancy data directly instead of rebuilding
+    occ, ptype = cache.occupancy.export_arrays()
 
-def generate_bishop_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal bishop moves from (x, y, z).
-    Uses centralized sliding logic from pathvalidation.py.
-    Returns empty list if no valid bishop is at start position.
-    """
-    pos = (x, y, z)
+    # Create a color-aware occupancy array more efficiently
+    board_occupancy = np.zeros((9, 9, 9), dtype=np.int8)
 
-    # Validate piece exists and is correct type/color
-    if not validate_piece_at(state, pos, PieceType.BISHOP):
-        return []
+    # Use vectorized operations instead of loops
+    occupied_mask = occ > 0
+    board_occupancy[occupied_mask] = occ[occupied_mask]
 
-    # Delegate to shared sliding logic — bishops can capture and cannot self-block
-    return slide_along_directions(
-        state,
-        start=pos,
-        directions=BISHOP_DIRECTIONS,
-        allow_capture=True,      # Bishops can capture
-        allow_self_block=False   # Bishops cannot move through or onto friendly pieces
+    col_val = color.value if isinstance(color, Color) else color
+
+    return engine.generate_moves(
+        piece_type='bishop',
+        pos=(x, y, z),
+        board_occupancy=board_occupancy,
+        color=col_val,
+        max_distance=8
     )

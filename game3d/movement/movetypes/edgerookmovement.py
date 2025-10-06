@@ -1,67 +1,107 @@
-# game3d/movement/movetypes/edgerookmovement.py
+"""3-D Edge-Rook (Edge-Walker) move generation — traverses the edge network
+but uses the integrated *jump* engine for final square legality."""
+from __future__ import annotations
 
-"""3D Edge-Rook move generation logic — moves along board edges, can turn freely."""
+from typing import List, Dict, Tuple
+from collections import deque
+import numpy as np
 
-from typing import List, Set, Tuple
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import (
-    is_edge_square,
-    is_path_blocked,
-    validate_piece_at
-)
-from game3d.common.common import add_coords, in_bounds
+from game3d.cache.manager import OptimizedCacheManager
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 
-def generate_edgerook_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+# ------------------------------------------------------------------
+#  Pre-computed edge adjacency graph  (unchanged)
+# ------------------------------------------------------------------
+_EDGE_GRAPH: Dict[Tuple[int, int, int], List[Tuple[int, int, int]]] = {}
+
+
+def _build_edge_graph(board_size: int = 9) -> None:
+    if _EDGE_GRAPH:                       # already built
+        return
+    axial = [(1, 0, 0), (-1, 0, 0),
+             (0, 1, 0), (0, -1, 0),
+             (0, 0, 1), (0, 0, -1)]
+    for x in range(board_size):
+        for y in range(board_size):
+            for z in range(board_size):
+                if not is_edge_square(x, y, z, board_size):
+                    continue
+                neighbors = []
+                for dx, dy, dz in axial:
+                    nx, ny, nz = x + dx, y + dy, z + dz
+                    if (0 <= nx < board_size and
+                        0 <= ny < board_size and
+                        0 <= nz < board_size and
+                            is_edge_square(nx, ny, nz, board_size)):
+                        neighbors.append((nx, ny, nz))
+                _EDGE_GRAPH[(x, y, z)] = neighbors
+
+
+def is_edge_square(x: int, y: int, z: int, size: int) -> bool:
+    """True if the square lies on the outermost layer of the cube."""
+    return x == 0 or x == size - 1 or y == 0 or y == size - 1 or z == 0 or z == size - 1
+
+
+_build_edge_graph()
+
+
+# ------------------------------------------------------------------
+#  Move generator
+# ------------------------------------------------------------------
+def generate_edgerook_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    """
+    Generate legal Edge-Rook moves.
+
+    1.  BFS walks the edge graph until it hits an occupied square.
+    2.  Every square that was *reached* (empty or enemy) is collected.
+    3.  The integrated jump generator is asked: “may I land here?”
+        – friendly piece  → discarded
+        – enemy king w/ priests → discarded
+        – wall            → discarded
+    4.  We build the final Move list from the surviving destinations.
+    """
     start = (x, y, z)
 
-    if not validate_piece_at(state, start, PieceType.EDGEROOK):
+    if start not in _EDGE_GRAPH:          # not on edge
         return []
 
-    if not is_edge_square(x, y, z, board_size=9):
-        return []
+    # 1. Discover every edge square reachable along empty edge squares
+    visited: set[Tuple[int, int, int]] = set()
+    queue: deque[Tuple[int, int, int]] = deque([start])
+    visited.add(start)
 
-    moves: List[Move] = []
-    visited: Set[Tuple[int, int, int]] = set()
-    queue: List[Tuple[Tuple[int, int, int], List[Tuple[int, int, int]]]] = [(start, [start])]
-    directions = [
-        (1, 0, 0), (-1, 0, 0),
-        (0, 1, 0), (0, -1, 0),
-        (0, 0, 1), (0, 0, -1)
-    ]
     while queue:
-        current, path = queue.pop(0)
-        if current in visited:
-            continue
-        visited.add(current)
-        for dx, dy, dz in directions:
-            step = 1
-            while True:
-                offset = (dx * step, dy * step, dz * step)
-                target = add_coords(current, offset)
-                if not in_bounds(target):
-                    break
-                if not is_edge_square(*target, board_size=9):
-                    break
-                target_piece = state.board.piece_at(target)
-                if target_piece and target_piece.color == state.color:
-                    break
-                if target_piece is None or (target_piece and target_piece.color != state.color):
-                    if target in path:
-                        step += 1
-                        continue
-                    new_path = path + [target]
-                    is_capture = target_piece is not None and target_piece.color != state.color
-                    move = Move(
-                        from_coord=start,
-                        to_coord=target,
-                        is_capture=is_capture
-                    )
-                    if target not in visited:
-                        moves.append(move)
-                        queue.append((target, new_path))
-                if target_piece and target_piece.color != state.color:
-                    break
-                step += 1
-    return moves
+        cur = queue.popleft()
+        for nxt in _EDGE_GRAPH[cur]:
+            if nxt in visited:
+                continue
+            # Check if the next square is empty using PieceCache.get()
+            if cache.piece_cache.get(nxt) is None:
+                # Empty → can continue traversing
+                visited.add(nxt)
+                queue.append(nxt)
+            else:
+                # Occupied → stop traversal, but still include as destination
+                visited.add(nxt)
+
+    # 2. Ask the jump generator to filter the destinations
+    jump_gen = get_integrated_jump_movement_generator(cache)
+
+    # Build a *single* direction array: every reachable square as a
+    # "jump vector" from start. (The kernel will test each one.)
+    destinations = np.array(list(visited), dtype=np.int8)
+    directions = destinations - np.array(start, dtype=np.int8)
+
+    legal_moves = jump_gen.generate_jump_moves(
+        color=color,
+        pos=start,
+        directions=directions,
+       
+    )
+    return legal_moves

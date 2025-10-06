@@ -1,51 +1,47 @@
-"""Knight (3,1) leaper — 3-axis 3-D knight."""
+"""Knight (3,1,1) leaper — 3-D knight using the integrated jump engine."""
+from __future__ import annotations
 
-from typing import List, Tuple
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from typing import List
+import numpy as np
+
+from game3d.pieces.enums import PieceType, Color
+ 
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import validate_piece_at
-from game3d.common.common import in_bounds, add_coords
+from game3d.cache.manager import OptimizedCacheManager
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 
+# ------------------------------------------------------------------
+#  24 unique (3,1,1) permutations with all sign combinations
+# ------------------------------------------------------------------
+VECTORS_31 = np.array([
+    # (3,1,1) family
+    (3, 1, 1), (3, 1, -1), (3, -1, 1), (3, -1, -1),
+    (-3, 1, 1), (-3, 1, -1), (-3, -1, 1), (-3, -1, -3),
+    # (1,3,1) family
+    (1, 3, 1), (1, 3, -1), (1, -3, 1), (1, -3, -1),
+    (-1, 3, 1), (-1, 3, -1), (-1, -3, 1), (-1, -3, -1),
+    # (1,1,3) family
+    (1, 1, 3), (1, 1, -3), (1, -1, 3), (1, -1, -3),
+    (-1, 1, 3), (-1, 1, -3), (-1, -1, 3), (-1, -1, -3),
+], dtype=np.int8)
 
-VECTORS_31 = [
-    (dx * 3, dy * 1, dz * 1)
-    for dx in (-1, 1)
-    for dy in (-1, 1)
-    for dz in (-1, 1)
-] + [
-    (dx * 1, dy * 3, dz * 1)
-    for dx in (-1, 1)
-    for dy in (-1, 1)
-    for dz in (-1, 1)
-] + [
-    (dx * 1, dy * 1, dz * 3)
-    for dx in (-1, 1)
-    for dy in (-1, 1)
-    for dz in (-1, 1)
-]
+# ------------------------------------------------------------------
+#  Move generator
+# ------------------------------------------------------------------
+def generate_knight31_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    """Generate all legal (3,1,1) knight leaps."""
+    pos = (x, y, z)
 
-VECTORS_31 = list(set(VECTORS_31))
+      
 
-
-def generate_knight31_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """Generate all (3,1) knight leaps."""
-    start = (x, y, z)
-    if not validate_piece_at(state, start, expected_type=PieceType.KNIGHT31):
-        return []
-
-    moves: List[Move] = []
-    board = state.board
-    current_color = state.color
-
-    for dx, dy, dz in VECTORS_31:
-        target = add_coords(start, (dx, dy, dz))
-        if not in_bounds(target):
-            continue
-        occupant = board.piece_at(target)
-        if occupant is not None and occupant.color == current_color:
-            continue
-        is_capture = occupant is not None and occupant.color != current_color
-        moves.append(Move(start, target, is_capture=is_capture))
-
-    return moves
+    jump_gen = get_integrated_jump_movement_generator(cache)
+    return jump_gen.generate_jump_moves(
+        color=color,
+        pos=pos,
+        directions=VECTORS_31,
+       
+    )

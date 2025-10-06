@@ -1,47 +1,31 @@
-# game3d/movement/movetypes/yzqueenmovement.py
+"""3D YZ-Queen movement logic — 2-D queen in YZ-plane via slidermovement."""
 
-"""3D YZ-Queen movement logic — moves like 2D queen + 1-step king in YZ-plane (X fixed)."""
-
+import numpy as np
 from typing import List
-from game3d.pieces.enums import PieceType
-from game3d.game.gamestate import GameState
+from game3d.pieces.enums import PieceType, Color
 from game3d.movement.movepiece import Move
-from game3d.movement.pathvalidation import (
-    slide_along_directions,
-    validate_piece_at
-)
+from game3d.movement.movetypes.slidermovement import get_slider_generator
+from game3d.cache.manager import OptimizedCacheManager
 
+# 8 directions in YZ-plane (X fixed)
+YZ_QUEEN_DIRECTIONS = np.array([
+    (0, 1, 0), (0, -1, 0),   # Y axis
+    (0, 0, 1), (0, 0, -1),   # Z axis
+    (0, 1, 1), (0, 1, -1),   # YZ diagonals
+    (0, -1, 1), (0, -1, -1)
+], dtype=np.int8)
 
-def generate_yz_queen_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate all legal YZ-QUEEN moves from (x, y, z).
-    Moves like a 2D queen in the YZ-plane — X remains fixed.
-    """
-    start = (x, y, z)
-
-    if not validate_piece_at(state, start, expected_type=PieceType.YZQUEEN):
-        return []
-
-    # Define 8 YZ-plane directions (dx = 0 always)
-    directions = [
-        (0, 1, 0), (0, -1, 0),   # along Y
-        (0, 0, 1), (0, 0, -1),   # along Z
-        (0, 1, 1), (0, -1, -1),  # diagonal YZ
-        (0, 1, -1), (0, -1, 1)
-    ]
-
-    raw_moves = slide_along_directions(
-        state=state,
-        start=start,
-        directions=directions,
-        allow_capture=True,
-        allow_self_block=False
+def generate_yz_queen_moves(
+    cache: OptimizedCacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    engine = get_slider_generator()  # FIXED: Removed argument
+    return engine.generate_moves(   # FIXED: Changed method name
+        piece_type='yz_queen',  # Added piece_type
+        pos=(x, y, z),
+        board_occupancy=cache.occupancy.mask
+,  # Added board_occupancy
+        color=color.value if isinstance(color, Color) else color,  # Convert to int
+        max_distance=8,  # Changed from max_steps
     )
-
-    # Enforce X remains fixed
-    moves = [
-        move for move in raw_moves
-        if move.to_coord[0] == x
-    ]
-
-    return moves

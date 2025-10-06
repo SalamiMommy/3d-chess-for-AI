@@ -8,7 +8,7 @@ from game3d.movement.movepiece import Move
 
 @register(PieceType.SPIRAL)
 def spiral_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_spiral_moves(state, x, y, z)
+    return generate_spiral_moves(state.cache, state.color, x, y, z)
 
 
 __all__ = ['generate_spiral_moves']

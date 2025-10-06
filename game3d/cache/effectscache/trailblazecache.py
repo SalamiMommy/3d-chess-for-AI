@@ -1,49 +1,56 @@
-from __future__ import annotations
-from typing import Dict, Tuple, Set
+from __future__ import annotations  # Enables forward references
+from typing import Dict, Set, Optional
+from game3d.common.common import Coord
 from game3d.pieces.enums import Color, PieceType
-from game3d.board.board import Board
-from game3d.effects.trailblazing import squares_to_mark, TrailblazeRecorder
 from game3d.movement.movepiece import Move
-
+from game3d.effects.trailblazing import TrailblazeRecorder
 class TrailblazeCache:
-    __slots__ = ("_counters", "_recorders")
+    def __init__(self, cache_manager=None) -> None:  # No type hint needed, or use string
+        self._recorders: Dict[Coord, TrailblazeRecorder] = {}
+        self._counters: Dict[Coord, int] = {}
+        self._cache_manager = cache_manager
 
-    def __init__(self) -> None:
-        self._counters: Dict[Tuple[int, int, int], int] = {}  # square -> 0..3
-        self._recorders: Dict[Tuple[int, int, int], TrailblazeRecorder] = {}
+    def current_trail_squares(self, controller: Color, board: Board) -> Set[Coord]:
+        result: Set[Coord] = set()
+        for coord, recorder in self._recorders.items():
+            piece = self._cache_manager.piece_cache.get(coord)  # Safe at runtime
+            if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
+                result.update(recorder.current_trail())
+        return result
 
-    def mark_trail(self, trailblazer_sq: Tuple[int, int, int], slid_squares: Set[Tuple[int, int, int]]) -> None:
-        rec = self._recorders.get(trailblazer_sq)
-        if rec is not None:
-            rec.add_trail(slid_squares)
-            # Do NOT call _refresh_counter_keys — we can't access board here.
-            # Stale counters are harmless; they're validated at use time.
+    def record_trail(self, trailblazer_pos: Coord, path: Set[Coord]) -> None:
+        """Record a new trail for the trailblazer at trailblazer_pos."""
+        if trailblazer_pos not in self._recorders:
+            self._recorders[trailblazer_pos] = TrailblazeRecorder()
+        self._recorders[trailblazer_pos].add_trail(path)
 
-    def current_trail_squares(self, controller: Color, board: Board) -> Set[Tuple[int, int, int]]:
-        out: Set[Tuple[int, int, int]] = set()
-        for coord, rec in self._recorders.items():
-            piece = board.piece_at(coord)
-            if piece is not None and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
-                out.update(rec.current_trail())
-        return out
+    def current_trail_squares(self, controller: Color, board: Board) -> Set[Coord]:
+        """Get all squares in trails of friendly trailblazers."""
+        result: Set[Coord] = set()
+        for coord, recorder in self._recorders.items():
+            piece = cache.piece_cache.get(coord)
+            if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
+                result.update(recorder.current_trail())
+        return result
 
-    def increment_counter(self, sq: Tuple[int, int, int], enemy_color: Color, board: Board) -> bool:
-        # Only count if square is currently in enemy's trail
+    def increment_counter(self, sq: Coord, enemy_color: Color, board: Board) -> bool:
+        """Check if square is in enemy trail and increment counter."""
         if sq not in self.current_trail_squares(enemy_color.opposite(), board):
             return False
         self._counters[sq] = self._counters.get(sq, 0) + 1
         return self._counters[sq] >= 3
 
     def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
-        self._rebuild_recorders(board)
-        # Optional: clear counters on full rebuild to save memory
-        # self._counters.clear()
+        """Handle trailblazer creation/destruction (promotion, capture, etc.)."""
+        self._sync_recorders_with_board(board)
 
-    def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
-        self._rebuild_recorders(board)
-        # self._counters.clear()
+    def _sync_recorders_with_board(self, board: Board) -> None:
+        """Remove recorders for trailblazers that no longer exist."""
+        existing_coords = {coord for coord, piece in board.list_occupied() if piece.ptype == PieceType.TRAILBLAZER}
 
-    def _rebuild_recorders(self, board: Board) -> None:
-        white = squares_to_mark(board, Color.WHITE)
-        black = squares_to_mark(board, Color.BLACK)
-        self._recorders = {**white, **black}
+        # Keep only recorders for trailblazers that still exist
+        self._recorders = {
+            coord: recorder
+            for coord, recorder in self._recorders.items()
+            if coord in existing_coords
+        }

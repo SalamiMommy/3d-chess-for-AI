@@ -1,71 +1,54 @@
-"""Pawn-Front Teleporter — teleports to any empty square directly in front of an enemy pawn.
-   Pawns advance along Z: White +Z, Black -Z.
+"""Pawn-Front Teleporter — teleport to empty square directly in front of any enemy pawn.
+Zero-redundancy via the jump engine (dynamic directions).
 """
-#game3d/movement/movetypes/pawnfrontteleportermovement.py
-from typing import List, Set, Tuple
-from game3d.pieces.enums import PieceType, Color
-from game3d.game.gamestate import GameState
-from game3d.movement.movepiece import Move
+
+from __future__ import annotations
+
+from typing import List, Set
+import numpy as np
+
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.cache.manager import CacheManager
 from game3d.common.common import in_bounds
 
+def generate_pawn_front_teleport_moves(
+    cache: CacheManager,
+    color: Color,
+    x: int, y: int, z: int
+) -> List['Move']:
+    """Generate teleport moves to empty squares directly in front of enemy pawns."""
+    start = (x, y, z)
 
-def generate_pawn_front_teleport_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate teleport moves to any EMPTY square directly in front of an enemy pawn.
-    Pawns move in Z-direction:
-      - White pawns: front = (x, y, z+1)
-      - Black pawns: front = (x, y, z-1)
-    """
-    moves: List[Move] = []
-    board = state.board
-    current_color = state.color
-    self_pos = (x, y, z)
+    occ, _ = cache.piece_cache.export_arrays()
+    enemy_code = 2 if color == Color.WHITE else 1
+    pawn_code = PieceType.PAWN.value | (enemy_code << 3)
 
-    # Validate piece exists and belongs to current player
-    piece = board.piece_at(self_pos)
-    if piece is None or piece.color != current_color:
-        return moves
+    targets: Set[tuple[int, int, int]] = set()
 
-    candidate_targets: Set[Tuple[int, int, int]] = set()
+    # scan only occupied squares
+    for pos, _ in cache.board.list_occupied():
+        px, py, pz = pos
+        if occ[px, py, pz] != pawn_code:
+            continue
+        front = (px, py, pz + 1) if enemy_code == 2 else (px, py, pz - 1)
+        if not in_bounds(front):
+            continue
+        if occ[front] == 0:          # empty
+            targets.add(front)
 
-    # Scan entire board for enemy pawns
-    for px in range(9):
-        for py in range(9):
-            for pz in range(9):
-                pos = (px, py, pz)
-                target_piece = board.piece_at(pos)
+    if not targets:
+        return []
 
-                if target_piece is None:
-                    continue
-                if target_piece.ptype != PieceType.PAWN:
-                    continue
-                if target_piece.color == current_color:
-                    continue  # must be enemy
+    # build dynamic directions array
+    dirs = np.array([np.array(t, dtype=np.int8) - np.array(start, dtype=np.int8)
+                     for t in targets], dtype=np.int8)
 
-                # Determine "in front" based on enemy pawn's color
-                if target_piece.color == Color.WHITE:
-                    front = (px, py, pz + 1)   # White moves +Z
-                else:
-                    front = (px, py, pz - 1)   # Black moves -Z
-
-                if not in_bounds(front):
-                    continue
-                if board.piece_at(front) is not None:
-                    continue  # empty only
-
-                candidate_targets.add(front)
-
-    # Build unique teleport moves
-    for target in candidate_targets:
-        moves.append(Move(
-            from_coord=self_pos,
-            to_coord=target,
-            is_capture=False,
-            # metadata={
-            #     "is_teleport": True,
-            #     "mechanic": "pawn_front_z",
-            #     "flavor": "Phasing into the enemy's front line"
-            # }
-        ))
-
-    return moves
+    gen = get_integrated_jump_movement_generator(cache)
+    return gen.generate_jump_moves(
+        color=color,
+        pos=start,
+        directions=dirs,
+        allow_capture=False,   # teleport never captures
+                   # keep GPU path
+    )

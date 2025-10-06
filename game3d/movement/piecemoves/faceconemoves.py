@@ -9,8 +9,7 @@ from game3d.movement.movepiece import Move
 
 @register(PieceType.CONESLIDER)
 def face_cone_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_face_cone_slider_moves(state, x, y, z)
-
+    return generate_face_cone_slider_moves(state.cache, state.color, x, y, z)
 
 # Re-export for external use
 __all__ = ['generate_face_cone_slider_moves']

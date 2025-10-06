@@ -17,7 +17,7 @@ def archery_targets(board, controller: Color) -> List[Tuple[int, int, int]]:
         for sq in sphere_centre(board, centre, radius=2):
             if sq in seen:
                 continue
-            victim = board.piece_at(sq)
+            victim = cache.piece_cache.get(sq)
             if victim is not None and victim.color != controller:
                 out.append(sq)
                 seen.add(sq)
