@@ -56,27 +56,31 @@ class OccupancyCache:
         return self._occ.tobytes()
 
     def get(self, coord: Coord) -> Optional[Piece]:
-        """Get a piece at the given coordinate with thread safety."""
+        """Get a piece at the given coordinate with thread safety and aggressive caching."""
+        # Try cache first (no lock needed if cache is full)
+        if hasattr(self, '_piece_cache') and coord in self._piece_cache:
+            return self._piece_cache[coord]
+
+        # Only lock if cache miss
         with self._lock:
             x, y, z = coord
             color_code = self._occ[z, y, x]
             if color_code == 0:
                 return None
 
-            # Check piece cache
+            # Try cache again inside lock (thread contention)
             if hasattr(self, '_piece_cache') and coord in self._piece_cache:
                 return self._piece_cache[coord]
 
+            # Construct and cache piece
             color = Color.WHITE if color_code == 1 else Color.BLACK
             ptype = PieceType(self._ptype[z, y, x])
             piece = Piece(color, ptype)
 
-            # Initialize cache if not exists
+            # Adaptive cache size - allow growth up to 4096 entries
             if not hasattr(self, '_piece_cache'):
                 self._piece_cache = {}
-                self._piece_cache_max_size = 1000
-
-            # Update cache if not full
+                self._piece_cache_max_size = 4096
             if len(self._piece_cache) < self._piece_cache_max_size:
                 self._piece_cache[coord] = piece
 
