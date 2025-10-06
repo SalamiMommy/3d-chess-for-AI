@@ -169,6 +169,7 @@ class OptimizedCacheManager:
 
             # Mark network teleport targets as dirty
             self._mark_network_teleport_dirty()
+            self._mark_swap_dirty()
 
             self._current = mover.opposite()
             self._age_counter += 1
@@ -243,6 +244,7 @@ class OptimizedCacheManager:
 
             # Mark network teleport targets as dirty
             self._mark_network_teleport_dirty()
+            self._mark_swap_dirty()
 
             self._current = mover
             self._age_counter += 1
@@ -590,6 +592,12 @@ class OptimizedCacheManager:
     def piece_cache(self):
         """Return the occupancy cache for backward compatibility."""
         return self.occupancy
+
+    def _mark_swap_dirty(self) -> None:
+        """Mark swap targets as dirty for both colors."""
+        if hasattr(self, '_swap_targets_dirty'):
+            self._swap_targets_dirty[Color.WHITE] = True
+            self._swap_targets_dirty[Color.BLACK] = True
 # ==============================================================================
 # FACTORY & BACKWARD COMPATIBILITY
 # ==============================================================================
