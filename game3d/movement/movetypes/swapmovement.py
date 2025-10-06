@@ -51,7 +51,7 @@ def generate_swapper_moves(
         pos=start,
         directions=dirs,
         allow_capture=False,
-        
+
     )
 
     # 5. Mark as swap (optional)

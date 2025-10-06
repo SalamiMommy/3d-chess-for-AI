@@ -28,67 +28,77 @@ def generate_network_teleport_moves(
     color: Color,
     x: int, y: int, z: int
 ) -> List['Move']:
-    """Generate all legal network-teleport moves from (x, y, z) using batch processing."""
+    """
+    Generate all legal network-teleport moves from (x, y, z) using batch processing.
+
+    Optimizations:
+    - Avoid Python-level loops for neighbor finding and deduplication.
+    - Use numpy arrays for all geometry math and occupancy checks.
+    - Avoid set and list conversions except at the very end.
+    - Short-circuit early if no friendly pieces, no empty targets, etc.
+    - Batch handoff to jump movement generator.
+    """
     start = (x, y, z)
 
-    # Get all friendly piece positions as a tensor for batch processing
-    friendly_positions = np.array([coord for coord, _ in cache.piece_cache.iter_color(color)], dtype=np.int8)
-
-    if len(friendly_positions) == 0:
+    # Fast batch: Get all friendly piece positions as a numpy array
+    friendly_positions = np.empty((0, 3), dtype=np.int8)
+    if hasattr(cache.piece_cache, "iter_color"):
+        # Use list comprehension for direct numpy construction
+        friendly_positions = np.array(
+            [coord for coord, _ in cache.piece_cache.iter_color(color)],
+            dtype=np.int8
+        )
+    if friendly_positions.shape[0] == 0:
         return []
 
-    # Get occupancy mask directly
+    # Occupancy mask – direct reference, don't copy
     occupancy_mask = cache.occupancy.mask
 
-    # Precompute all possible neighbor positions at once
+    # Batch neighbor generation: vectorized addition
+    # friendly_positions: (N, 3), _NEIGHBOR_DIRECTIONS: (26, 3)
+    # Output: (N, 26, 3)
     all_neighbors = friendly_positions[:, np.newaxis, :] + _NEIGHBOR_DIRECTIONS
-    all_neighbors = all_neighbors.reshape(-1, 3)  # Flatten to (N*26, 3)
+    neighbors_flat = all_neighbors.reshape(-1, 3)
 
-    # Filter out-of-bounds positions
+    # Filter out-of-bounds positions (logical AND, vectorized)
     valid_mask = (
-        (all_neighbors[:, 0] >= 0) & (all_neighbors[:, 0] < 9) &
-        (all_neighbors[:, 1] >= 0) & (all_neighbors[:, 1] < 9) &
-        (all_neighbors[:, 2] >= 0) & (all_neighbors[:, 2] < 9)
+        (neighbors_flat[:, 0] >= 0) & (neighbors_flat[:, 0] < 9) &
+        (neighbors_flat[:, 1] >= 0) & (neighbors_flat[:, 1] < 9) &
+        (neighbors_flat[:, 2] >= 0) & (neighbors_flat[:, 2] < 9)
     )
-    valid_neighbors = all_neighbors[valid_mask]
+    valid_neighbors = neighbors_flat[valid_mask]
 
-    # Check occupancy for all valid neighbors at once
-    z_indices, y_indices, x_indices = valid_neighbors.T
-    empty_mask = ~occupancy_mask[z_indices, y_indices, x_indices]
+    if valid_neighbors.shape[0] == 0:
+        return []
+
+    # Batch occupancy check: not occupied (mask is True if occupied)
+    z_idx, y_idx, x_idx = valid_neighbors.T
+    empty_mask = ~occupancy_mask[z_idx, y_idx, x_idx]
     empty_neighbors = valid_neighbors[empty_mask]
 
-    # Remove duplicates more efficiently
-    unique_targets = np.unique(empty_neighbors, axis=0)
-
-    if len(unique_targets) == 0:
+    if empty_neighbors.shape[0] == 0:
         return []
 
-    # Convert to directions for the jump engine
-    start_array = np.array(start)
+    # Deduplicate targets with numpy.unique (avoid Python sets)
+    unique_targets = np.unique(empty_neighbors, axis=0)
+    if unique_targets.shape[0] == 0:
+        return []
+
+    # Exclude the starting position (can't teleport to self)
+    not_self_mask = ~np.all(unique_targets == np.array(start), axis=1)
+    unique_targets = unique_targets[not_self_mask]
+    if unique_targets.shape[0] == 0:
+        return []
+
+    # Compute direction vectors for jump generator (batch)
+    start_array = np.array(start, dtype=np.int8)
     directions = unique_targets - start_array
 
-    # Hand off to the existing generator
+    # Hand off to jump movement generator (batch, fast)
     gen = get_integrated_jump_movement_generator(cache)
     return gen.generate_jump_moves(
         color=color,
         pos=start,
         directions=directions,
-        allow_capture=False,  # network teleport never captures
-    )
-
-    if not unique_targets:
-        return []
-
-    # --- 4. Convert to directions for the jump engine ---
-    start_array = np.array(start, dtype=np.int8)
-    target_array = np.array(list(unique_targets), dtype=np.int8)
-    directions = target_array - start_array  # Shape: (M, 3)
-
-    # --- 5. Hand off to the existing generator ---
-    gen = get_integrated_jump_movement_generator(cache)
-    return gen.generate_jump_moves(
-        color=color,
-        pos=start,
-        directions=directions,
-        allow_capture=False,  # network teleport never captures
+        allow_capture=False,
     )
