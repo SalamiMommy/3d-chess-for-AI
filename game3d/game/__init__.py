@@ -26,19 +26,6 @@ from .terminal import (
     insufficient_material
 )
 
-# Import move functions - use late imports to avoid circular dependencies
-def _import_turnmove_functions():
-    """Import turnmove functions on demand to avoid circular imports."""
-    from .turnmove import (
-        legal_moves,
-        pseudo_legal_moves,
-        make_move,
-        undo_move,
-        apply_hive_moves,
-        validate_legal_moves
-    )
-    return legal_moves, pseudo_legal_moves, make_move, undo_move, apply_hive_moves, validate_legal_moves
-
 # Import move_utils (breaks circular dependency)
 from .move_utils import (
     apply_hole_effects,
@@ -48,8 +35,8 @@ from .move_utils import (
     extract_enemy_slid_path
 )
 
-# Import moveeffects (now only has archery)
-from .moveeffects import apply_archery_attack
+# Import moveeffects (now has archery and hive moves)
+from .moveeffects import apply_archery_attack, apply_hive_moves  # MODIFIED: Added apply_hive_moves
 
 # ------------------------------------------------------------------
 # BIND ALL METHODS TO GAMESTATE CLASS
@@ -66,13 +53,24 @@ GameState.is_terminal = is_terminal
 GameState.outcome = outcome
 
 # Move generation and execution methods - imported on demand
-legal_moves, pseudo_legal_moves, make_move, undo_move, apply_hive_moves, validate_legal_moves = _import_turnmove_functions()
+def _import_turnmove_functions():
+    """Import turnmove functions on demand to avoid circular imports."""
+    from .turnmove import (
+        legal_moves,
+        pseudo_legal_moves,
+        make_move,
+        undo_move,
+        validate_legal_moves
+    )
+    return legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves
+
+legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves = _import_turnmove_functions()
 
 GameState.legal_moves = legal_moves
 GameState.pseudo_legal_moves = pseudo_legal_moves
 GameState.make_move = make_move
 GameState.undo_move = undo_move
-GameState.apply_hive_moves = apply_hive_moves
+GameState.apply_hive_moves = apply_hive_moves  # MODIFIED: Now using moveeffects import
 
 # Add missing PieceType import for validation methods
 from game3d.pieces.enums import PieceType
