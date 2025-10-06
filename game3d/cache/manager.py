@@ -461,7 +461,10 @@ class OptimizedCacheManager:
         return self.effects.top_piece(sq)
 
     def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        return self.effects.get_attacked_squares(color)
+        """Get all squares attacked by pieces of the given color."""
+        if self._move_cache:
+            return self._move_cache.get_attacked_squares(color)
+        return set()
 
     def is_pinned(self, coord: Tuple[int, int, int], color: Optional[Color] = None) -> bool:
         if color is None:
