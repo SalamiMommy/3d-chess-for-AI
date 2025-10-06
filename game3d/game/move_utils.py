@@ -40,7 +40,7 @@ def apply_bomb_effects(board: 'Board', cache: 'OptimizedCacheManager',
 
     # Handle captured bomb explosion
     if captured_piece and captured_piece.ptype == PieceType.BOMB and captured_piece.color == enemy_color:
-        for sq in detonate(board, mv.to_coord):
+        for sq in detonate(board, mv.to_coord, moving_piece.color):  # Add current_color argument
             piece = cache.piece_cache.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
@@ -49,13 +49,12 @@ def apply_bomb_effects(board: 'Board', cache: 'OptimizedCacheManager',
     # Handle self-detonation
     if (moving_piece.ptype == PieceType.BOMB and
         getattr(mv, 'is_self_detonate', False)):
-        for sq in detonate(board, mv.to_coord):
+        for sq in detonate(board, mv.to_coord, moving_piece.color):  # Add current_color argument
             piece = cache.piece_cache.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
             board.set_piece(sq, None)
         return True
-    return False
 
 def apply_trailblaze_effect(board: 'Board', cache: 'OptimizedCacheManager',
                             mv: 'Move', color: 'Color',
