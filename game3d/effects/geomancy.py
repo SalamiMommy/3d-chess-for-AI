@@ -14,6 +14,6 @@ def block_candidates(board, controller: Color) -> List[Tuple[int, int, int]]:
     ]
     for centre in centres:
         for sq in sphere_centre(board, centre, radius=3):
-            if cache.piece_cache.get(sq) is None:   # unoccupied only
+            if board.cache_manager.piece_cache.get(sq) is None:    # unoccupied only
                 out.append(sq)
     return out

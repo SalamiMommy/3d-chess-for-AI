@@ -10,11 +10,11 @@ from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING
 from enum import Enum  # Add this import
 
 import torch
-
+import numpy as np
 from game3d.board.board import Board
 from game3d.pieces.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
 from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
 from game3d.pieces.piece import Piece
 
@@ -89,30 +89,79 @@ class GameState:
     # TENSOR REPRESENTATION WITH CACHING
     # ------------------------------------------------------------------
     def to_tensor(self, device: Optional[torch.device | str] = None) -> torch.Tensor:
-        """
-        Return the 3-D board as a (C, D, H, W) tensor.
-        If *device* is given the tensor is created on that device.
-        """
+        """Return the 3-D board as a (C, D, H, W) tensor with caching."""
+        # Create a cache key based on board state and current player
+        cache_key = (self.board.byte_hash(), self.color)
+
+        # Return cached tensor if available and valid
+        if (self._tensor_cache is not None and
+            self._tensor_cache_key == cache_key and
+            (device is None or self._tensor_cache.device == torch.device(device))):
+            if device is not None:
+                return self._tensor_cache.to(device)
+            return self._tensor_cache
+
+        # Generate new tensor
         tensor = torch.zeros(
             (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X),
             dtype=torch.float32,
             device=device,
         )
 
-        for coord, piece in self.board.list_occupied():
-            x, y, z = coord
-            if not (0 <= x < SIZE_X and 0 <= y < SIZE_Y and 0 <= z < SIZE_Z):
+        # Use vectorized operations instead of loops
+        # Get all occupied coordinates and pieces at once
+        occupied_data = list(self.board.list_occupied())
+        if not occupied_data:
+            # No pieces on board
+            tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
+            self._tensor_cache = tensor
+            self._tensor_cache_key = cache_key
+            return tensor
+
+        # Extract coordinates and pieces separately
+        coords, pieces = zip(*occupied_data)
+        x_coords, y_coords, z_coords = zip(*coords)
+
+        # Convert to numpy arrays for vectorized operations
+        x_coords = np.array(x_coords)
+        y_coords = np.array(y_coords)
+        z_coords = np.array(z_coords)
+
+        # Process pieces in batches by color
+        for piece_color in [Color.WHITE, Color.BLACK]:
+            color_mask = np.array([p.color == piece_color for p in pieces])
+            if not np.any(color_mask):
                 continue
 
-            ptype_val = piece.ptype.value
-            if ptype_val >= N_TOTAL_PLANES - 1:
-                continue
+            # Get coordinates for this color
+            color_x = x_coords[color_mask]
+            color_y = y_coords[color_mask]
+            color_z = z_coords[color_mask]
 
-            offset = 0 if piece.color == self.color else N_TOTAL_PLANES // 2
-            tensor[ptype_val + offset, z, y, x] = 1.0
+            # Get piece types for this color
+            color_pieces = [p for p, mask in zip(pieces, color_mask) if mask]
+            ptype_values = np.array([p.ptype.value for p in color_pieces])
 
-        # colour-to-move plane
+            # Calculate offset based on current player
+            offset = 0 if piece_color == self.color else N_TOTAL_PLANES // 2
+
+            # Set tensor values using vectorized indexing
+            for i, (x, y, z, ptype) in enumerate(zip(color_x, color_y, color_z, ptype_values)):
+                if ptype < N_TOTAL_PLANES - 1:
+                    tensor[ptype + offset, z, y, x] = 1.0
+
+        # Set color-to-move plane
         tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
+
+        # Cache the result
+        if device is None:
+            self._tensor_cache = tensor
+            self._tensor_cache_key = cache_key
+        else:
+            # If device is specified, we'll cache on CPU and move to device when needed
+            self._tensor_cache = tensor.cpu()
+            self._tensor_cache_key = cache_key
+
         return tensor
 
     def _clear_caches(self) -> None:
@@ -243,8 +292,8 @@ class GameState:
             for idx, move in empty_square_moves[:5]:  # Show first 5
                 x, y, z = move.from_coord
                 tensor = self.board.tensor()
-                white_vals = tensor[0:N_PLANES_PER_SIDE, z, y, x]
-                black_vals = tensor[N_PLANES_PER_SIDE:2*N_PLANES_PER_SIDE, z, y, x]
+                white_vals = tensor[0:N_PIECE_TYPES, z, y, x]
+                black_vals = tensor[N_PIECE_TYPES:2*N_PIECE_TYPES, z, y, x]
 
                 debug_info.append(f"  Move {idx}: {move}")
                 debug_info.append(f"    Coord: {move.from_coord}")
@@ -254,22 +303,6 @@ class GameState:
 
         debug_info.append("=" * 80)
         return "\n".join(debug_info)
-
-    # Placeholder methods - will be bound by __init__.py
-    def legal_moves(self) -> List[Move]:
-        raise NotImplementedError("Method not bound")
-
-    def make_move(self, mv: Move) -> 'GameState':
-        raise NotImplementedError("Method not bound")
-
-    def is_check(self) -> bool:
-        raise NotImplementedError("Method not bound")
-
-    def is_game_over(self) -> bool:
-        raise NotImplementedError("Method not bound")
-
-    def result(self) -> Optional[Result]:
-        raise NotImplementedError("Method not bound")
 
     def legal_moves(self) -> List[Move]:
         """Get legal moves for current player."""

@@ -86,6 +86,7 @@ class OccupancyCache:
 
             return piece
 
+    # Add batch get method
     def get_batch(self, coords: np.ndarray) -> List[Optional[Piece]]:
         """Get pieces for multiple coordinates at once with thread safety."""
         with self._lock:
