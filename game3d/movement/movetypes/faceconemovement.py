@@ -1,12 +1,15 @@
 """3D Face Cone Slider — conical sliding rays with symmetry optimisation."""
-
-import numpy as np
-from typing import List, Set, Tuple
+from __future__ import annotations
 from math import gcd
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move
+from typing import List, Tuple, TYPE_CHECKING
+import numpy as np
+
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
 from game3d.movement.movetypes.slidermovement import get_slider_generator
-from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # --------------------------------------------------------------------------- #
 #  Geometry owned by this module                                             #

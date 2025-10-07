@@ -1,91 +1,102 @@
-"""Pawn moves — zero-redundancy version using occupancy codes (no piece objects)."""
+"""Pawn movement — Manhattan-distance-1 forward push & trigonal captures, 3D chess."""
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move
-from game3d.cache.manager import CacheManager
+from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.common.common import in_bounds
-from game3d.movement.movepiece import MOVE_FLAGS
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 # ------------------------------------------------------------------
-# helpers
+#  Direction tables
 # ------------------------------------------------------------------
-def _is_on_start_rank(z: int, color: Color) -> bool:
-    return (color == Color.WHITE and z == 1) or (color == Color.BLACK and z == 7)
+def get_pawn_push_dirs(color: Color) -> np.ndarray:
+    dz = 1 if color == Color.WHITE else -1
+    return np.array([(0, 0, dz)], dtype=np.int8)
+
+def get_pawn_capture_dirs(color: Color) -> np.ndarray:
+    dz = 1 if color == Color.WHITE else -1
+    return np.array([(dx, dy, dz) for dx in (1, -1) for dy in (1, -1)], dtype=np.int8)
 
 # ------------------------------------------------------------------
-# main generator
+#  Helpers
+# ------------------------------------------------------------------
+def _is_on_start_rank(z: int, color: Color) -> bool:
+    return (color == Color.WHITE and z == 2) or (color == Color.BLACK and z == 6)
+
+def _is_promotion_rank(z: int, color: Color) -> bool:
+    return (color == Color.WHITE and z == 8) or (color == Color.BLACK and z == 0)
+
+# ------------------------------------------------------------------
+#  Main generator
 # ------------------------------------------------------------------
 def generate_pawn_moves(
     cache: CacheManager,
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """Generate all legal pawn moves from (x, y, z) using occupancy codes."""
     pos = (x, y, z)
-
-    # export occupancy & piece arrays once
     occ, piece_arr = cache.piece_cache.export_arrays()
     own_code = 1 if color == Color.WHITE else 2
-    self_code = PieceType.PAWN.value | (own_code << 3)
 
-    if occ[x, y, z] != self_code:          # quick occupancy check
+    # Indexing order: [z, y, x]
+    if occ[z, y, x] != own_code or piece_arr[z, y, x] != PieceType.PAWN.value:
         return []
 
-    dz = 1 if color == Color.WHITE else -1
     moves: List[Move] = []
+    dz = 1 if color == Color.WHITE else -1
 
     # ---------- single push ----------
     fwd = (x, y, z + dz)
-    if in_bounds(fwd) and occ[fwd] == 0:
-        moves.append(_make_pawn_move(pos, fwd, color))
+    if in_bounds(fwd) and occ[fwd[2], fwd[1], fwd[0]] == 0:
+        flags = MOVE_FLAGS['PROMOTION'] if _is_promotion_rank(fwd[2], color) else 0
+        moves.append(Move(from_coord=pos, to_coord=fwd, flags=flags))
+
         # double push from start rank
         if _is_on_start_rank(z, color):
             dfwd = (x, y, z + 2 * dz)
-            if in_bounds(dfwd) and occ[dfwd] == 0:
-                moves.append(_make_pawn_move(pos, dfwd, color))
+            if in_bounds(dfwd) and occ[dfwd[2], dfwd[1], dfwd[0]] == 0:
+                flags = MOVE_FLAGS['PROMOTION'] if _is_promotion_rank(dfwd[2], color) else 0
+                moves.append(Move(from_coord=pos, to_coord=dfwd, flags=flags))
 
-    # ---------- captures ----------
-    enemy_code = 3 - own_code
-    ARMOUR_CODE = PieceType.ARMOUR.value | (enemy_code << 3)
+    # ---------- captures (trigonal) ----------
+    jump_gen = get_integrated_jump_movement_generator(cache)
+    capture_moves = jump_gen.generate_jump_moves(
+        color=color,
+        pos=pos,
+        directions=get_pawn_capture_dirs(color),
+        allow_capture=True,
+    )
 
-    for dx in (-1, 1):
-        for dy in (-1, 0, 1):
-            if dx == 0 and dy == 0:
-                continue
-            tgt = (x + dx, y + dy, z + dz)
-            if not in_bounds(tgt):
-                continue
-            tgt_code = occ[tgt]
-            if tgt_code == 0:
-                continue                      # empty
-            if tgt_code == ARMOUR_CODE:
-                continue                      # armour block
-            if (tgt_code & 0b111) == enemy_code:  # enemy piece
-                moves.append(_make_pawn_move(pos, tgt, color, flags=MOVE_FLAGS['CAPTURE']))
+    enemy_code = 2 if color == Color.WHITE else 1
+    ARMOUR_CODE = PieceType.ARMOUR.value
+
+    for mv in capture_moves:
+        tx, ty, tz = mv.to_coord
+        target_type = PieceType(piece_arr[tz, ty, tx])   # 0-15 fits into uint8
+        if target_type == PieceType.ARMOUR and occ[tz, ty, tx] == enemy_code:
+            continue
+
+        flags = MOVE_FLAGS['CAPTURE']
+        if _is_promotion_rank(tz, color):
+            flags |= MOVE_FLAGS['PROMOTION']
+
+        moves.append(Move(
+            from_coord=pos,
+            to_coord=(tx, ty, tz),
+            flags=flags,
+            captured_piece=piece_arr[tz, ty, tx],
+        ))
 
     # (en-passant can be added here later by consulting cache.ep_square)
     return moves
 
 # ------------------------------------------------------------------
-# tiny helper — builds Move with promotion logic
+#  Convenience export
 # ------------------------------------------------------------------
-def _make_pawn_move(
-    from_pos: tuple[int, int, int],
-    to_pos: tuple[int, int, int],
-    color: Color,
-    flags: int = 0  # Changed from is_capture to flags
-) -> Move:
-    _, _, tz = to_pos
-    is_promotion = (color == Color.WHITE and tz == 8) or (color == Color.BLACK and tz == 0)
-    return Move(
-        from_coord=from_pos,
-        to_coord=to_coord,
-        flags=flags,  # Use flags directly
-        is_promotion=is_promotion,
-        is_en_passant=False,
-        captured_piece=None
-    )
+def get_pawn_directions(color: Color) -> Tuple[np.ndarray, np.ndarray]:
+    return get_pawn_push_dirs(color), get_pawn_capture_dirs(color)

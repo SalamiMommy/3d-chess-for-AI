@@ -1,16 +1,17 @@
 """Mirror Teleport Move — implemented as a 1-direction jump through the
 existing IntegratedJumpMovementGenerator so all caching/GPU paths stay intact.
 """
-
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
 
-from game3d.pieces.enums import Color
-from game3d.movement.movepiece import Move
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.cache.manager import CacheManager
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 def generate_mirror_teleport_move(
     cache: CacheManager,

@@ -167,7 +167,10 @@ class OccupancyCache:
             z_coords, y_coords, x_coords = np.where(occupied_mask)
 
             # Get piece types for all coordinates
-            ptype_indices = np.argmax(piece_planes[:, z_coords, y_coords, x_coords], axis=0)
+            plane_data = piece_planes[:, z_coords, y_coords, x_coords]
+            ptype_indices = np.uint8(np.argmax(plane_data, axis=0))
+
+            assert ptype_indices.max() < 40, f"Illegal type index {ptype_indices.max()}"
 
             # Get color values and determine color codes
             color_values = color_plane[z_coords, y_coords, x_coords]
