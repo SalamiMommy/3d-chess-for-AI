@@ -27,6 +27,7 @@ from .move_utils import (
 if TYPE_CHECKING:
     from .gamestate import GameState
 
+_DEBUG_MOVE_COUNTER = 0
 # ------------------------------------------------------------------
 # VALIDATION
 # ------------------------------------------------------------------
@@ -78,6 +79,8 @@ def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     """Fixed move making with proper fifty-move rule implementation."""
+    global _DEBUG_MOVE_COUNTER
+
     if game_state.cache.piece_cache.get(mv.from_coord) is None:
         raise ValueError(f"make_move: no piece at {mv.from_coord}")
 
@@ -91,10 +94,13 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         if moving_piece.color != game_state.color:
             raise ValueError(f"Cannot move opponent's piece: {mv.from_coord}")
 
-        # Debug: Print the piece being moved
-        capture_marker = "x" if mv.is_capture else "-"
-        print(f"[DEBUG] Moving {moving_piece.color.name} {moving_piece.ptype.name} "
-            f"from {mv.from_coord} {capture_marker} {mv.to_coord}")
+        # Only print every 100th move
+        if _DEBUG_MOVE_COUNTER % 100 == 0:
+            capture_marker = "x" if mv.is_capture else "-"
+            print(f"[DEBUG] Moving {moving_piece.color.name} {moving_piece.ptype.name} "
+                  f"from {mv.from_coord} {capture_marker} {mv.to_coord}")
+
+        _DEBUG_MOVE_COUNTER += 1   # Increment the counter every move
 
         # Clone board
         new_board = Board(game_state.board.tensor().clone())
@@ -126,12 +132,12 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         is_capture = captured_piece is not None
 
         # Debug: Print when halfmove_clock would reset
-        if is_pawn or is_capture:
-            print(f"[DEBUG] Halfmove clock reset: pawn move={is_pawn}, capture={is_capture}")
-            if is_pawn:
-                print(f"[DEBUG] Pawn move detected: {moving_piece.color.name} pawn from {mv.from_coord} to {mv.to_coord}")
-            if is_capture:
-                print(f"[DEBUG] Capture detected: {captured_piece.color.name} {captured_piece.ptype.name} at {mv.to_coord}")
+        # if is_pawn or is_capture:
+        #     print(f"[DEBUG] Halfmove clock reset: pawn move={is_pawn}, capture={is_capture}")
+        #     if is_pawn:
+        #         print(f"[DEBUG] Pawn move detected: {moving_piece.color.name} pawn from {mv.from_coord} to {mv.to_coord}")
+        #     if is_capture:
+        #         print(f"[DEBUG] Capture detected: {captured_piece.color.name} {captured_piece.ptype.name} at {mv.to_coord}")
 
         new_clock = 0 if (is_pawn or is_capture) else game_state.halfmove_clock + 1
 

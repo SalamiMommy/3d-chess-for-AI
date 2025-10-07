@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass
+import numpy as np
 from enum import Enum
 import time
 from collections import defaultdict  # Added for pieces_by_type
@@ -119,40 +120,50 @@ def _validate_piece_moves(
     moves: List[Move],
     expected_coord: Tuple[int, int, int],
     piece,
-    state: GameState
+    state: "GameState"
 ) -> List[Move]:
-    """Enhanced validation for piece-generated moves."""
+    """
+    Enhanced validation for piece-generated moves.
+    Uses raw occupancy arrays for direct checks, avoiding batch_get_pieces overhead.
+    """
     if not moves:
         return moves
 
     validated_moves = []
     cache_manager = state.cache
 
-    # Pre-check if piece is frozen
+    # Pre-check if piece is frozen or debuffed
     is_frozen = cache_manager.is_frozen(expected_coord, piece.color)
     is_buffed = cache_manager.is_movement_buffed(expected_coord, piece.color)
-    is_debuffed = hasattr(cache_manager, "is_movement_debuffed") and cache_manager.is_movement_debuffed(expected_coord, piece.color)
+    is_debuffed = (
+        hasattr(cache_manager, "is_movement_debuffed")
+        and cache_manager.is_movement_debuffed(expected_coord, piece.color)
+    )
+
+    # Get raw numpy arrays (no locking needed for reads)
+    occ, _ptype = cache_manager.piece_cache.export_arrays()
+    color_code = piece.color.value  # 1 for white, 2 for black
 
     for move in moves:
-        # Basic validation
+        # 1. Check from-square
         if move.from_coord != expected_coord:
             continue
 
-        # Check bounds
+        # 2. Bounds check
         to_x, to_y, to_z = move.to_coord
-        if not (0 <= to_x < BOARD_SIZE and 0 <= to_y < BOARD_SIZE and 0 <= to_z < BOARD_SIZE):
+        if not (0 <= to_x < 9 and 0 <= to_y < 9 and 0 <= to_z < 9):
             continue
 
-        # Check destination piece
-        dest_piece = cache_manager.piece_cache.get(move.to_coord)
-        if dest_piece and dest_piece.color == piece.color:
+        # 3. Check destination occupancy/color DIRECTLY
+        dest_code = occ[to_z, to_y, to_x]
+        if dest_code == color_code:  # Friendly piece blocks move
             continue
 
-        # Check freeze effects
+        # 4. Check frozen effect
         if is_frozen:
             continue
 
-        # Check movement debuffs
+        # 5. Check movement debuff (restrict to distance 1 only)
         if is_debuffed:
             distance = max(
                 abs(move.to_coord[0] - move.from_coord[0]),

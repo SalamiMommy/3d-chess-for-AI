@@ -7,7 +7,7 @@ import struct
 from typing import Optional, Tuple, Dict, Any
 from enum import IntEnum
 import numpy as np
-
+from game3d.common.common import coord_to_idx, idx_to_coord
 # Move type flags as bit masks
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,
@@ -65,58 +65,16 @@ _move_pool = MovePool()
 
 
 class Move:
-    # __slots__ = ('_data', '_cached_hash', 'metadata')
-
-    # Class-level lookup tables for coordinate packing/unpacking
-    _coord_to_idx = {}
-    _idx_to_coord = {}
-    _initialized = False
-
-    @classmethod
-    def _init_lookups(cls):
-        """Initialize coordinate lookup tables once."""
-        if cls._initialized:
-            return
-        for x in range(9):
-            for y in range(9):
-                for z in range(9):
-                    idx = x * 81 + y * 9 + z
-                    coord = (x, y, z)
-                    cls._coord_to_idx[coord] = idx
-                    cls._idx_to_coord[idx] = coord
-        cls._initialized = True
-
     def __init__(
         self,
         from_coord: Tuple[int, int, int],
         to_coord: Tuple[int, int, int],
-        flags: int = 0,  # Use pre-combined flags instead of individual bools
+        flags: int = 0,
         captured_piece: Optional[int] = None,
         promotion_type: Optional[int] = None
     ):
-        """
-        Fast initialization with minimal overhead.
-
-        Args:
-            from_coord: Source coordinate
-            to_coord: Destination coordinate
-            flags: Bit flags for move properties
-            captured_piece: Captured piece type (as int)
-            promotion_type: Promotion piece type (as int)
-        """
-        if not self._initialized:
-            self._init_lookups()
-
-        # Pack everything into a single 64-bit integer
-        # Bits 0-9: from coordinate (0-728)
-        # Bits 10-19: to coordinate (0-728)
-        # Bits 20-27: flags
-        # Bits 28-33: captured piece type
-        # Bits 34-39: promotion piece type
-
-        from_idx = self._coord_to_idx[from_coord]
-        to_idx = self._coord_to_idx[to_coord]
-
+        from_idx = coord_to_idx(from_coord)
+        to_idx = coord_to_idx(to_coord)
         self._data = (
             from_idx |
             (to_idx << 10) |
@@ -124,10 +82,16 @@ class Move:
             ((captured_piece or 0) << 28) |
             ((promotion_type or 0) << 34)
         )
-
-        # Cache hash for fast lookups
         self._cached_hash = hash(self._data)
         self.metadata = {}
+
+    @property
+    def from_coord(self) -> Tuple[int, int, int]:
+        return idx_to_coord(self._data & 0x3FF)
+
+    @property
+    def to_coord(self) -> Tuple[int, int, int]:
+        return idx_to_coord((self._data >> 10) & 0x3FF)
 
     @classmethod
     def create_simple(cls, from_coord: Tuple[int, int, int],
@@ -171,16 +135,6 @@ class Move:
             moves.append(move)
 
         return moves
-
-    @property
-    def from_coord(self) -> Tuple[int, int, int]:
-        """Extract source coordinate."""
-        return self._idx_to_coord[self._data & 0x3FF]
-
-    @property
-    def to_coord(self) -> Tuple[int, int, int]:
-        """Extract destination coordinate."""
-        return self._idx_to_coord[(self._data >> 10) & 0x3FF]
 
     @property
     def is_capture(self) -> bool:

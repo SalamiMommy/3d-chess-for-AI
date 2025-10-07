@@ -122,10 +122,10 @@ def is_fifty_move_draw(game_state) -> bool:
     # In chess, the fifty-move rule is 50 moves by each player (100 half-moves)
     # without a pawn move or capture
     if game_state.halfmove_clock >= 100:
-        print(f"[DEBUG] Fifty-move draw: halfmove_clock = {game_state.halfmove_clock}")
+        # print(f"[DEBUG] Fifty-move draw: halfmove_clock = {game_state.halfmove_clock}")
 
         # Let's check the last few moves to see if there were pawn moves or captures
-        print("[DEBUG] Checking last 10 moves for pawn moves or captures:")
+        # print("[DEBUG] Checking last 10 moves for pawn moves or captures:")
         pawn_or_capture_found = False
 
         # Look at the last 10 moves (or fewer if not enough history)
@@ -157,7 +157,7 @@ def is_fifty_move_draw(game_state) -> bool:
                 pawn_or_capture_found = True
 
         if pawn_or_capture_found:
-            print("[DEBUG] Pawn move or capture found in recent history - fifty-move rule should not apply!")
+            # print("[DEBUG] Pawn move or capture found in recent history - fifty-move rule should not apply!")
             return False
         else:
             print("[DEBUG] No pawn moves or captures found in recent history")
