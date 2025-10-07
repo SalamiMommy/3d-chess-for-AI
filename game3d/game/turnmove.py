@@ -71,8 +71,7 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
         return moves
 
 def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
-    """Fast pseudo-legal move generation."""
-    return generate_pseudo_legal_moves(game_state.board, game_state.color, game_state.cache)
+    return generate_pseudo_legal_moves(game_state)
 
 # ------------------------------------------------------------------
 # OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
