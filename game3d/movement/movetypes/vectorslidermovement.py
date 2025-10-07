@@ -1,12 +1,15 @@
 """3D Vector-Slider — moves along ANY integer vector with ratios up to 3 via slidermovement."""
-
-import numpy as np
-from typing import List
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move
-from game3d.movement.movetypes.slidermovement import get_slider_generator
+from __future__ import annotations
 from math import gcd
-from game3d.cache.manager import OptimizedCacheManager
+from typing import List, Tuple, TYPE_CHECKING
+import numpy as np
+
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
+from game3d.movement.movetypes.slidermovement import get_slider_generator
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # ---------------------------------------------------------------------------
 # Pre-compute primitive directions with |dx|,|dy|,|dz| <= 3

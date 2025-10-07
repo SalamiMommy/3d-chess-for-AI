@@ -1,12 +1,16 @@
 # game3d/movement/movetypes/xz_zigzag_movement.py
 """XZ-Zig-Zag Slider — zig-zag rays via slidermovement engine."""
+from __future__ import annotations
 
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
-from typing import List
-from game3d.pieces.enums import Color
+
+from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS
-from game3d.movement.movetypes.slidermovement import generate_slider_moves_kernel
-from game3d.cache.manager import OptimizedCacheManager
+from game3d.common.common import in_bounds
+from game3d.movement.movetypes.slidermovement import get_slider_generator, generate_slider_moves_kernel
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # ---------------------------------------------------------------------------
 #  Pre-build every square visited by every zig-zag ray

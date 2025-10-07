@@ -2,14 +2,15 @@
 but uses the integrated *jump* engine for final square legality."""
 from __future__ import annotations
 
-from typing import List, Dict, Tuple
-from collections import deque
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
-
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move
-from game3d.cache.manager import OptimizedCacheManager
+from collections import deque
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # ------------------------------------------------------------------
 #  Pre-computed edge adjacency graph  (unchanged)

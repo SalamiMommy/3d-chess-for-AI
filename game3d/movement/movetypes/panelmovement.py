@@ -1,13 +1,15 @@
 """Panel piece — 6 orthogonal 3×3 walls 2 steps away, computed via the jump engine."""
-
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
 
-from game3d.pieces.enums import Color
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.cache.manager import CacheManager
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # 54 offsets: six 3×3 walls, 2 units away along each axis
 # game3d/movement/movetypes/panelmovement.py  (top portion)

@@ -1,11 +1,15 @@
 """3D Rook move generation — orthogonal rays via slidermovement engine."""
+from __future__ import annotations
 
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
-from typing import List
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move
+
+from game3d.pieces.enums import Color, PieceType
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.common.common import in_bounds
 from game3d.movement.movetypes.slidermovement import get_slider_generator
-from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 # 6 orthogonal directions (±X, ±Y, ±Z)
 ROOK_DIRECTIONS_3D = np.array([

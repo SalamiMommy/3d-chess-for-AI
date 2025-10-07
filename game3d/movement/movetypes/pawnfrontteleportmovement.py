@@ -1,16 +1,17 @@
 """Pawn-Front Teleporter — teleport to empty square directly in front of any enemy pawn.
 Zero-redundancy via the jump engine (dynamic directions).
 """
-
 from __future__ import annotations
 
-from typing import List, Set
+from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.cache.manager import CacheManager
+from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.common.common import in_bounds
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager as CacheManager
 
 def generate_pawn_front_teleport_moves(
     cache: CacheManager,
