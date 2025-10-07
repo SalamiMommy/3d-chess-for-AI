@@ -1,4 +1,4 @@
-"""Self-play data generation for 3D chess training."""
+"""Self-play data generation for 3D chess training with custom opponents."""
 import builtins, sys, traceback, inspect, linecache
 
 _real_get = builtins.__getattribute__
@@ -37,6 +37,13 @@ from game3d.game3d import OptimizedGame3D  # Import the game controller
 from training.types import TrainingExample  # Shared dataclass
 from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
 
+# IMPORT OPPONENT MODULE
+from training.opponents import (
+    create_opponent,
+    AVAILABLE_OPPONENTS,
+    OpponentBase,
+)
+
 class MoveEncoder:
     def coord_to_index(self, coord: Coord) -> int:
         return coord_to_idx(coord)
@@ -49,15 +56,15 @@ def index_to_move(idx: int) -> tuple[Coord, Coord]:
     from_idx = idx // VOLUME
     return idx_to_coord(from_idx), idx_to_coord(to_idx)
 
-# In self_play.py
 class SelfPlayGenerator:
-    """Generate training data through self-play with robust cache handling."""
+    """Generate training data through self-play with robust cache handling and custom opponents."""
 
     def __init__(
         self,
         model: torch.nn.Module,
         device: str = "cuda",
         temperature: float = 1.0,
+        opponent_types: Optional[List[str]] = None,
     ):
         self.model = model.to(device).eval()
         self.device = device
@@ -67,6 +74,22 @@ class SelfPlayGenerator:
         self._state_tensor_cache = {}
         self._cache_hits = 0
         self._cache_misses = 0
+
+        # Choose opponent types for each color (alternate if multiple provided)
+        self.opponent_types = opponent_types or ["adversarial", "center_control"]
+        if len(self.opponent_types) == 1:
+            self.opponent_types = [self.opponent_types[0], self.opponent_types[0]]
+        elif len(self.opponent_types) == 2:
+            pass
+        else:
+            # More than 2: cycle through
+            self.opponent_types = self.opponent_types[:2]
+
+        # Instantiate opponents
+        self.opponents = {
+            Color.WHITE: create_opponent(self.opponent_types[0], Color.WHITE),
+            Color.BLACK: create_opponent(self.opponent_types[1], Color.BLACK),
+        }
 
     def _get_state_tensor(self, game_state: GameState) -> torch.Tensor:
         """Get state tensor with caching."""
@@ -92,11 +115,47 @@ class SelfPlayGenerator:
 
         return state_tensor
 
+    def _choose_move_with_opponent(self, game: OptimizedGame3D, policy_logits, legal_moves) -> Move:
+        """Choose a move using opponent reward logic and policy probabilities."""
+        color = game.state.color
+        opponent: OpponentBase = self.opponents[color]
+
+        # Compute policy probabilities
+        move_encoder = self.move_encoder
+        from_logits, to_logits = policy_logits
+
+        move_scores = []
+        move_probs = []
+        for mv in legal_moves:
+            f_idx = move_encoder.coord_to_index(mv.from_coord)
+            t_idx = move_encoder.coord_to_index(mv.to_coord)
+            logit = from_logits[0, f_idx] + to_logits[0, t_idx]
+            move_probs.append(logit)
+
+        move_probs_tensor = torch.stack(move_probs)
+        move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
+
+        # Compute reward for each move (use current state)
+        rewards = []
+        for mv in legal_moves:
+            reward = opponent.reward(game.state, mv)
+            rewards.append(reward)
+
+        rewards_np = np.array(rewards)
+        # Mix policy and reward: score = policy_prob + alpha * reward
+        alpha = 0.5  # Can be tuned
+        scores = move_probs_tensor.cpu().numpy() + alpha * rewards_np
+
+        # Pick move with highest score (or sample stochastically)
+        best_idx = int(np.argmax(scores))
+        chosen_move = legal_moves[best_idx]
+        return chosen_move
+
     def _try_one_move(self, game: OptimizedGame3D) -> list:
         """Ask the engine for the next move and decorate every exception
         with the piece type that was being processed."""
         try:
-            return game.state.legal_moves()          # <-- the call that explodes
+            return game.state.legal_moves()
         except NameError as exc:
             # ----  find out which piece was on the square  ----
             sq = game.state.board.active_king_coord   # fallback
@@ -144,7 +203,7 @@ class SelfPlayGenerator:
                 raise type(exc)(new_msg) from exc
 
     def generate_game(self, max_moves: int = 200) -> List[TrainingExample]:
-        """Generate a single game with robust error handling using OptimizedGame3D."""
+        """Generate a single game with robust error handling using OptimizedGame3D and custom opponents."""
         game = OptimizedGame3D()
         game.toggle_debug_turn_info(False)
         examples = []
@@ -185,30 +244,29 @@ class SelfPlayGenerator:
                     print(f"[DEBUG] No legal moves found at move {move_count}")
                     break
 
-                # Compute move logits
-                move_logits = []
+                # Use opponent logic to choose move
+                chosen_move = self._choose_move_with_opponent(game, (from_logits, to_logits), legal_moves)
+
+                # Compute marginal from and to targets (using policy only for training)
+                move_encoder = self.move_encoder
                 from_indices = []
                 to_indices = []
+                move_probs = []
                 for mv in legal_moves:
-                    f_idx = self.move_encoder.coord_to_index(mv.from_coord)
-                    t_idx = self.move_encoder.coord_to_index(mv.to_coord)
+                    f_idx = move_encoder.coord_to_index(mv.from_coord)
+                    t_idx = move_encoder.coord_to_index(mv.to_coord)
                     logit = from_logits[0, f_idx] + to_logits[0, t_idx]
-                    move_logits.append(logit)
+                    move_probs.append(logit)
                     from_indices.append(f_idx)
                     to_indices.append(t_idx)
 
-                move_logits = torch.stack(move_logits)
-                move_probs = torch.softmax(move_logits, dim=0)
+                move_probs_tensor = torch.stack(move_probs)
+                move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
 
-                # Sample move
-                chosen_idx = torch.multinomial(move_probs, num_samples=1).item()
-                chosen_move = legal_moves[chosen_idx]
-
-                # Compute marginal from and to targets
                 from_target = torch.zeros(729, device=self.device)
                 to_target   = torch.zeros(729, device=self.device)
                 for i in range(len(legal_moves)):
-                    prob = move_probs[i]
+                    prob = move_probs_tensor[i]
                     from_target[from_indices[i]] += prob
                     to_target[to_indices[i]] += prob
                 if from_target.sum() > 0:
@@ -293,17 +351,17 @@ class SelfPlayGenerator:
 
         return examples
 
-def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cuda") -> List[TrainingExample]:
-    """Self-play a single game."""
-    generator = SelfPlayGenerator(model, device=device)
+def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cuda", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+    """Self-play a single game using custom opponents."""
+    generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types)
     return generator.generate_game(max_moves)
 
-def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cuda") -> List[TrainingExample]:
-    """Generate examples from multiple self-play games."""
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cuda", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+    """Generate examples from multiple self-play games using custom opponents."""
     all_examples = []
     for game_idx in range(num_games):
         print(f"Generating game {game_idx + 1}/{num_games}")
-        game_examples = play_game(model, max_moves, device)
+        game_examples = play_game(model, max_moves, device, opponent_types=opponent_types)
         all_examples.extend(game_examples)
     print(f"Total examples generated: {len(all_examples)}")
     return all_examples
