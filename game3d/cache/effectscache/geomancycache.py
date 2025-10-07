@@ -1,16 +1,21 @@
 """Incremental cache for Geomancy blocked squares (5-ply expiry)."""
 
 from __future__ import annotations
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, TYPE_CHECKING
 from game3d.pieces.enums import Color
 from game3d.effects.geomancy import block_candidates
 from game3d.movement.movepiece import Move
 
-class GeomancyCache:
-    __slots__ = ("_blocks",)
+if TYPE_CHECKING:
+    from game3d.board.board import Board
 
-    def __init__(self) -> None:
+class GeomancyCache:
+    __slots__ = ("_blocks", "_cache_manager")
+
+    def __init__(self, cache_manager=None) -> None:
         self._blocks: Dict[Tuple[int, int, int], int] = {}
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
     def is_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
         """Check if square is blocked and clean up expired entries."""
@@ -22,7 +27,14 @@ class GeomancyCache:
 
     def block_square(self, sq: Tuple[int, int, int], current_ply: int, board: Board) -> bool:
         """Manually block a square if empty and not already blocked."""
-        if cache.piece_cache.get(sq) is not None:
+        # Use cache manager to check if square is occupied
+        if self._cache_manager:
+            piece = self._cache_manager.piece_cache.get(sq)
+        else:
+            # Fallback to board method if cache manager not available
+            piece = board.get_piece(sq)
+
+        if piece is not None:
             return False
         if self.is_blocked(sq, current_ply):
             return False
@@ -32,7 +44,13 @@ class GeomancyCache:
     def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
         """Apply geomancy blocking for the player who just moved."""
         # ← FIX: Use mover, not mover.opposite()
-        for sq in block_candidates(board, mover):
+        if self._cache_manager:
+            candidates = block_candidates(board, mover, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            candidates = block_candidates(board, mover, None)
+
+        for sq in candidates:
             if not self.is_blocked(sq, current_ply):
                 self._blocks[sq] = current_ply + 5
 
@@ -53,3 +71,13 @@ class GeomancyCache:
         expired_squares = [sq for sq, expiry in self._blocks.items() if current_ply >= expiry]
         for sq in expired_squares:
             del self._blocks[sq]
+
+    def clear(self) -> None:
+        """Clear all cached data."""
+        self._blocks.clear()
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache statistics for performance monitoring."""
+        return {
+            'blocked_squares': len(self._blocks),
+        }

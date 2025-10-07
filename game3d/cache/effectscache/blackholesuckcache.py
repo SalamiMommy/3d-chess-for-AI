@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import weakref
 
-from game3d.pieces.enums import Color
+from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.blackholesuck import suck_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
@@ -38,10 +38,11 @@ class OptimizedBlackHoleSuckCache:
 
     __slots__ = (
         "_pull_map", "_black_hole_positions", "_affected_squares",
-        "_board_ref", "_last_board_hash", "_dirty_flags", "_pull_chains"
+        "_board_ref", "_last_board_hash", "_dirty_flags", "_pull_chains",
+        "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core pull maps
         self._pull_map: Dict[Color, Dict[Tuple[int, int, int], Tuple[int, int, int]]] = {
             Color.WHITE: {},
@@ -74,6 +75,9 @@ class OptimizedBlackHoleSuckCache:
             'pull_map': True,
             'chains': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -130,12 +134,22 @@ class OptimizedBlackHoleSuckCache:
     def _move_affects_black_holes(self, mv: Move, board: Board) -> bool:
         """Check if move affects black holes (piece moved, captured, or black hole moved)."""
         # Check if moved piece is a black hole
-        moved_piece = cache.piece_cache.get(mv.from_coord)
+        if self._cache_manager:
+            moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            moved_piece = board.get_piece(mv.from_coord)
+
         if moved_piece and moved_piece.ptype == PieceType.BLACK_HOLE:
             return True
 
         # Check if destination had a black hole (captured)
-        dest_piece = cache.piece_cache.get(mv.to_coord)
+        if self._cache_manager:
+            dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            dest_piece = board.get_piece(mv.to_coord)
+
         if dest_piece and dest_piece.ptype == PieceType.BLACK_HOLE:
             return True
 
@@ -196,7 +210,11 @@ class OptimizedBlackHoleSuckCache:
         self._pull_chains[color].clear()
 
         # Rebuild from scratch for this color
-        candidates = suck_candidates(board, color)
+        if self._cache_manager:
+            candidates = suck_candidates(board, color, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            candidates = suck_candidates(board, color, None)
 
         # Build pull map and track affected squares
         for from_sq, to_sq in candidates.items():
@@ -305,9 +323,9 @@ class OptimizedBlackHoleSuckCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_black_hole_cache(board: Optional[Board] = None) -> OptimizedBlackHoleSuckCache:
+def create_optimized_black_hole_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedBlackHoleSuckCache:
     """Factory function for creating optimized cache."""
-    return OptimizedBlackHoleSuckCache(board)
+    return OptimizedBlackHoleSuckCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -316,5 +334,19 @@ def create_optimized_black_hole_cache(board: Optional[Board] = None) -> Optimize
 class BlackHoleSuckCache(OptimizedBlackHoleSuckCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild
+
+# ------------------------------------------------------------------
+# singleton
+# ------------------------------------------------------------------
+_black_hole_cache: Optional[BlackHoleSuckCache] = None
+
+def init_black_hole_suck_cache(cache_manager=None) -> None:
+    global _black_hole_cache
+    _black_hole_cache = BlackHoleSuckCache(cache_manager)
+
+def get_black_hole_suck_cache() -> BlackHoleSuckCache:
+    if _black_hole_cache is None:
+        raise RuntimeError("BlackHoleSuckCache not initialised")
+    return _black_hole_cache

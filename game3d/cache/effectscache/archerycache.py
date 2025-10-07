@@ -1,7 +1,7 @@
 """Optimized incremental cache for Archery attack targets on 2-radius sphere surface."""
 
 from __future__ import annotations
-from typing import List, Tuple, Optional, Dict, Set, Any
+from typing import List, Tuple, Optional, Dict, Set, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 import weakref
@@ -11,6 +11,9 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.effects.archery import archery_targets
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
+
+if TYPE_CHECKING:
+    from game3d.board.board import Board
 
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
@@ -40,10 +43,10 @@ class OptimizedArcheryCache:
     __slots__ = (
         "_targets", "_archer_positions", "_sphere_surface_squares",
         "_board_ref", "_last_board_hash", "_dirty_flags", "_target_tracking",
-        "_line_of_sight", "_attack_ranges"
+        "_line_of_sight", "_attack_ranges", "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core attack targets
         self._targets: Dict[Color, List[Tuple[int, int, int]]] = {
             Color.WHITE: [],
@@ -79,6 +82,9 @@ class OptimizedArcheryCache:
             'targets': True,
             'los': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -124,8 +130,14 @@ class OptimizedArcheryCache:
 
     def _move_affects_cache(self, mv: Move, board: Board) -> bool:
         """Check if move involves pieces that affect this cache."""
-        from_piece = cache.piece_cache.get(mv.from_coord)
-        to_piece = cache.piece_cache.get(mv.to_coord)
+        # Use cache manager to get pieces
+        if self._cache_manager:
+            from_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+            to_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            from_piece = board.get_piece(mv.from_coord)
+            to_piece = board.get_piece(mv.to_coord)
 
         # Archers and high-value targets affect cache
         relevant_types = {PieceType.ARCHER, PieceType.KING, PieceType.QUEEN, PieceType.ROOK}
@@ -134,13 +146,6 @@ class OptimizedArcheryCache:
             (from_piece and from_piece.ptype in relevant_types) or
             (to_piece and to_piece.ptype in relevant_types)
         )
-
-        # Also check if move affects line of sight
-        if not affects_cache:
-            for color in (Color.WHITE, Color.BLACK):
-                if (mv.from_coord in self._affected_squares[color] or
-                    mv.to_coord in self._affected_squares[color]):
-                    return True
 
         return affects_cache
 
@@ -216,7 +221,12 @@ class OptimizedArcheryCache:
     def _is_valid_target(self, board: Board, target_sq: Tuple[int, int, int], controller: Color) -> bool:
         """Check if square is a valid attack target."""
         # Must be occupied by enemy piece
-        piece = cache.piece_cache.get(target_sq)
+        if self._cache_manager:
+            piece = self._cache_manager.piece_cache.get(target_sq)
+        else:
+            # Fallback to board method if cache manager not available
+            piece = board.get_piece(target_sq)
+
         if not piece or piece.color == controller:
             return False
 
@@ -234,12 +244,17 @@ class OptimizedArcheryCache:
         path_squares = self._get_path_squares(from_sq, to_sq)
 
         for sq in path_squares[1:-1]:  # Exclude start and end
-            if cache.piece_cache.get(sq) is not None:
-                return False
+            if self._cache_manager:
+                if self._cache_manager.piece_cache.get(sq) is not None:
+                    return False
+            else:
+                # Fallback to board method if cache manager not available
+                if board.get_piece(sq) is not None:
+                    return False
 
         return True
 
-    def _calculate_sphere_surface_squares(self, center: Tuple[int, int, int], radius: float) -> Set[Tuple[int, int, int]]:
+    def _calculate_sphere_surface(self, center: Tuple[int, int, int], radius: float) -> Set[Tuple[int, int, int]]:
         """Calculate squares on sphere surface with given radius."""
         surface_squares = set()
         cx, cy, cz = center
@@ -265,7 +280,7 @@ class OptimizedArcheryCache:
     def _is_on_sphere_surface(self, center: Tuple[int, int, int], target: Tuple[int, int, int], radius: float) -> bool:
         """Check if target is on sphere surface around center."""
         if center not in self._sphere_surface_squares:
-            self._sphere_surface_squares[center] = self._calculate_sphere_surface_squares(center, radius)
+            self._sphere_surface_squares[center] = self._calculate_sphere_surface(center, radius)
         return target in self._sphere_surface_squares[center]
 
     def _calculate_distance(self, from_sq: Tuple[int, int, int], to_sq: Tuple[int, int, int]) -> float:
@@ -370,9 +385,9 @@ class OptimizedArcheryCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_archery_cache(board: Optional[Board] = None) -> OptimizedArcheryCache:
+def create_optimized_archery_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedArcheryCache:
     """Factory function for creating optimized cache."""
-    return OptimizedArcheryCache(board)
+    return OptimizedArcheryCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -381,5 +396,19 @@ def create_optimized_archery_cache(board: Optional[Board] = None) -> OptimizedAr
 class ArcheryCache(OptimizedArcheryCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild
+
+# ------------------------------------------------------------------
+# singleton
+# ------------------------------------------------------------------
+_archery_cache: Optional[ArcheryCache] = None
+
+def init_archery_cache(cache_manager=None) -> None:
+    global _archery_cache
+    _archery_cache = ArcheryCache(cache_manager)
+
+def get_archery_cache() -> ArcheryCache:
+    if _archery_cache is None:
+        raise RuntimeError("ArcheryCache not initialised")
+    return _archery_cache

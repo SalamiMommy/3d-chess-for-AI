@@ -1,12 +1,14 @@
 """Black-Hole Suck – at end of controller's turn, pull enemies 1 step closer."""
 
 from __future__ import annotations
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, TYPE_CHECKING
 from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.aura import sphere_centre, BoardProto
 from game3d.movement.movepiece import Move
 from game3d.common.common import add_coords, in_bounds
 
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 
 def _toward(pos: Tuple[int, int, int], target: Tuple[int, int, int]) -> Tuple[int, int, int]:
     """1 Chebyshev step from pos toward target."""
@@ -18,7 +20,7 @@ def _toward(pos: Tuple[int, int, int], target: Tuple[int, int, int]) -> Tuple[in
     return add_coords(pos, (dx, dy, dz))
 
 
-def suck_candidates(board: BoardProto, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
+def suck_candidates(board: BoardProto, controller: Color, cache_manager: Optional[OptimizedCacheManager] = None) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
     """
     Return dict {enemy_square: pull_target} for every enemy inside 2-sphere of any friendly BLACK_HOLE.
     Pull target is 1 step toward the **nearest** hole (simplest: first hole found).

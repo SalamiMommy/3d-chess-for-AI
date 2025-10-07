@@ -318,24 +318,24 @@ def count_parameters(model: nn.Module) -> int:
     """Count total parameters in model."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def model_summary(model: nn.Module, input_size: tuple = (1, N_CHANNELS, 9, 9, 9)):
-    """Print model summary."""
-    print(f"Model: {model.__class__.__name__}")
-    print(f"Total parameters: {count_parameters(model):,}")
-
-    # Test forward pass
-    x = torch.randn(input_size)
-    with torch.no_grad():
-        outputs = model(x)
-        print(f"Number of outputs: {len(outputs)}")
-        if len(outputs) == 3:
-            from_logits, to_logits, value = outputs
-            print(f"Input shape: {x.shape}")
-            print(f"From logits shape: {from_logits.shape}")
-            print(f"To logits shape: {to_logits.shape}")
-            print(f"Value shape: {value.shape}")
-        else:
-            print(f"Unexpected number of outputs: {len(outputs)}")
+# def model_summary(model: nn.Module, input_size: tuple = (1, N_CHANNELS, 9, 9, 9)):
+#     """Print model summary."""
+#     print(f"Model: {model.__class__.__name__}")
+#     print(f"Total parameters: {count_parameters(model):,}")
+#
+#     # Test forward pass
+#     x = torch.randn(input_size)
+#     with torch.no_grad():
+#         outputs = model(x)
+#         print(f"Number of outputs: {len(outputs)}")
+#         if len(outputs) == 3:
+#             from_logits, to_logits, value = outputs
+#             print(f"Input shape: {x.shape}")
+#             print(f"From logits shape: {from_logits.shape}")
+#             print(f"To logits shape: {to_logits.shape}")
+#             print(f"Value shape: {value.shape}")
+#         else:
+#             print(f"Unexpected number of outputs: {len(outputs)}")
 
 # Example usage
 if __name__ == "__main__":

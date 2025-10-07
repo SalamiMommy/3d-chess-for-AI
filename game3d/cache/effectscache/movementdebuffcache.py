@@ -37,10 +37,11 @@ class OptimizedMovementDebuffCache:
 
     __slots__ = (
         "_debuffed", "_debuff_sources", "_affected_squares",
-        "_board_ref", "_last_board_hash", "_dirty_flags", "_source_tracking"
+        "_board_ref", "_last_board_hash", "_dirty_flags", "_source_tracking",
+        "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core debuffed squares
         self._debuffed: Dict[Color, Set[Tuple[int, int, int]]] = {
             Color.WHITE: set(),
@@ -72,6 +73,9 @@ class OptimizedMovementDebuffCache:
             'sources': True,
             'debuffed': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -117,12 +121,22 @@ class OptimizedMovementDebuffCache:
     def _move_affects_debuff_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects debuff sources (piece moved, captured, or near debuff sources)."""
         # Check if moved piece is a debuff source
-        moved_piece = cache.piece_cache.get(mv.from_coord)
+        if self._cache_manager:
+            moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            moved_piece = board.get_piece(mv.from_coord)
+
         if moved_piece and self._is_debuff_source(moved_piece):
             return True
 
         # Check if destination had a debuff source (captured)
-        dest_piece = cache.piece_cache.get(mv.to_coord)
+        if self._cache_manager:
+            dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            dest_piece = board.get_piece(mv.to_coord)
+
         if dest_piece and self._is_debuff_source(dest_piece):
             return True
 
@@ -191,7 +205,13 @@ class OptimizedMovementDebuffCache:
 
         # Rebuild from scratch for this color
         enemy_color = Color.BLACK if color == Color.WHITE else Color.WHITE
-        debuffed = debuffed_squares(board, enemy_color)
+
+        # Pass cache manager to debuffed_squares
+        if self._cache_manager:
+            debuffed = debuffed_squares(board, enemy_color, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            debuffed = debuffed_squares(board, enemy_color, None)
 
         # Build debuffed set and track affected squares
         for sq in debuffed:
@@ -288,9 +308,9 @@ class OptimizedMovementDebuffCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_movement_debuff_cache(board: Optional[Board] = None) -> OptimizedMovementDebuffCache:
+def create_optimized_movement_debuff_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedMovementDebuffCache:
     """Factory function for creating optimized cache."""
-    return OptimizedMovementDebuffCache(board)
+    return OptimizedMovementDebuffCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -299,17 +319,17 @@ def create_optimized_movement_debuff_cache(board: Optional[Board] = None) -> Opt
 class MovementDebuffCache(OptimizedMovementDebuffCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild
 
 # ------------------------------------------------------------------
 # singleton
 # ------------------------------------------------------------------
 _debuff_cache: Optional[MovementDebuffCache] = None
 
-def init_movement_debuff_cache() -> None:
+def init_movement_debuff_cache(cache_manager=None) -> None:
     global _debuff_cache
-    _debuff_cache = MovementDebuffCache()
+    _debuff_cache = MovementDebuffCache(cache_manager)
 
 def get_movement_debuff_cache() -> MovementDebuffCache:
     if _debuff_cache is None:

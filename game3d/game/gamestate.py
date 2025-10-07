@@ -7,16 +7,17 @@ Optimized 9×9×9 game state with incremental updates, caching, and performance 
 
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING
-from enum import Enum  # Add this import
+from enum import Enum
 
 import torch
-
+import numpy as np
 from game3d.board.board import Board
 from game3d.pieces.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
 from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
 from game3d.pieces.piece import Piece
+from game3d.cache.effects_cache import EffectsCache  # Import EffectsCache
 
 from .zobrist import compute_zobrist
 from .performance import PerformanceMetrics
@@ -60,21 +61,14 @@ class GameState:
     # Move enrichment cache for undo
     _undo_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
-    def __init__(self, board: Board, color: Color, cache: OptimizedCacheManager,
-                 history: Tuple[Move, ...] = (), halfmove_clock: int = 0,
-                 game_mode: GameMode = GameMode.STANDARD, turn_number: int = 1):
-        self.board = board
-        self.color = color
-        self.cache = cache
-        self.history = history
-        self.halfmove_clock = halfmove_clock
-        self.game_mode = game_mode
-        self.turn_number = turn_number
-        self._zkey = compute_zobrist(board, color)
+    # Effects cache
+    effects: EffectsCache = field(init=False, repr=False)
 
+    def __post_init__(self):
+        # Initialize effects cache with this game state
+        self.effects = EffectsCache(self.board, self.cache)
+        self._zkey = compute_zobrist(self.board, self.color)
         self._metrics = PerformanceMetrics()
-
-        # Initialize caches
         self._clear_caches()
 
     # ------------------------------------------------------------------
@@ -86,33 +80,150 @@ class GameState:
         return self._zkey
 
     # ------------------------------------------------------------------
+    # CACHE ACCESS PROPERTIES
+    # ------------------------------------------------------------------
+    @property
+    def piece_cache(self):
+        """Access to the piece cache through the cache manager."""
+        return self.cache.piece_cache
+
+    @property
+    def occupancy_cache(self):
+        """Access to the occupancy cache through the cache manager."""
+        return self.cache.occupancy
+
+    # ------------------------------------------------------------------
+    # EFFECT ACCESS METHODS
+    # ------------------------------------------------------------------
+    def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
+        """Check if a piece is frozen."""
+        return self.cache.is_frozen(sq, victim)
+
+    def is_movement_buffed(self, sq: Tuple[int, int, int], friendly: Color) -> bool:
+        """Check if a piece has movement buff."""
+        return self.cache.is_movement_buffed(sq, friendly)
+
+    def is_movement_debuffed(self, sq: Tuple[int, int, int], victim: Color) -> bool:
+        """Check if a piece has movement debuff."""
+        return self.cache.is_movement_debuffed(sq, victim)
+
+    def black_hole_pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
+        """Get black hole pull targets."""
+        return self.cache.black_hole_pull_map(controller)
+
+    def white_hole_push_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
+        """Get white hole push targets."""
+        return self.cache.white_hole_push_map(controller)
+
+    def current_trail_squares(self, controller: Color) -> Set[Tuple[int, int, int]]:
+        """Get current trailblaze trail squares."""
+        return self.cache.current_trail_squares(controller)
+
+    def is_geomancy_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
+        """Check if a square is blocked by geomancy."""
+        return self.cache.is_geomancy_blocked(sq, current_ply)
+
+    def archery_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
+        """Get archery attack targets."""
+        return self.cache.archery_targets(controller)
+
+    def is_valid_archery_attack(self, sq: Tuple[int, int, int], controller: Color) -> bool:
+        """Validate archery attack."""
+        return self.cache.is_valid_archery_attack(sq, controller)
+
+    def can_capture_wall(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
+        """Check if a wall can be captured."""
+        return self.cache.can_capture_wall(attacker_sq, wall_sq, controller)
+
+    def pieces_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
+        """Get pieces at a square (for share square effect)."""
+        return self.cache.pieces_at(sq)
+
+    def top_piece(self, sq: Tuple[int, int, int]) -> Optional[Piece]:
+        """Get top piece at a square."""
+        return self.cache.top_piece(sq)
+
+    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
+        """Get squares attacked by a color."""
+        return self.cache.get_attacked_squares(color)
+
+    # ------------------------------------------------------------------
     # TENSOR REPRESENTATION WITH CACHING
     # ------------------------------------------------------------------
     def to_tensor(self, device: Optional[torch.device | str] = None) -> torch.Tensor:
-        """
-        Return the 3-D board as a (C, D, H, W) tensor.
-        If *device* is given the tensor is created on that device.
-        """
+        """Return the 3-D board as a (C, D, H, W) tensor with caching."""
+        # Create a cache key based on board state and current player
+        cache_key = (self.board.byte_hash(), self.color)
+
+        # Return cached tensor if available and valid
+        if (self._tensor_cache is not None and
+            self._tensor_cache_key == cache_key and
+            (device is None or self._tensor_cache.device == torch.device(device))):
+            if device is not None:
+                return self._tensor_cache.to(device)
+            return self._tensor_cache
+
+        # Generate new tensor
         tensor = torch.zeros(
             (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X),
             dtype=torch.float32,
             device=device,
         )
 
-        for coord, piece in self.board.list_occupied():
-            x, y, z = coord
-            if not (0 <= x < SIZE_X and 0 <= y < SIZE_Y and 0 <= z < SIZE_Z):
+        # Use vectorized operations instead of loops
+        # Get all occupied coordinates and pieces at once
+        occupied_data = list(self.board.list_occupied())
+        if not occupied_data:
+            # No pieces on board
+            tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
+            self._tensor_cache = tensor
+            self._tensor_cache_key = cache_key
+            return tensor
+
+        # Extract coordinates and pieces separately
+        coords, pieces = zip(*occupied_data)
+        x_coords, y_coords, z_coords = zip(*coords)
+
+        # Convert to numpy arrays for vectorized operations
+        x_coords = np.array(x_coords)
+        y_coords = np.array(y_coords)
+        z_coords = np.array(z_coords)
+
+        # Process pieces in batches by color
+        for piece_color in [Color.WHITE, Color.BLACK]:
+            color_mask = np.array([p.color == piece_color for p in pieces])
+            if not np.any(color_mask):
                 continue
 
-            ptype_val = piece.ptype.value
-            if ptype_val >= N_TOTAL_PLANES - 1:
-                continue
+            # Get coordinates for this color
+            color_x = x_coords[color_mask]
+            color_y = y_coords[color_mask]
+            color_z = z_coords[color_mask]
 
-            offset = 0 if piece.color == self.color else N_TOTAL_PLANES // 2
-            tensor[ptype_val + offset, z, y, x] = 1.0
+            # Get piece types for this color
+            color_pieces = [p for p, mask in zip(pieces, color_mask) if mask]
+            ptype_values = np.array([p.ptype.value for p in color_pieces])
 
-        # colour-to-move plane
+            # Calculate offset based on current player
+            offset = 0 if piece_color == self.color else N_TOTAL_PLANES // 2
+
+            # Set tensor values using vectorized indexing
+            for i, (x, y, z, ptype) in enumerate(zip(color_x, color_y, color_z, ptype_values)):
+                if ptype < N_TOTAL_PLANES - 1:
+                    tensor[ptype + offset, z, y, x] = 1.0
+
+        # Set color-to-move plane
         tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
+
+        # Cache the result
+        if device is None:
+            self._tensor_cache = tensor
+            self._tensor_cache_key = cache_key
+        else:
+            # If device is specified, we'll cache on CPU and move to device when needed
+            self._tensor_cache = tensor.cpu()
+            self._tensor_cache_key = cache_key
+
         return tensor
 
     def _clear_caches(self) -> None:
@@ -127,7 +238,7 @@ class GameState:
         self._is_check_cache_key = None
         self._undo_info = None
 
-        # 使用clear方法而不是直接清除内部结构
+        # Use clear method instead of directly clearing internal structures
         if hasattr(self.cache, 'move') and hasattr(self.cache.move, 'clear'):
             self.cache.move.clear()
 
@@ -234,7 +345,7 @@ class GameState:
         # Check each legal move
         empty_square_moves = []
         for i, move in enumerate(legal_moves):
-            piece = self.cache.piece_cache.get(move.from_coord)
+            piece = self.piece_cache.get(move.from_coord)
             if piece is None:
                 empty_square_moves.append((i, move))
 
@@ -243,8 +354,8 @@ class GameState:
             for idx, move in empty_square_moves[:5]:  # Show first 5
                 x, y, z = move.from_coord
                 tensor = self.board.tensor()
-                white_vals = tensor[0:N_PLANES_PER_SIDE, z, y, x]
-                black_vals = tensor[N_PLANES_PER_SIDE:2*N_PLANES_PER_SIDE, z, y, x]
+                white_vals = tensor[0:N_PIECE_TYPES, z, y, x]
+                black_vals = tensor[N_PIECE_TYPES:2*N_PIECE_TYPES, z, y, x]
 
                 debug_info.append(f"  Move {idx}: {move}")
                 debug_info.append(f"    Coord: {move.from_coord}")
@@ -254,22 +365,6 @@ class GameState:
 
         debug_info.append("=" * 80)
         return "\n".join(debug_info)
-
-    # Placeholder methods - will be bound by __init__.py
-    def legal_moves(self) -> List[Move]:
-        raise NotImplementedError("Method not bound")
-
-    def make_move(self, mv: Move) -> 'GameState':
-        raise NotImplementedError("Method not bound")
-
-    def is_check(self) -> bool:
-        raise NotImplementedError("Method not bound")
-
-    def is_game_over(self) -> bool:
-        raise NotImplementedError("Method not bound")
-
-    def result(self) -> Optional[Result]:
-        raise NotImplementedError("Method not bound")
 
     def legal_moves(self) -> List[Move]:
         """Get legal moves for current player."""

@@ -39,10 +39,10 @@ class OptimizedMovementBuffCache:
     __slots__ = (
         "_buffed", "_buff_sources", "_affected_squares",
         "_board_ref", "_last_board_hash", "_dirty_flags", "_source_tracking",
-        "_buff_types"
+        "_buff_types", "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core buffed squares
         self._buffed: Dict[Color, Set[Tuple[int, int, int]]] = {
             Color.WHITE: set(),
@@ -80,6 +80,9 @@ class OptimizedMovementBuffCache:
             'sources': True,
             'buffed': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -131,12 +134,22 @@ class OptimizedMovementBuffCache:
     def _move_affects_buff_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects buff sources (piece moved, captured, or near buff sources)."""
         # Check if moved piece is a buff source
-        moved_piece = cache.piece_cache.get(mv.from_coord)
+        if self._cache_manager:
+            moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            moved_piece = board.get_piece(mv.from_coord)
+
         if moved_piece and self._is_buff_source(moved_piece):
             return True
 
         # Check if destination had a buff source (captured)
-        dest_piece = cache.piece_cache.get(mv.to_coord)
+        if self._cache_manager:
+            dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            dest_piece = board.get_piece(mv.to_coord)
+
         if dest_piece and self._is_buff_source(dest_piece):
             return True
 
@@ -204,7 +217,11 @@ class OptimizedMovementBuffCache:
         self._buff_types[color].clear()
 
         # Rebuild from scratch for this color
-        buffed = buffed_squares(board, color)
+        if self._cache_manager:
+            buffed = buffed_squares(board, color, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            buffed = buffed_squares(board, color, None)
 
         # Build buffed set and track affected squares
         for sq in buffed:
@@ -306,9 +323,9 @@ class OptimizedMovementBuffCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_movement_buff_cache(board: Optional[Board] = None) -> OptimizedMovementBuffCache:
+def create_optimized_movement_buff_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedMovementBuffCache:
     """Factory function for creating optimized cache."""
-    return OptimizedMovementBuffCache(board)
+    return OptimizedMovementBuffCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -317,5 +334,19 @@ def create_optimized_movement_buff_cache(board: Optional[Board] = None) -> Optim
 class MovementBuffCache(OptimizedMovementBuffCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild
+
+# ------------------------------------------------------------------
+# singleton
+# ------------------------------------------------------------------
+_buff_cache: Optional[MovementBuffCache] = None
+
+def init_movement_buff_cache(cache_manager=None) -> None:
+    global _buff_cache
+    _buff_cache = MovementBuffCache(cache_manager)
+
+def get_movement_buff_cache() -> MovementBuffCache:
+    if _buff_cache is None:
+        raise RuntimeError("MovementBuffCache not initialised")
+    return _buff_cache

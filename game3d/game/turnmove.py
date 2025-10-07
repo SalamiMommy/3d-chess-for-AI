@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
 from game3d.board.board import Board
-from game3d.movement.movepiece import Move, convert_legacy_move_args  # FIXED: Import convert_legacy_move_args
+from game3d.movement.movepiece import Move, convert_legacy_move_args
 from game3d.movement.generator import generate_legal_moves
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.pieces.enums import Color, PieceType
@@ -74,14 +74,11 @@ def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
     """Fast pseudo-legal move generation."""
     return generate_pseudo_legal_moves(game_state.board, game_state.color, game_state.cache)
 
-
-
-
 # ------------------------------------------------------------------
 # OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
-    """Fixed move making with proper cache invalidation and trailblaze support."""
+    """Fixed move making with proper fifty-move rule implementation."""
     if game_state.cache.piece_cache.get(mv.from_coord) is None:
         raise ValueError(f"make_move: no piece at {mv.from_coord}")
 
@@ -94,6 +91,9 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
             raise ValueError(f"Cannot move from empty square: {mv.from_coord}")
         if moving_piece.color != game_state.color:
             raise ValueError(f"Cannot move opponent's piece: {mv.from_coord}")
+
+        # Debug: Print the piece being moved
+        print(f"[DEBUG] Moving {moving_piece.color.name} {moving_piece.ptype.name} from {mv.from_coord} to {mv.to_coord}")
 
         # Clone board
         new_board = Board(game_state.board.tensor().clone())
@@ -120,14 +120,24 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
                                               captured_piece, removed_pieces, is_self_detonate)
         apply_trailblaze_effect(new_board, game_state.cache, mv, game_state.color, removed_pieces)
 
-        # Update halfmove clock
+        # Update halfmove clock according to fifty-move rule
         is_pawn = moving_piece.ptype == PieceType.PAWN
         is_capture = captured_piece is not None
+
+        # Debug: Print when halfmove_clock would reset
+        if is_pawn or is_capture:
+            print(f"[DEBUG] Halfmove clock reset: pawn move={is_pawn}, capture={is_capture}")
+            if is_pawn:
+                print(f"[DEBUG] Pawn move detected: {moving_piece.color.name} pawn from {mv.from_coord} to {mv.to_coord}")
+            if is_capture:
+                print(f"[DEBUG] Capture detected: {captured_piece.color.name} {captured_piece.ptype.name} at {mv.to_coord}")
+
         new_clock = 0 if (is_pawn or is_capture) else game_state.halfmove_clock + 1
 
         # Create enriched move
         enriched_move = _create_enriched_move(
-            game_state, mv, removed_pieces, moved_pieces, is_self_detonate, undo_info, captured_piece
+            game_state, mv, removed_pieces, moved_pieces, is_self_detonate, undo_info, captured_piece,
+            is_pawn, is_capture  # Pass pawn and capture flags
         )
 
         # Create NEW cache for new state
@@ -178,15 +188,17 @@ def _create_enriched_move(
     moved_pieces: List,
     is_self_detonate: bool,
     undo_info: Dict[str, Any],
-    captured_piece: Optional['Piece'] = None  # New param
-) -> EnrichedMove:
+    captured_piece: Optional['Piece'] = None,  # New param
+    is_pawn: bool = False,  # New param
+    is_capture: bool = False  # New param
+) -> 'EnrichedMove':  # Updated return type
     """Create enriched move with all side effects and undo information."""
     # Use converter for core Move (handles flags, ints)
-    is_capture = mv.is_capture or (captured_piece is not None)
+    is_capture_flag = mv.is_capture or (captured_piece is not None)
     core_move = convert_legacy_move_args(
         from_coord=mv.from_coord,
         to_coord=mv.to_coord,
-        is_capture=is_capture,
+        is_capture=is_capture_flag,
         captured_piece=captured_piece,  # Piece -> converter handles .ptype.value
         is_promotion=mv.is_promotion,
         promotion_type=None,  # Fetch if needed: game_state.cache... but assume 0 for now
@@ -200,6 +212,8 @@ def _create_enriched_move(
         moved_pieces=moved_pieces,
         is_self_detonate=is_self_detonate,
         undo_info=undo_info,
+        is_pawn_move=is_pawn,  # Store pawn move flag
+        is_capture=is_capture  # Store capture flag
     )
 
 # ------------------------------------------------------------------
@@ -264,3 +278,5 @@ class EnrichedMove:
     moved_pieces: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]]
     is_self_detonate: bool
     undo_info: Dict[str, Any]
+    is_pawn_move: bool = False  # New field to track pawn moves
+    is_capture: bool = False  # New field to track captures

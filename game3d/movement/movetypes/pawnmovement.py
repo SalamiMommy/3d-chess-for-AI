@@ -77,16 +77,15 @@ def _make_pawn_move(
     from_pos: tuple[int, int, int],
     to_pos: tuple[int, int, int],
     color: Color,
-    is_capture: bool = False,
-    is_en_passant: bool = False
+    flags: int = 0  # Changed from is_capture to flags
 ) -> Move:
     _, _, tz = to_pos
     is_promotion = (color == Color.WHITE and tz == 8) or (color == Color.BLACK and tz == 0)
     return Move(
         from_coord=from_pos,
-        to_coord=to_pos,
-        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0,
+        to_coord=to_coord,
+        flags=flags,  # Use flags directly
         is_promotion=is_promotion,
-        is_en_passant=is_en_passant,
+        is_en_passant=False,
         captured_piece=None
     )

@@ -21,24 +21,25 @@ from game3d.cache.caches.attackscache import AttacksCache
 class EffectsCache:
     """Manages all effect-specific caches."""
 
-    def __init__(self, board):
+    def __init__(self, board, cache_manager):
         self.board = board
+        self.cache_manager = cache_manager
         self._effect_caches: Dict[str, Any] = {}
         self._init_effects()
 
     def _init_effects(self) -> None:
         self._effect_caches = {
-            "freeze": FreezeCache(),
-            "movement_buff": MovementBuffCache(),
-            "movement_debuff": MovementDebuffCache(),
-            "black_hole_suck": BlackHoleSuckCache(),
-            "white_hole_push": WhiteHolePushCache(),
-            "trailblaze": TrailblazeCache(self),
-            "behind": BehindCache(),
-            "armour": ArmourCache(),
-            "geomancy": GeomancyCache(),
-            "archery": ArcheryCache(),
-            "share_square": ShareSquareCache(),
+            "freeze": FreezeCache(self.cache_manager),
+            "movement_buff": MovementBuffCache(self.cache_manager),
+            "movement_debuff": MovementDebuffCache(self.cache_manager),
+            "black_hole_suck": BlackHoleSuckCache(self.cache_manager),
+            "white_hole_push": WhiteHolePushCache(self.cache_manager),
+            "trailblaze": TrailblazeCache(self.cache_manager),  # FIXED: Pass self.cache_manager instead of self
+            "behind": BehindCache(self.cache_manager),
+            "armour": ArmourCache(self.cache_manager),
+            "geomancy": GeomancyCache(self.cache_manager),
+            "archery": ArcheryCache(self.cache_manager),
+            "share_square": ShareSquareCache(self.cache_manager),
             "attacks": AttacksCache(self.board),
         }
 
@@ -127,7 +128,7 @@ class EffectsCache:
             except Exception as e:
                 print(f"Effect cache {name} undo failed: {str(e)}")
 
-
+    # Updated methods to use cache_manager
     def is_frozen(self, sq: tuple[int, int, int], victim: Color) -> bool:
         return self._effect_caches["freeze"].is_frozen(sq, victim)
 
@@ -147,7 +148,7 @@ class EffectsCache:
         self._effect_caches["trailblaze"].mark_trail(trailblazer_sq, slid_squares)
 
     def current_trail_squares(self, controller: Color) -> Set[tuple[int, int, int]]:
-        return self._effect_caches["trailblaze"].current_trail_squares(controller, self.board)
+        return self._effect_caches["trailblaze"].current_trail_squares(controller)
 
     def is_geomancy_blocked(self, sq: tuple[int, int, int], current_ply: int) -> bool:
         return self._effect_caches["geomancy"].is_blocked(sq, current_ply)
@@ -183,5 +184,6 @@ class EffectsCache:
                 cache.clear()
             elif hasattr(cache, 'invalidate'):
                 cache.invalidate()
+
     def __getitem__(self, key: str) -> Any:
-            return self._effect_caches[key]
+        return self._effect_caches[key]
