@@ -93,7 +93,9 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
             raise ValueError(f"Cannot move opponent's piece: {mv.from_coord}")
 
         # Debug: Print the piece being moved
-        print(f"[DEBUG] Moving {moving_piece.color.name} {moving_piece.ptype.name} from {mv.from_coord} to {mv.to_coord}")
+        capture_marker = "x" if mv.is_capture else "-"
+        print(f"[DEBUG] Moving {moving_piece.color.name} {moving_piece.ptype.name} "
+            f"from {mv.from_coord} {capture_marker} {mv.to_coord}")
 
         # Clone board
         new_board = Board(game_state.board.tensor().clone())

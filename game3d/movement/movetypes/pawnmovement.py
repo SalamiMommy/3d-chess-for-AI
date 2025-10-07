@@ -11,6 +11,7 @@ from game3d.common.common import in_bounds
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
+
 # ------------------------------------------------------------------
 #  Direction tables
 # ------------------------------------------------------------------
@@ -32,7 +33,7 @@ def _is_promotion_rank(z: int, color: Color) -> bool:
     return (color == Color.WHITE and z == 8) or (color == Color.BLACK and z == 0)
 
 # ------------------------------------------------------------------
-#  Main generator
+#  Main generator (CORRECTED)
 # ------------------------------------------------------------------
 def generate_pawn_moves(
     cache: CacheManager,
@@ -43,7 +44,7 @@ def generate_pawn_moves(
     occ, piece_arr = cache.piece_cache.export_arrays()
     own_code = 1 if color == Color.WHITE else 2
 
-    # Indexing order: [z, y, x]
+    # Indexing order: [z, y, x] for numpy arrays!
     if occ[z, y, x] != own_code or piece_arr[z, y, x] != PieceType.PAWN.value:
         return []
 
@@ -73,11 +74,20 @@ def generate_pawn_moves(
     )
 
     enemy_code = 2 if color == Color.WHITE else 1
-    ARMOUR_CODE = PieceType.ARMOUR.value
 
     for mv in capture_moves:
         tx, ty, tz = mv.to_coord
-        target_type = PieceType(piece_arr[tz, ty, tx])   # 0-15 fits into uint8
+
+        # Defensive: Only check in bounds!
+        if not (0 <= tx < 9 and 0 <= ty < 9 and 0 <= tz < 9):
+            continue
+
+        target_type_val = int(piece_arr[tz, ty, tx])
+        if target_type_val == 0:
+            continue  # Empty square, not a capture
+
+        target_type = PieceType(target_type_val)
+        # Fix: Only skip if capturing enemy ARMOUR
         if target_type == PieceType.ARMOUR and occ[tz, ty, tx] == enemy_code:
             continue
 
@@ -85,11 +95,12 @@ def generate_pawn_moves(
         if _is_promotion_rank(tz, color):
             flags |= MOVE_FLAGS['PROMOTION']
 
+        # Fix: Use captured_piece as PieceType value (not raw int)
         moves.append(Move(
             from_coord=pos,
             to_coord=(tx, ty, tz),
             flags=flags,
-            captured_piece=piece_arr[tz, ty, tx],
+            captured_piece=target_type_val,  # This fits uint8 for Move
         ))
 
     # (en-passant can be added here later by consulting cache.ep_square)
