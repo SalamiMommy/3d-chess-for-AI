@@ -30,13 +30,12 @@ from typing import List, Optional
 from dataclasses import dataclass
 import random
 from game3d.game.gamestate import GameState
-from game3d.pieces.enums import Color, Result
+from game3d.pieces.enums import Color, Result, PieceType
 from game3d.cache.manager import OptimizedCacheManager
 from game3d.movement.movepiece import Move
 from game3d.game3d import OptimizedGame3D  # Import the game controller
 from training.types import TrainingExample  # Shared dataclass
 from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
-from game3d.pieces.enums import PieceType
 
 class MoveEncoder:
     def coord_to_index(self, coord: Coord) -> int:
@@ -93,6 +92,57 @@ class SelfPlayGenerator:
 
         return state_tensor
 
+    def _try_one_move(self, game: OptimizedGame3D) -> list:
+        """Ask the engine for the next move and decorate every exception
+        with the piece type that was being processed."""
+        try:
+            return game.state.legal_moves()          # <-- the call that explodes
+        except NameError as exc:
+            # ----  find out which piece was on the square  ----
+            sq = game.state.board.active_king_coord   # fallback
+            for idx in range(VOLUME):
+                c = idx_to_coord(idx)
+                pc = game.state.board.piece_at(c)
+                if pc is not None:
+                    sq = c
+                    break
+            pc = game.state.board.piece_at(sq)
+            pt = PieceType(pc.ptype).name if pc else "Unknown"
+            new_msg = f"Piece {pt} on {sq} triggered: {exc}"
+            print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
+            raise NameError(new_msg) from exc
+        except Exception as exc:
+            # Handle the EffectsCache error specifically
+            if "EffectsCache' object has no attribute 'piece_cache'" in str(exc):
+                print(f"[ERROR] EffectsCache error detected at move {game.state.fullmove_number}")
+                print(f"[ERROR] Game state cache type: {type(game.state.cache)}")
+                print(f"[ERROR] Game state effects type: {type(game.state.effects)}")
+
+                # Try to recover by using the main cache manager instead of EffectsCache
+                try:
+                    # Save the original cache
+                    original_cache = game.state.cache
+
+                    # Try to get the main cache manager from the effects cache
+                    if hasattr(game.state.effects, 'cache'):
+                        game.state.cache = game.state.effects.cache
+                        print("[ERROR] Attempting to recover by using effects.cache")
+                        return game.state.legal_moves()
+                    else:
+                        print("[ERROR] Cannot recover - no backup cache available")
+                        return []
+                except Exception as recovery_exc:
+                    print(f"[ERROR] Recovery failed: {recovery_exc}")
+                    return []
+            else:
+                # Handle other exceptions as before
+                sq = game.state.board.active_king_coord
+                pc = game.state.board.piece_at(sq)
+                pt = PieceType(pc.ptype).name if pc else "Unknown"
+                new_msg = f"Piece {pt} on {sq} triggered: {exc}"
+                print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
+                raise type(exc)(new_msg) from exc
+
     def generate_game(self, max_moves: int = 200) -> List[TrainingExample]:
         """Generate a single game with robust error handling using OptimizedGame3D."""
         game = OptimizedGame3D()
@@ -104,6 +154,8 @@ class SelfPlayGenerator:
 
         # Pre-warm the cache with initial state
         initial_tensor = self._get_state_tensor(game.state)
+
+        print(f"[GAME] Starting new game with max_moves={max_moves}")
 
         while not game.is_game_over() and move_count < max_moves:
             try:
@@ -128,9 +180,9 @@ class SelfPlayGenerator:
                     to_logits = to_logits / self.temperature
 
                 # Get legal moves from the game (these should be cached)
-                # legal_moves = game.state.legal_moves()
                 legal_moves = self._try_one_move(game)
                 if not legal_moves:
+                    print(f"[DEBUG] No legal moves found at move {move_count}")
                     break
 
                 # Compute move logits
@@ -190,6 +242,7 @@ class SelfPlayGenerator:
                 consecutive_errors += 1
                 print(f"[ERROR] Move {move_count} failed: {e}")
                 if consecutive_errors >= max_consecutive_errors:
+                    print(f"[ERROR] Too many consecutive errors ({consecutive_errors}), ending game")
                     break
 
         # Print cache statistics
@@ -198,56 +251,54 @@ class SelfPlayGenerator:
             hit_rate = self._cache_hits / total_requests
             print(f"[Cache] Final hit rate: {hit_rate:.2%} ({self._cache_hits}/{total_requests})")
 
+        # Print game summary
+        print(f"\n[GAME SUMMARY]")
+        print(f"  Total moves: {move_count}")
+        print(f"  Game over: {game.is_game_over()}")
+        print(f"  Turn: {game.state.color.name}")
+        print(f"  Halfmove clock: {game.state.halfmove_clock}")
+
+        # Print piece counts
+        piece_counts = {
+            Color.WHITE: {ptype: 0 for ptype in PieceType},
+            Color.BLACK: {ptype: 0 for ptype in PieceType}
+        }
+        for _, piece in game.state.board.list_occupied():
+            piece_counts[piece.color][piece.ptype] += 1
+        print(f"  White pieces: {piece_counts[Color.WHITE]}")
+        print(f"  Black pieces: {piece_counts[Color.BLACK]}")
+
+        # Check if black king is missing
+        if piece_counts[Color.BLACK][PieceType.KING] == 0:
+            print("[WARNING] Black king is missing - this may indicate a bug")
+
         # Assign final outcomes
         if game.is_game_over():
             result = game.result()
             if result == Result.WHITE_WON:
                 final_outcome = 1.0
+                print("Game result: WHITE wins")
             elif result == Result.BLACK_WON:
                 final_outcome = -1.0
+                print("Game result: BLACK wins")
             else:
                 final_outcome = 0.0
+                print("Game result: DRAW")
         else:
             final_outcome = 0.0
+            print("Game result: UNFINISHED (max moves reached or crashed)")
 
         for ex in examples:
             ex.value_target = final_outcome * ex.player_sign  # Use per-example player_sign
 
         return examples
 
-    def _try_one_move(self, game: OptimizedGame3D) -> list:
-        """Ask the engine for the next move and decorate every exception
-        with the piece type that was being processed."""
-        try:
-            return game.state.legal_moves()          # <-- the call that explodes
-        except NameError as exc:
-            # ----  find out which piece was on the square  ----
-            sq = game.state.board.active_king_coord   # fallback
-            for idx in range(VOLUME):
-                c = idx_to_coord(idx)
-                pc = game.state.board.piece_at(c)
-                if pc is not None:
-                    sq = c
-                    break
-            pc = game.state.board.piece_at(sq)
-            pt = PieceType(pc.ptype).name if pc else "Unknown"
-            new_msg = f"Piece {pt} on {sq} triggered: {exc}"
-            print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")  # <-- NEW
-            raise NameError(new_msg) from exc
-        except Exception as exc:
-            sq = game.state.board.active_king_coord
-            pc = game.state.board.piece_at(sq)
-            pt = PieceType(pc.ptype).name if pc else "Unknown"
-            new_msg = f"Piece {pt} on {sq} triggered: {exc}"
-            print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")  # <-- NEW
-            raise type(exc)(new_msg) from exc
-
-def play_game(model: torch.nn.Module, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cuda") -> List[TrainingExample]:
     """Self-play a single game."""
     generator = SelfPlayGenerator(model, device=device)
     return generator.generate_game(max_moves)
 
-def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 200, device: str = "cuda") -> List[TrainingExample]:
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cuda") -> List[TrainingExample]:
     """Generate examples from multiple self-play games."""
     all_examples = []
     for game_idx in range(num_games):

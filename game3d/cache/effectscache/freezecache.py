@@ -1,6 +1,4 @@
-#game3d/cache/effects/freezcache.py
 """Optimized incremental cache for frozen enemy squares with performance improvements."""
-#game3d/cache/effects/freezcache.py
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -40,10 +38,10 @@ class OptimizedFreezeCache:
     __slots__ = (
         "_frozen", "_freeze_sources", "_affected_squares",
         "_board_ref", "_last_board_hash", "_dirty_flags", "_source_tracking",
-        "_freeze_durations"
+        "_freeze_durations", "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core frozen squares
         self._frozen: Dict[Color, Set[Tuple[int, int, int]]] = {
             Color.WHITE: set(),
@@ -81,6 +79,9 @@ class OptimizedFreezeCache:
             'sources': True,
             'frozen': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -132,12 +133,22 @@ class OptimizedFreezeCache:
     def _move_affects_freeze_sources(self, mv: Move, board: Board) -> bool:
         """Check if move affects freeze sources (piece moved, captured, or near freeze sources)."""
         # Check if moved piece is a freeze source
-        moved_piece = cache.piece_cache.get(mv.from_coord)
+        if self._cache_manager:
+            moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            moved_piece = board.piece_at(mv.from_coord)
+
         if moved_piece and self._is_freeze_source(moved_piece):
             return True
 
         # Check if destination had a freeze source (captured)
-        dest_piece = cache.piece_cache.get(mv.to_coord)
+        if self._cache_manager:
+            dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            dest_piece = board.piece_at(mv.to_coord)
+
         if dest_piece and self._is_freeze_source(dest_piece):
             return True
 
@@ -207,7 +218,13 @@ class OptimizedFreezeCache:
 
         # Rebuild from scratch for this color
         enemy_color = Color.BLACK if color == Color.WHITE else Color.WHITE
-        frozen = frozen_squares(board, enemy_color)
+
+        # Pass cache manager to frozen_squares
+        if self._cache_manager:
+            frozen = frozen_squares(board, enemy_color, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            frozen = frozen_squares(board, enemy_color, None)
 
         # Build frozen set and track affected squares
         for sq in frozen:
@@ -309,9 +326,9 @@ class OptimizedFreezeCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_freeze_cache(board: Optional[Board] = None) -> OptimizedFreezeCache:
+def create_optimized_freeze_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedFreezeCache:
     """Factory function for creating optimized cache."""
-    return OptimizedFreezeCache(board)
+    return OptimizedFreezeCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -320,7 +337,5 @@ def create_optimized_freeze_cache(board: Optional[Board] = None) -> OptimizedFre
 class FreezeCache(OptimizedFreezeCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
-
-
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild

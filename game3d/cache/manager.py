@@ -75,7 +75,7 @@ class OptimizedCacheManager:
 
         # Now initialize other caches that depend on piece_cache
         self.occupancy = OccupancyCache(board)
-        self.effects = EffectsCache(board)
+        self.effects = EffectsCache(board, self)
 
         # Performance monitoring
         self.performance_monitor = CachePerformanceMonitor()

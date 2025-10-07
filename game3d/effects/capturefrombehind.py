@@ -1,15 +1,17 @@
-"""Armoured – WALL may only be captured from behind (opposite face)."""
+"""WALL may only be captured from behind (opposite face)."""
 
 from __future__ import annotations
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict, Optional, TYPE_CHECKING
 from game3d.pieces.enums import Color, PieceType
 from game3d.common.protocols import BoardProto
-from game3d.common.common import add_coords
+from game3d.common.common import add_coords, in_bounds
 
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 
 def _opposite_half_space(centre: Tuple[int, int, int], wall_sq: Tuple[int, int, int]) -> Set[Tuple[int, int, int]]:
     """
-    Return the 4 “behind” octants (Chebyshev half-space opposite to wall_sq relative to centre).
+    Return the 4 "behind" octants (Chebyshev half-space opposite to wall_sq relative to centre).
     Simplest: sign of each coordinate must be **opposite** to the vector centre→wall.
     """
     cx, cy, cz = centre
@@ -33,16 +35,19 @@ def _opposite_half_space(centre: Tuple[int, int, int], wall_sq: Tuple[int, int, 
     return half
 
 
-def from_behind_squares(board: BoardProto, controller: Color) -> Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]]:
+def from_behind_squares(board: BoardProto, controller: Color, cache_manager: Optional[OptimizedCacheManager] = None) -> Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]]:
     """
     Return {wall_square: set_of_squares_behind_it} for every friendly WALL.
     If multiple walls overlap, union is taken per wall.
     """
     out: Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]] = {}
-    walls = [
-        (coord, p) for coord, p in board.list_occupied()
-        if p.color == controller and p.ptype == PieceType.WALL
-    ]
+
+    # Find all walls of the controller
+    walls = []
+    for coord, piece in board.list_occupied():
+        if piece.color == controller and piece.ptype == PieceType.WALL:
+            walls.append((coord, piece))
+
     for wall_sq, _ in walls:
         behind = set()
         for dx, dy, dz in _opposite_half_space(wall_sq, wall_sq):  # centre = wall itself

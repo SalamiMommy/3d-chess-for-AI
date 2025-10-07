@@ -76,7 +76,7 @@ def apply_movement_effects(
 
     try:
         # Quick freeze check (highest priority)
-        if cache_manager.is_frozen(start, state.color):  # Fixed state.color -> state.color
+        if cache_manager.is_frozen(start, state.color):
             _STATS.debuffs_applied += 1
             return [], 0
 

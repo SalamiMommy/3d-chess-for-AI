@@ -1,12 +1,12 @@
 """Optimized incremental cache for White-Hole push map with performance improvements."""
 
 from __future__ import annotations
-from typing import Dict, Tuple, Optional, Set, List
+from typing import Dict, Tuple, Optional, Set, List, Any
 from dataclasses import dataclass
 from enum import Enum
 import weakref
 
-from game3d.pieces.enums import Color
+from game3d.pieces.enums import Color, PieceType
 from game3d.effects.auras.whiteholepush import push_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
@@ -38,10 +38,11 @@ class OptimizedWhiteHolePushCache:
 
     __slots__ = (
         "_push_map", "_white_hole_positions", "_affected_squares",
-        "_board_ref", "_last_board_hash", "_dirty_flags", "_push_chains"
+        "_board_ref", "_last_board_hash", "_dirty_flags", "_push_chains",
+        "_cache_manager"
     )
 
-    def __init__(self, board: Optional[Board] = None) -> None:
+    def __init__(self, board: Optional[Board] = None, cache_manager=None) -> None:
         # Core push maps
         self._push_map: Dict[Color, Dict[Tuple[int, int, int], Tuple[int, int, int]]] = {
             Color.WHITE: {},
@@ -74,6 +75,9 @@ class OptimizedWhiteHolePushCache:
             'push_map': True,
             'chains': True,
         }
+
+        # Cache manager reference
+        self._cache_manager = cache_manager
 
         if board:
             self._full_rebuild(board)
@@ -130,12 +134,22 @@ class OptimizedWhiteHolePushCache:
     def _move_affects_white_holes(self, mv: Move, board: Board) -> bool:
         """Check if move affects white holes (piece moved, captured, or white hole moved)."""
         # Check if moved piece is a white hole
-        moved_piece = cache.piece_cache.get(mv.from_coord)
+        if self._cache_manager:
+            moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            moved_piece = board.get_piece(mv.from_coord)
+
         if moved_piece and moved_piece.ptype == PieceType.WHITE_HOLE:
             return True
 
         # Check if destination had a white hole (captured)
-        dest_piece = cache.piece_cache.get(mv.to_coord)
+        if self._cache_manager:
+            dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
+        else:
+            # Fallback to board method if cache manager not available
+            dest_piece = board.get_piece(mv.to_coord)
+
         if dest_piece and dest_piece.ptype == PieceType.WHITE_HOLE:
             return True
 
@@ -196,7 +210,11 @@ class OptimizedWhiteHolePushCache:
         self._push_chains[color].clear()
 
         # Rebuild from scratch for this color
-        candidates = push_candidates(board, color)
+        if self._cache_manager:
+            candidates = push_candidates(board, color, self._cache_manager)
+        else:
+            # Fallback if cache manager not available
+            candidates = push_candidates(board, color, None)
 
         # Build push map and track affected squares
         for from_sq, to_sq in candidates.items():
@@ -305,9 +323,9 @@ class OptimizedWhiteHolePushCache:
 # FACTORY FUNCTION
 # ==============================================================================
 
-def create_optimized_white_hole_cache(board: Optional[Board] = None) -> OptimizedWhiteHolePushCache:
+def create_optimized_white_hole_cache(board: Optional[Board] = None, cache_manager=None) -> OptimizedWhiteHolePushCache:
     """Factory function for creating optimized cache."""
-    return OptimizedWhiteHolePushCache(board)
+    return OptimizedWhiteHolePushCache(board, cache_manager)
 
 # ==============================================================================
 # BACKWARD COMPATIBILITY
@@ -316,5 +334,19 @@ def create_optimized_white_hole_cache(board: Optional[Board] = None) -> Optimize
 class WhiteHolePushCache(OptimizedWhiteHolePushCache):
     """Backward compatibility wrapper."""
 
-    def __init__(self) -> None:
-        super().__init__(None)  # Don't pass board to avoid immediate rebuild
+    def __init__(self, cache_manager=None) -> None:
+        super().__init__(None, cache_manager)  # Don't pass board to avoid immediate rebuild
+
+# ------------------------------------------------------------------
+# singleton
+# ------------------------------------------------------------------
+_white_hole_cache: Optional[WhiteHolePushCache] = None
+
+def init_white_hole_push_cache(cache_manager=None) -> None:
+    global _white_hole_cache
+    _white_hole_cache = WhiteHolePushCache(cache_manager)
+
+def get_white_hole_push_cache() -> WhiteHolePushCache:
+    if _white_hole_cache is None:
+        raise RuntimeError("WhiteHolePushCache not initialised")
+    return _white_hole_cache
