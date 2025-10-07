@@ -273,11 +273,18 @@ def _full_undo(game_state: 'GameState') -> 'GameState':
 
 @dataclass
 class EnrichedMove:
-    """Move with side effects and undo information."""
     core_move: Move
     removed_pieces: List[Tuple[Tuple[int, int, int], Piece]]
     moved_pieces: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]]
     is_self_detonate: bool
     undo_info: Dict[str, Any]
-    is_pawn_move: bool = False  # New field to track pawn moves
-    is_capture: bool = False  # New field to track captures
+    is_pawn_move: bool = False
+    is_capture: bool = False
+
+    def __repr__(self):
+        # Print just the essentials, not the full tensor
+        return (f"EnrichedMove(core_move={self.core_move}, "
+                f"removed_pieces={len(self.removed_pieces)}, "
+                f"moved_pieces={len(self.moved_pieces)}, "
+                f"is_pawn_move={self.is_pawn_move}, "
+                f"is_capture={self.is_capture})")
