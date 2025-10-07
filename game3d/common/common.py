@@ -124,7 +124,8 @@ def get_between_squares(start: Coord, end: Coord) -> List[Coord]:
 def is_path_clear(board, start: Coord, end: Coord) -> bool:
     """Check if path between start and end is clear."""
     for sq in get_between_squares(start, end):
-        if cache.piece_cache.get(sq) is not None:
+        piece = board.piece_at(sq)
+        if piece is not None:
             return False
     return True
 

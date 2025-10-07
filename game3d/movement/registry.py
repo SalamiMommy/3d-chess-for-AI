@@ -56,7 +56,7 @@ def dispatch_batch(
         Move(
             from_coord=(fr_x, fr_y, fr_z),
             to_coord  =(to_x, to_y, to_z),
-            is_capture=ic,
+            flags=MOVE_FLAGS['CAPTURE'] if ic else 0,
             captured_piece=None,
         )
         for fr_x, fr_y, fr_z, to_x, to_y, to_z, ic in raw
@@ -75,16 +75,23 @@ def _batch_kernel(
         pt         = types[i]
 
         dirs   = _get_directions(pt)
-        starts = np.array([[cx, cy, cz]], dtype=np.int8)
+        for d in range(dirs.shape[0]):
+            dx, dy, dz = dirs[d]
+            for step in range(1, 9):  # Board is 9x9x9
+                nx = cx + dx * step
+                ny = cy + dy * step
+                nz = cz + dz * step
+                if not (0 <= nx < 9 and 0 <= ny < 9 and 0 <= nz < 9):
+                    break
 
-        # FIXED: Import moved to conditional to avoid circular dependency
-        # This will be resolved when the actual _slide_kernel is available
-        # For now, skip this complex kernel call
-        # coords3, valid, hit = _slide_kernel(starts, dirs, 8, occ)
-
-        # Simplified placeholder - replace with actual kernel when available
-        pass
-
+                occ_code = occ[nz, ny, nx]
+                if occ_code == 0:  # Empty
+                    out_raw.append((cx, cy, cz, nx, ny, nz, 0))
+                elif occ_code != color:  # Enemy
+                    out_raw.append((cx, cy, cz, nx, ny, nz, 1))
+                    break
+                else:  # Friendly piece
+                    break
     return out_raw
 
 @njit(cache=True)
