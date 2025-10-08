@@ -529,6 +529,8 @@ class OptimizedMoveCache:
 
         # 3. rebuild color lists **only** from what is still there
         self._rebuild_color_lists()
+
+
 # ==============================================================================
 # FACTORY
 # ==============================================================================

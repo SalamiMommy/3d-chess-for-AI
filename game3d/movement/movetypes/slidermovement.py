@@ -7,10 +7,13 @@ import numpy as np
 from numba import njit, prange
 from typing import List, Tuple, Set, Optional
 from functools import lru_cache
+from itertools import product
+
+from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import MOVE_FLAGS
 from game3d.movement.movepiece import Move
 from game3d.common.common import coord_to_idx
-
+from game3d.cache.manager import OptimizedCacheManager
 # Precompute all slider directions at module level
 SLIDER_DIRECTIONS = {
     'orthogonal': np.array([
@@ -196,3 +199,26 @@ def generate_slider_moves_kernel(
             is_capture = is_capture_flags[d_idx, i]
             moves.append((x, y, z, is_capture))
     return moves
+
+def dirty_squares_slider(
+    mv: Move,
+    mover: Color,
+    cache_manager: OptimizedCacheManager
+) -> set[Tuple[int,int,int]]:
+    """
+    Sliding pieces can be *discovered* when the move opens/closes a ray.
+    We return every square on the 26 rays that pass through from- or to-square.
+    """
+    dirty: set[Tuple[int,int,int]] = set()
+
+    for centre in (mv.from_coord, mv.to_coord):
+        for dx,dy,dz in product((-1,0,1), repeat=3):
+            if dx==dy==dz==0:
+                continue
+            for step in range(1,9):
+                c = (centre[0]+step*dx, centre[1]+step*dy, centre[2]+step*dz)
+                if not in_bounds(*c):
+                    break
+                dirty.add(c)
+    # 3-ring around move is enough – sliders rarely exceed 8 steps
+    return dirty

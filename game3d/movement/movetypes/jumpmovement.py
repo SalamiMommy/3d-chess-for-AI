@@ -177,6 +177,35 @@ class IntegratedJumpMovementGenerator:
         priest_code = PieceType.PRIEST.value | ((1 if enemy_color == Color.WHITE else 2) << 3)
         return np.any(piece_array == priest_code)
 
+def dirty_squares_jump(
+    mv: Move,
+    mover: Color,
+    cache_manager: CacheManager
+) -> set[Tuple[int,int,int]]:
+    """
+    Return the coordinates whose jump attack set is *possibly* different
+    after this move.  Over-approximation is fine.
+    """
+    dirty: set[Tuple[int,int,int]] = set()
+
+    # 1.  Piece that just moved
+    dirty.add(mv.from_coord)          # old location – now empty
+    dirty.add(mv.to_coord)            # new location – now occupied
+
+    # 2.  Captured piece (if any) could have been a jumper
+    if mv.is_capture:
+        dirty.add(mv.to_coord)
+
+    # 3.  Jump pieces are never blocked → no ray scan needed
+    # 4.  King-jump or priest-jump aura may affect neighbours – add 1-ring
+    for dx,dy,dz in product((-1,0,1), repeat=3):
+        if dx==dy==dz==0:
+            continue
+        dirty.add((mv.from_coord[0]+dx, mv.from_coord[1]+dy, mv.from_coord[2]+dz))
+        dirty.add((mv.to_coord[0]+dx,   mv.to_coord[1]+dy,   mv.to_coord[2]+dz))
+
+    # clamp to board
+    return {c for c in dirty if in_bounds(*c)}
 # ------------------------------------------------------------------
 #  Singleton access
 # ------------------------------------------------------------------
