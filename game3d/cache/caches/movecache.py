@@ -70,7 +70,7 @@ class OptimizedMoveCache:
         "_simple_move_cache", "symmetry_manager", "symmetry_tt",
         "_save_dir", "_main_tt_size_mb", "_sym_tt_size_mb",
         "_needs_rebuild", "_attacked_squares", "_attacked_squares_valid",
-        "_cache_manager",          # <-- add this line
+        "_cache_manager", "_dirty_flags", "_invalid_squares", "_invalid_attacks"
     )
 
     def __init__(
@@ -114,6 +114,8 @@ class OptimizedMoveCache:
         self._age_counter = 0
         self._simple_move_cache: Dict[int, List[Move]] = {}
 
+        self._invalid_squares: set[Tuple[int,int,int]] = set()
+        self._invalid_attacks: set[Color] = set()
         # Disk cache setup
         self._save_dir = "/home/salamimommy/Documents/code/3d/game3d/cache/caches/movescachedisk"  # Directory for save files
         os.makedirs(self._save_dir, exist_ok=True)
@@ -126,7 +128,10 @@ class OptimizedMoveCache:
             Color.WHITE: False,
             Color.BLACK: False
         }
-
+        self._dirty_flags = {
+            'targets': False,
+            'attacks': False,
+        }
 
     @property
     def _board(self) -> "Board":
@@ -143,13 +148,8 @@ class OptimizedMoveCache:
     # --------------------------------------------------------------------------
     # PUBLIC API
     # --------------------------------------------------------------------------
-    def legal_moves(self, color: Color, parallel: bool = True, max_workers: int = 8) -> List[Move]:
-        """Get legal moves with lazy rebuild."""
-        if self._dirty_flags['targets'] or len(self._legal_by_color[color]) == 0:
-            # Need to rebuild
-            self._full_rebuild()
-            self._dirty_flags['targets'] = False
-
+    def legal_moves(self, color: Color, *, parallel: bool = True, max_workers: int = 8) -> list[Move]:
+        self._lazy_revalidate()          # <-- new
         return self._legal_by_color[color]
 
     def get_cached_evaluation(self, hash_value: int) -> Optional[Tuple[int, int, Optional[CompactMove]]]:
@@ -170,9 +170,10 @@ class OptimizedMoveCache:
             self.symmetry_tt.store_with_symmetry(hash_value, self._board, depth, score, node_type, best_move)
 
     def apply_move(self, mv: Move, color: Color) -> None:
-        """Simplified apply_move - no validation."""
-        # Don't validate - trust the caller
-        # Just update incrementally
+        """Mark as dirty instead of rebuilding."""
+        # Just mark dirty - rebuild on next query
+        self._dirty_flags['targets'] = True
+        self._dirty_flags['attacks'] = True
 
         from_coord = mv.from_coord
         to_coord = mv.to_coord
@@ -491,6 +492,43 @@ class OptimizedMoveCache:
             self._attacked_squares[color].add(move.to_coord)
 
         self._attacked_squares_valid[color] = True
+
+
+
+    def invalidate_square(self, coord: Tuple[int,int,int]) -> None:
+        """Cheap O(1) mark."""
+        self._invalid_squares.add(coord)
+        # remove immediately so we do not rely on the big rebuild
+        self._legal_per_piece.pop(coord, None)
+
+    def invalidate_attacked_squares(self, color: Color) -> None:
+        self._invalid_attacks.add(color)
+        self._attacked_squares_valid[color] = False
+
+    def _lazy_revalidate(self) -> None:
+        """Regenerate only what is strictly needed."""
+        if not self._invalid_squares and not self._invalid_attacks:
+            return  # hot-path exit – most moves do not touch auras
+
+        from game3d.game.gamestate import GameState
+        tmp_state = GameState(board=self._board, color=self._current, cache=self._cache_manager)
+
+        # 1. fix individual pieces
+        for coord in list(self._invalid_squares):
+            piece = self._board.piece_at(coord)
+            if piece and piece.color == self._current:
+                self._legal_per_piece[coord] = generate_legal_moves_for_piece(tmp_state, coord)
+            else:
+                self._legal_per_piece.pop(coord, None)
+        self._invalid_squares.clear()
+
+        # 2. fix attacked-squares bitmaps
+        for color in list(self._invalid_attacks):
+            self._update_attacked_squares(color)
+        self._invalid_attacks.clear()
+
+        # 3. rebuild color lists **only** from what is still there
+        self._rebuild_color_lists()
 # ==============================================================================
 # FACTORY
 # ==============================================================================

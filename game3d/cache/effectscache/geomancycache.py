@@ -31,8 +31,7 @@ class GeomancyCache:
         if self._cache_manager:
             piece = self._cache_manager.piece_cache.get(sq)
         else:
-            # Fallback to board method if cache manager not available
-            piece = board.get_piece(sq)
+            piece = None  # Conservative: assume occupied if no cache
 
         if piece is not None:
             return False

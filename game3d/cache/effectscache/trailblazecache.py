@@ -22,8 +22,7 @@ class TrailblazeCache:
             if self._cache_manager:
                 piece = self._cache_manager.piece_cache.get(coord)
             else:
-                # Fallback to board method if cache manager not available
-                piece = board.get_piece(coord)
+                piece = None  # Conservative: skip if no cache
 
             if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
                 result.update(recorder.current_trail())

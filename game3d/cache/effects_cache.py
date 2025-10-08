@@ -81,9 +81,10 @@ class EffectsCache:
                         continue
                     check_pos = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
                     if all(0 <= c < 9 for c in check_pos):
-                        piece = self.board.get_piece(check_pos)
+                        # Use cache manager instead of board
+                        piece = self.cache_manager.piece_cache.get(check_pos)
                         if piece and piece.ptype in {PieceType.FREEZER, PieceType.BLACKHOLE,
-                                                     PieceType.WHITEHOLE, PieceType.GEOMANCER}:
+                                                    PieceType.WHITEHOLE, PieceType.GEOMANCER}:
                             effect_map = {
                                 PieceType.FREEZER: "freeze",
                                 PieceType.BLACKHOLE: "black_hole_suck",
@@ -97,21 +98,64 @@ class EffectsCache:
         self._add_affected_effects_from_pos(mv.to_coord, affected)
         return affected
 
-    def update_effect_caches(self, mv: 'Move', mover: Color,
-                             affected_caches: Set[str], current_ply: int) -> None:
+    def update_effect_caches(
+            self,
+            mv: "Move",
+            mover: Color,
+            affected_caches: set[str],
+            current_ply: int,
+    ) -> None:
+        """
+        Incremental update: tell the move-cache *precisely* which squares
+        need to be regenerated instead of rebuilding everything.
+        """
+        move_cache = self.cache_manager.move          # type: OptimizedMoveCache
+
+        # ----------------------------------------------------------
+        # 1.  Collect dirty squares from every affected aura
+        # ----------------------------------------------------------
+        dirty: set[tuple[int, int, int]] = set()
+
         for name in affected_caches:
+            cache = self._effect_caches[name]
+            # Every aura cache now exposes a tiny helper:
+            #   dirty_squares(mv, mover) -> set[coord]
+            if hasattr(cache, "dirty_squares"):
+                dirty.update(cache.dirty_squares(mv, mover))
+            else:
+                # Fallback for caches that have not been refactored yet
+                # (treat as “global” until they get their own helper)
+                move_cache._needs_rebuild = True
+                return          # give up and let the old rebuild run
+
+        # ----------------------------------------------------------
+        # 2.  Invalidate only those squares (and attacked bitmaps)
+        # ----------------------------------------------------------
+        for sq in dirty:
+            move_cache.invalidate_square(sq)
+
+        move_cache.invalidate_attacked_squares(mover)
+        move_cache.invalidate_attacked_squares(mover.opposite())
+
+        # ----------------------------------------------------------
+        # 3.  Now let the aura caches update their *own* state
+        # ----------------------------------------------------------
+        for name in affected_caches:
+            cache = self._effect_caches[name]
             try:
-                cache = self._effect_caches[name]
                 if name == "geomancy":
                     cache.apply_move(mv, mover, current_ply, self.board)
-                elif name in ("archery", "black_hole_suck", "armour", "freeze",
-                              "movement_buff", "movement_debuff", "share_square",
-                              "trailblaze", "white_hole_push", "attacks"):
+                elif name in (
+                    "archery", "black_hole_suck", "armour", "freeze",
+                    "movement_buff", "movement_debuff", "share_square",
+                    "trailblaze", "white_hole_push", "attacks",
+                ):
                     cache.apply_move(mv, mover, self.board)
                 else:
-                    cache.apply_move(mv, mover)
-            except Exception as e:
-                print(f"Effect cache {name} update failed: {str(e)}")
+                    cache.apply_move(mv, mover)          # legacy signature
+            except Exception as exc:
+                # Never crash the game because an aura failed
+                print(f"[EffectsCache] '{name}' update failed: {exc}")
 
     def update_effect_caches_for_undo(self, mv: 'Move', mover: Color,
                                       affected_caches: Set[str], current_ply: int) -> None:

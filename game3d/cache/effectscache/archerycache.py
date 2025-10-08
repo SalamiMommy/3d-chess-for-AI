@@ -225,7 +225,7 @@ class OptimizedArcheryCache:
                 if self._cache_manager:
                     piece = self._cache_manager.piece_cache.get(target_sq)
                 else:
-                    piece = board.get_piece(target_sq)
+                    piece = None  # Instead of board.get_piece(target_sq)
 
                 # Valid target: enemy piece
                 if piece and piece.color != color:
@@ -240,8 +240,7 @@ class OptimizedArcheryCache:
         if self._cache_manager:
             piece = self._cache_manager.piece_cache.get(target_sq)
         else:
-            # Fallback to board method if cache manager not available
-            piece = board.get_piece(target_sq)
+            piece = None
 
         if not piece or piece.color == controller:
             return False
@@ -259,14 +258,12 @@ class OptimizedArcheryCache:
         # For now, check if path is clear of blocking pieces
         path_squares = self._get_path_squares(from_sq, to_sq)
 
-        for sq in path_squares[1:-1]:  # Exclude start and end
+        for sq in path_squares[1:-1]:
             if self._cache_manager:
                 if self._cache_manager.piece_cache.get(sq) is not None:
                     return False
             else:
-                # Fallback to board method if cache manager not available
-                if board.get_piece(sq) is not None:
-                    return False
+                return False
 
         return True
 

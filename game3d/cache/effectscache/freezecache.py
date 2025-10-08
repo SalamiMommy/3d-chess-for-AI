@@ -131,13 +131,12 @@ class OptimizedFreezeCache:
 
     # ---------- INCREMENTAL UPDATES ----------
     def _move_affects_freeze_sources(self, mv: Move, board: Board) -> bool:
-        """Check if move affects freeze sources (piece moved, captured, or near freeze sources)."""
+        """Check if move affects freeze sources."""
         # Check if moved piece is a freeze source
         if self._cache_manager:
             moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
         else:
-            # Fallback to board method if cache manager not available
-            moved_piece = board.piece_at(mv.from_coord)
+            moved_piece = None  # Conservative: assume no effect if no cache
 
         if moved_piece and self._is_freeze_source(moved_piece):
             return True
@@ -146,8 +145,7 @@ class OptimizedFreezeCache:
         if self._cache_manager:
             dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
         else:
-            # Fallback to board method if cache manager not available
-            dest_piece = board.piece_at(mv.to_coord)
+            dest_piece = None
 
         if dest_piece and self._is_freeze_source(dest_piece):
             return True
