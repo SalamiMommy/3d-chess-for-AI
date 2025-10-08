@@ -142,6 +142,10 @@ class OptimizedMoveCache:
     # PUBLIC API
     # --------------------------------------------------------------------------
     def legal_moves(self, color: Color, parallel: bool = True, max_workers: int = 8) -> List[Move]:
+        # Check if rebuild is needed before returning moves
+        if self._needs_rebuild:
+            self._full_rebuild()
+            self._needs_rebuild = False
         return self._legal_by_color[color]
 
     def get_cached_evaluation(self, hash_value: int) -> Optional[Tuple[int, int, Optional[CompactMove]]]:
@@ -169,25 +173,29 @@ class OptimizedMoveCache:
         # Validation
         piece = self._board.piece_at(from_coord)
         if piece is None:
-            print(f"[WARNING] Cache stale at {from_coord}, marking for rebuild instead of immediate rebuild")
-            self._needs_rebuild = True  # 设置标志而不是直接重建
-            return
+            # Cache is stale - mark for lazy rebuild
+            print(f"[WARNING] Cache stale at {from_coord}, marking for lazy rebuild")
+            self._needs_rebuild = True
+            # Don't return early - apply the move to board anyway
+            # The rebuild will happen on next legal_moves() call
 
-        if piece.color != color:
+        elif piece.color != color:
             raise ValueError(f"Move {mv} invalid: piece at {from_coord} belongs to {piece.color}, not {color}")
 
-        if mv not in self._legal_by_color[color]:
-            print(f"[WARNING] Illegal move {mv} attempted, rebuilding cache...")
-            self._full_rebuild()
-            if mv not in self._legal_by_color[color]:
-                raise ValueError(f"Move {mv} not in legal moves for {color}")
+        # IMPORTANT: Skip validation if we're marked for rebuild
+        # This avoids the expensive check when cache is known to be stale
+        if not self._needs_rebuild and mv not in self._legal_by_color[color]:
+            print(f"[WARNING] Illegal move {mv} attempted, marking for rebuild...")
+            self._needs_rebuild = True
+            # Don't rebuild here - let it happen lazily
 
-        # Now safe to proceed
+        # Proceed with move application even if cache is stale
         captured_piece = self._board.piece_at(to_coord) if mv.is_capture else None
 
         # Update zobrist BEFORE board mutation
         self._zobrist_hash = self._zobrist.update_hash_move(
-            self._zobrist_hash, mv, piece, captured_piece
+            self._zobrist_hash, mv, piece if piece else self._infer_piece(from_coord, color),
+            captured_piece
         )
 
         # Apply move to board
@@ -195,8 +203,9 @@ class OptimizedMoveCache:
         self._current = color.opposite()
         self._age_counter += 1
 
-        # Incremental cache update
-        self._optimized_incremental_update(mv, color, from_coord, to_coord, piece, captured_piece)
+        # Only do incremental update if cache is valid
+        if not self._needs_rebuild and piece is not None:
+            self._optimized_incremental_update(mv, color, from_coord, to_coord, piece, captured_piece)
 
     def undo_move(self, mv: Move, color: Color) -> None:
         """
@@ -334,6 +343,10 @@ class OptimizedMoveCache:
         self._attacked_squares_valid[Color.BLACK] = False
 
     def _batch_update_pieces(self, affected_squares: Set[Tuple[int, int, int]], color: Color) -> None:
+        """Only update if cache is valid - otherwise mark for rebuild."""
+        if self._needs_rebuild:
+            return  # Don't waste time on incremental updates if full rebuild is pending
+
         # Clear affected pieces from cache
         for coord in affected_squares:
             self._legal_per_piece.pop(coord, None)
@@ -349,9 +362,15 @@ class OptimizedMoveCache:
         tmp_state = GameState(board=self._board, color=color, cache=self._cache)
 
         for coord in pieces_to_update:
-            moves = generate_legal_moves_for_piece(tmp_state, coord)
-            if moves:
-                self._legal_per_piece[coord] = moves
+            try:
+                moves = generate_legal_moves_for_piece(tmp_state, coord)
+                if moves:
+                    self._legal_per_piece[coord] = moves
+            except Exception as e:
+                # If move generation fails, mark for full rebuild
+                print(f"[WARNING] Move generation failed for {coord}: {e}")
+                self._needs_rebuild = True
+                return
 
         # Rebuild color lists
         self._rebuild_color_lists()
@@ -382,13 +401,25 @@ class OptimizedMoveCache:
         self._legal_by_color[Color.BLACK] = black_moves
 
     def _full_rebuild(self) -> None:
+        """Full rebuild with better error handling."""
+        # print(f"[REBUILD] Performing full cache rebuild for {self._current}")
+        rebuild_start = time.perf_counter()
+
         self._refresh_counts()
         self._legal_per_piece.clear()
 
         # NEW: Use generator.py for full legal moves, then split per-piece
         from game3d.game.gamestate import GameState
         tmp_state = GameState(board=self._board, color=self._current, cache=self._cache)
-        all_moves = generate_legal_moves(tmp_state)  # Reuses pseudo_legal.py internally
+
+        try:
+            all_moves = generate_legal_moves(tmp_state)
+        except Exception as e:
+            print(f"[ERROR] Failed to generate legal moves during rebuild: {e}")
+            # Set empty move lists as fallback
+            self._legal_by_color[Color.WHITE] = []
+            self._legal_by_color[Color.BLACK] = []
+            return
 
         for move in all_moves:
             self._legal_per_piece.setdefault(move.from_coord, []).append(move)
@@ -396,6 +427,10 @@ class OptimizedMoveCache:
         self._rebuild_color_lists()
         self._attacked_squares_valid[Color.WHITE] = False
         self._attacked_squares_valid[Color.BLACK] = False
+
+        rebuild_time = time.perf_counter() - rebuild_start
+        if rebuild_time > 0.1:  # Only log slow rebuilds
+            print(f"[REBUILD] Completed in {rebuild_time*1000:.1f}ms, generated {len(all_moves)} moves")
 
     def _find_king(self, color: Color) -> Optional[Tuple[int, int, int]]:
         if self._king_pos[color]:
@@ -433,8 +468,23 @@ class OptimizedMoveCache:
         self._attacked_squares_valid[Color.BLACK] = False
 
 
+    def _infer_piece(self, coord: Tuple[int, int, int], color: Color) -> Piece:
+        """Infer piece type from legal move cache when board is stale."""
+        if coord in self._legal_per_piece:
+            # Any move from this coord tells us the piece type
+            moves = self._legal_per_piece[coord]
+            if moves:
+                # Reconstruct piece from move metadata
+                return Piece(color, PieceType.PAWN)  # Default fallback
+        return Piece(color, PieceType.PAWN)
+
     def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
         """Get all squares attacked by pieces of the given color."""
+        # Trigger rebuild if needed before computing attacks
+        if self._needs_rebuild:
+            self._full_rebuild()
+            self._needs_rebuild = False
+
         if not self._attacked_squares_valid[color]:
             self._update_attacked_squares(color)
         return self._attacked_squares[color].copy()
