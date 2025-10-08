@@ -83,17 +83,18 @@ class OptimizedArcheryCache:
             'los': True,
         }
 
-        # Cache manager reference
         self._cache_manager = cache_manager
-
-        if board:
-            self._full_rebuild(board)
+        self._last_archer_count = 0  # Track archer count changes
+        self._rebuild_threshold = 100  # Only rebuild every N moves
+        self._moves_since_rebuild = 0
 
     # ---------- PUBLIC INTERFACE ----------
     def attack_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
-        """Get attack targets for controller, rebuilding if necessary."""
+        """Get attack targets - rebuild only if dirty."""
         if self._dirty_flags['targets']:
-            self._incremental_rebuild()
+            # Lazy rebuild - only when actually needed
+            self._rebuild_targets_for_color(self._get_board(), controller)
+            self._dirty_flags['targets'] = False
         return self._targets[controller].copy()
 
     def is_valid_attack(self, sq: Tuple[int, int, int], controller: Color) -> bool:
@@ -120,48 +121,56 @@ class OptimizedArcheryCache:
 
     # ---------- MOVE HANDLING ----------
     def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
-        """Smart incremental update based on move impact."""
-        if self._move_affects_cache(mv, board):
-            self._incremental_update(mv, mover, board)
+        """Smart incremental update - avoid expensive rebuilds."""
+        self._moves_since_rebuild += 1
+
+        # Only check if move affects cache if it involves relevant pieces
+        if not self._quick_relevance_check(mv):
+            # Move doesn't affect archery - skip update entirely
+            return
+
+        # Check if archer count changed (fast check)
+        current_archer_count = self._count_archers()
+        if current_archer_count != self._last_archer_count:
+            # Archer was added/removed - need to rebuild
+            self._last_archer_count = current_archer_count
+            self._minimal_rebuild(mv, mover, board)
+            self._moves_since_rebuild = 0
+        elif self._moves_since_rebuild > self._rebuild_threshold:
+            # Periodic rebuild to prevent drift
+            self._full_rebuild(board)
+            self._moves_since_rebuild = 0
+        else:
+            # Just mark as dirty - rebuild happens on next query
+            self._dirty_flags['targets'] = True
 
     def undo_move(self, mv: Move, mover: Color, board: Board) -> None:
         """Smart undo with minimal rebuilding."""
         self._incremental_update(mv, mover, board)
 
-    def _move_affects_cache(self, mv: Move, board: Board) -> bool:
-        """Check if move involves pieces that affect this cache."""
-        # Use cache manager to get pieces
-        if self._cache_manager:
-            from_piece = self._cache_manager.piece_cache.get(mv.from_coord)
-            to_piece = self._cache_manager.piece_cache.get(mv.to_coord)
-        else:
-            # Fallback to board method if cache manager not available
-            from_piece = board.get_piece(mv.from_coord)
-            to_piece = board.get_piece(mv.to_coord)
+    def _quick_relevance_check(self, mv: Move) -> bool:
+        """Fast check if move could affect archery cache."""
+        # Check if move involves archer positions or target squares
+        return (mv.from_coord in self._archer_positions[Color.WHITE] or
+                mv.from_coord in self._archer_positions[Color.BLACK] or
+                mv.to_coord in self._archer_positions[Color.WHITE] or
+                mv.to_coord in self._archer_positions[Color.BLACK])
 
-        # Archers and high-value targets affect cache
-        relevant_types = {PieceType.ARCHER, PieceType.KING, PieceType.QUEEN, PieceType.ROOK}
-
-        affects_cache = (
-            (from_piece and from_piece.ptype in relevant_types) or
-            (to_piece and to_piece.ptype in relevant_types)
-        )
-
-        return affects_cache
+    def _count_archers(self) -> int:
+        """Fast archer count using cache manager."""
+        if not self._cache_manager:
+            return 0
+        return (len(self._archer_positions[Color.WHITE]) +
+                len(self._archer_positions[Color.BLACK]))
 
     # ---------- INCREMENTAL UPDATES ----------
     def _incremental_update(self, mv: Move, mover: Color, board: Board) -> None:
-        """Smart incremental update instead of full rebuild."""
-        current_hash = board.byte_hash()
-
-        # If board hash hasn't changed significantly, do minimal update
-        if abs(current_hash - self._last_board_hash) < 1000:
-            self._minimal_rebuild(mv, mover, board)
-        else:
-            # Significant change, full rebuild
-            self._full_rebuild(board)
-
-        self._last_board_hash = current_hash
+        """SIMPLIFIED - no more board hash checks."""
+        # Just update archer positions
+        self._update_archer_positions(board)
+        # Mark dirty - actual rebuild happens on query
+        self._dirty_flags['targets'] = True
+        self._dirty_flags['los'] = True
 
     def _minimal_rebuild(self, mv: Move, mover: Color, board: Board) -> None:
         """Minimal rebuild affecting only changed areas."""
@@ -192,31 +201,38 @@ class OptimizedArcheryCache:
                 self._dirty_flags['archers'] = True
 
     def _rebuild_targets_for_color(self, board: Board, color: Color) -> None:
-        """Rebuild attack targets only for specific color."""
+        """Optimized rebuild using direct cache access."""
+        if board is None:
+            return
+
         # Clear old data
         self._targets[color].clear()
-        self._line_of_sight[color].clear()
-        self._attack_ranges[color].clear()
 
-        # Get all potential targets on 2-radius sphere surfaces
+        # Fast path: no archers = no targets
+        if not self._archer_positions[color]:
+            return
+
+        # Use set for deduplication
         all_targets = set()
+
+        # For each archer, get sphere surface squares
         for archer_sq in self._archer_positions[color]:
             sphere_surface = self.get_sphere_surface_squares(archer_sq)
-            all_targets.update(sphere_surface)
 
-        # Filter targets and check line of sight
-        for target_sq in all_targets:
-            if self._is_valid_target(board, target_sq, color):
-                self._targets[color].append(target_sq)
-                # Build line of sight tracking
-                for archer_sq in self._archer_positions[color]:
-                    if self._has_line_of_sight(board, archer_sq, target_sq):
-                        if archer_sq not in self._line_of_sight[color]:
-                            self._line_of_sight[color][archer_sq] = {}
-                        self._line_of_sight[color][archer_sq][target_sq] = True
-                        # Calculate attack range
-                        distance = self._calculate_distance(archer_sq, target_sq)
-                        self._attack_ranges[color][target_sq] = distance
+            # Check each square in sphere
+            for target_sq in sphere_surface:
+                # Use cache manager for fast piece lookup
+                if self._cache_manager:
+                    piece = self._cache_manager.piece_cache.get(target_sq)
+                else:
+                    piece = board.get_piece(target_sq)
+
+                # Valid target: enemy piece
+                if piece and piece.color != color:
+                    all_targets.add(target_sq)
+
+        # Convert to list
+        self._targets[color] = list(all_targets)
 
     def _is_valid_target(self, board: Board, target_sq: Tuple[int, int, int], controller: Color) -> bool:
         """Check if square is a valid attack target."""
@@ -380,6 +396,8 @@ class OptimizedArcheryCache:
 
         for flag in self._dirty_flags:
             self._dirty_flags[flag] = True
+
+
 
 # ==============================================================================
 # FACTORY FUNCTION

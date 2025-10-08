@@ -69,7 +69,8 @@ class OptimizedMoveCache:
         "_zobrist_hash", "_age_counter",
         "_simple_move_cache", "symmetry_manager", "symmetry_tt",
         "_save_dir", "_main_tt_size_mb", "_sym_tt_size_mb",
-        "_needs_rebuild", "_attacked_squares", "_attacked_squares_valid"
+        "_needs_rebuild", "_attacked_squares", "_attacked_squares_valid",
+        "_cache_manager",          # <-- add this line
     )
 
     def __init__(
@@ -80,6 +81,7 @@ class OptimizedMoveCache:
     ) -> None:
         self._current = current
         self._cache = cache_manager
+        self._cache_manager = cache_manager
         self._has_priest = {Color.WHITE: False, Color.BLACK: False}
         self._legal_per_piece: Dict[Tuple[int, int, int], List[Move]] = {}
         self._legal_by_color: Dict[Color, List[Move]] = {
@@ -142,10 +144,12 @@ class OptimizedMoveCache:
     # PUBLIC API
     # --------------------------------------------------------------------------
     def legal_moves(self, color: Color, parallel: bool = True, max_workers: int = 8) -> List[Move]:
-        # Check if rebuild is needed before returning moves
-        if self._needs_rebuild:
+        """Get legal moves with lazy rebuild."""
+        if self._dirty_flags['targets'] or len(self._legal_by_color[color]) == 0:
+            # Need to rebuild
             self._full_rebuild()
-            self._needs_rebuild = False
+            self._dirty_flags['targets'] = False
+
         return self._legal_by_color[color]
 
     def get_cached_evaluation(self, hash_value: int) -> Optional[Tuple[int, int, Optional[CompactMove]]]:
@@ -166,46 +170,35 @@ class OptimizedMoveCache:
             self.symmetry_tt.store_with_symmetry(hash_value, self._board, depth, score, node_type, best_move)
 
     def apply_move(self, mv: Move, color: Color) -> None:
-        """Apply move with incremental cache updates."""
+        """Simplified apply_move - no validation."""
+        # Don't validate - trust the caller
+        # Just update incrementally
+
         from_coord = mv.from_coord
         to_coord = mv.to_coord
 
-        # Validation
-        piece = self._board.piece_at(from_coord)
-        if piece is None:
-            # Cache is stale - mark for lazy rebuild
-            print(f"[WARNING] Cache stale at {from_coord}, marking for lazy rebuild")
+        # Update Zobrist
+        piece = self._cache_manager.occupancy.get(from_coord)
+        if not piece:
             self._needs_rebuild = True
-            # Don't return early - apply the move to board anyway
-            # The rebuild will happen on next legal_moves() call
+            return
 
-        elif piece.color != color:
-            raise ValueError(f"Move {mv} invalid: piece at {from_coord} belongs to {piece.color}, not {color}")
+        captured_piece = self._cache_manager.occupancy.get(to_coord) if mv.is_capture else None
 
-        # IMPORTANT: Skip validation if we're marked for rebuild
-        # This avoids the expensive check when cache is known to be stale
-        if not self._needs_rebuild and mv not in self._legal_by_color[color]:
-            print(f"[WARNING] Illegal move {mv} attempted, marking for rebuild...")
-            self._needs_rebuild = True
-            # Don't rebuild here - let it happen lazily
-
-        # Proceed with move application even if cache is stale
-        captured_piece = self._board.piece_at(to_coord) if mv.is_capture else None
-
-        # Update zobrist BEFORE board mutation
         self._zobrist_hash = self._zobrist.update_hash_move(
-            self._zobrist_hash, mv, piece if piece else self._infer_piece(from_coord, color),
-            captured_piece
+            self._zobrist_hash, mv, piece, captured_piece
         )
 
-        # Apply move to board
-        self._board.apply_move(mv)
+        # Mark affected pieces as dirty
+        self._legal_per_piece.pop(from_coord, None)
+        self._legal_per_piece.pop(to_coord, None)
+
+        # Mark for incremental rebuild on next query
+        self._dirty_flags['targets'] = True
+
+        # Switch turn
         self._current = color.opposite()
         self._age_counter += 1
-
-        # Only do incremental update if cache is valid
-        if not self._needs_rebuild and piece is not None:
-            self._optimized_incremental_update(mv, color, from_coord, to_coord, piece, captured_piece)
 
     def undo_move(self, mv: Move, color: Color) -> None:
         """
@@ -401,36 +394,33 @@ class OptimizedMoveCache:
         self._legal_by_color[Color.BLACK] = black_moves
 
     def _full_rebuild(self) -> None:
-        """Full rebuild with better error handling."""
-        # print(f"[REBUILD] Performing full cache rebuild for {self._current}")
-        rebuild_start = time.perf_counter()
-
-        self._refresh_counts()
+        """Full rebuild - simplified."""
+        # Clear caches
         self._legal_per_piece.clear()
 
-        # NEW: Use generator.py for full legal moves, then split per-piece
+        # Generate all legal moves
         from game3d.game.gamestate import GameState
-        tmp_state = GameState(board=self._board, color=self._current, cache=self._cache)
+        tmp_state = GameState(board=self._cache_manager.board,
+                             color=self._current,
+                             cache=self._cache_manager)
 
         try:
             all_moves = generate_legal_moves(tmp_state)
         except Exception as e:
-            print(f"[ERROR] Failed to generate legal moves during rebuild: {e}")
-            # Set empty move lists as fallback
+            print(f"[ERROR] Legal move generation failed: {e}")
             self._legal_by_color[Color.WHITE] = []
             self._legal_by_color[Color.BLACK] = []
             return
 
+        # Split by piece
         for move in all_moves:
             self._legal_per_piece.setdefault(move.from_coord, []).append(move)
 
+        # Rebuild color lists
         self._rebuild_color_lists()
-        self._attacked_squares_valid[Color.WHITE] = False
-        self._attacked_squares_valid[Color.BLACK] = False
 
-        rebuild_time = time.perf_counter() - rebuild_start
-        if rebuild_time > 0.1:  # Only log slow rebuilds
-            print(f"[REBUILD] Completed in {rebuild_time*1000:.1f}ms, generated {len(all_moves)} moves")
+        # Refresh counts
+        self._refresh_counts()
 
     def _find_king(self, color: Color) -> Optional[Tuple[int, int, int]]:
         if self._king_pos[color]:

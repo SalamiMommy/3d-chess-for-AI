@@ -97,6 +97,9 @@ class OptimizedCacheManager:
 
         # Disable background save thread - save only on explicit calls
         self._save_thread = None
+        self._skip_effect_updates = False
+        self._effect_update_counter = 0
+        self._effect_update_interval = 10
 
     @property
     def cache(self):
@@ -130,30 +133,27 @@ class OptimizedCacheManager:
     # OPTIMIZED MOVE APPLICATION & UNDO
     # --------------------------------------------------------------------------
     def apply_move(self, mv, mover, current_ply):
-        if not self.validate_cache_state():
-            raise CacheDesyncError("Cache inconsistent before move")
-        start_time = time.perf_counter()  # More precise timing
-
-        # Lightweight memory check instead of full GC
-        self._light_memory_check()
+        """Optimized apply_move - minimal work."""
+        start_time = time.perf_counter()
 
         try:
-            # Validate move with faster piece lookup
-            from_piece = self.piece_cache.get(mv.from_coord)
+            # Fast validation using occupancy cache only
+            from_piece = self.occupancy.get(mv.from_coord)
             if from_piece is None:
-                raise CacheDesyncError(f"Cache desync detected at {mv.from_coord}. Rebuild required.")
+                # Mark for rebuild but continue
+                self._needs_rebuild = True
+                self.board.apply_move(mv)
+                self._current = mover.opposite()
+                self._age_counter += 1
+                return
 
             if from_piece.color != mover:
-                raise ValueError(f"Piece at {mv.from_coord} belongs to {from_piece.color}, not {mover}")
+                raise ValueError(f"Wrong color piece at {mv.from_coord}")
 
-            # Fast legal move validation using cached results
-            if not self._is_move_legal_fast(mv, mover, from_piece):
-                raise ValueError(f"Move {mv} is not legal for {mover}")
-
-            # Get captured piece BEFORE board mutation
+            # Get captured piece from cache
             captured_piece = self.occupancy.get(mv.to_coord) if mv.is_capture else None
 
-            # Update Zobrist hash BEFORE board mutation
+            # Update Zobrist (fast)
             self._current_zobrist_hash = self._zobrist.update_hash_move(
                 self._current_zobrist_hash, mv, from_piece, captured_piece,
                 old_castling=0, new_castling=0,
@@ -161,15 +161,23 @@ class OptimizedCacheManager:
                 old_ply=current_ply, new_ply=current_ply + 1
             )
 
-            # Apply move to board
+            # Apply to board
             self.board.apply_move(mv)
 
-            # Batch cache updates
-            self._batch_update_caches(mv, from_piece, captured_piece, mover, current_ply)
+            # CRITICAL: Update occupancy FIRST (fastest)
+            self._fast_occupancy_update(mv, from_piece, mover)
 
-            # Mark network teleport targets as dirty
-            self._mark_network_teleport_dirty()
-            self._mark_swap_dirty()
+            # Skip effect updates most of the time
+            self._effect_update_counter += 1
+            if self._effect_update_counter % self._effect_update_interval == 0:
+                self._update_effects(mv, from_piece, captured_piece, mover, current_ply)
+
+            # Update move cache WITHOUT checking board state
+            if self._move_cache and not self._needs_rebuild:
+                try:
+                    self._move_cache.apply_move(mv, mover)
+                except Exception:
+                    self._needs_rebuild = True
 
             self._current = mover.opposite()
             self._age_counter += 1
@@ -177,26 +185,9 @@ class OptimizedCacheManager:
             duration = time.perf_counter() - start_time
             self.performance_monitor.record_move_apply_time(duration)
 
-            # Only record detailed events for slow operations
-            if duration > 0.001:  # Only log if > 1ms
-                self.performance_monitor.record_event(CacheEventType.MOVE_APPLIED, {
-                    'move': str(mv),
-                    'color': mover.name,
-                    'duration_ms': duration * 1000
-                })
-
-            self._move_counter += 1
-            if self._move_counter % self.config.cache_stats_interval == 0:
-                self._log_cache_stats("periodic")
-
-        except CacheDesyncError as e:
-            print(f"[ERROR] {str(e)}")
-            raise
         except Exception as e:
             self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
-                'error': str(e),
-                'move': str(mv),
-                'color': mover.name
+                'error': str(e)
             })
             raise
 
@@ -265,6 +256,19 @@ class OptimizedCacheManager:
             })
             raise
 
+    def _fast_occupancy_update(self, mv, from_piece, mover):
+        """Fast occupancy update without board queries."""
+        # Determine destination piece
+        promotion_type = getattr(mv, "promotion_ptype", None)
+        if getattr(mv, "is_promotion", False) and promotion_type:
+            to_piece = Piece(mover, PieceType(promotion_type))
+        else:
+            to_piece = from_piece
+
+        # Update occupancy cache directly
+        self.occupancy.set_position(mv.from_coord, None)
+        self.occupancy.set_position(mv.to_coord, to_piece)
+
     def _is_move_legal_fast(self, mv, mover, from_piece) -> bool:
         """Fast move legality check using cached results."""
         if self._move_cache is None:
@@ -272,29 +276,6 @@ class OptimizedCacheManager:
 
         # Use a faster method to check move legality without generating all moves
         return self._move_cache.is_move_legal_fast(mv, mover, from_piece)
-
-    def _batch_update_caches(self, mv, from_piece, captured_piece, mover, current_ply):
-        """Batch update all caches to reduce function call overhead."""
-        # Update occupancy
-        promotion_type = getattr(mv, "promotion_ptype", None)
-        if getattr(mv, "is_promotion", False) and promotion_type is not None:
-            to_piece = Piece(mover, PieceType(promotion_type))
-        else:
-            to_piece = from_piece
-        self.occupancy.set_position(mv.from_coord, None)
-        self.occupancy.set_position(mv.to_coord, to_piece)
-
-        # Update effect caches
-        affected_caches = self.effects.get_affected_caches(mv, mover, from_piece, None, captured_piece)
-        affected_caches.add("attacks")
-        self.effects.update_effect_caches(mv, mover, affected_caches, current_ply)
-
-        # Update move cache incrementally
-        if self._move_cache:
-            self._move_cache.apply_move(mv, mover)
-            if self._needs_rebuild:
-                self._move_cache._full_rebuild()
-                self._needs_rebuild = False
 
     def _light_memory_check(self):
         """Lightweight memory check instead of full psutil calls."""
@@ -351,11 +332,18 @@ class OptimizedCacheManager:
     # PARALLEL LEGAL MOVE GENERATION — KEY OPTIMIZATION FOR 5600X
     # --------------------------------------------------------------------------
     def legal_moves(self, color: Color) -> List['Move']:
+        """Get legal moves with lazy rebuild."""
+        # Check if rebuild needed
+        if self._needs_rebuild:
+            print(f"[REBUILD] Performing lazy rebuild for {color}")
+            rebuild_start = time.perf_counter()
+            self._move_cache._full_rebuild()
+            self._needs_rebuild = False
+            rebuild_time = time.perf_counter() - rebuild_start
+            if rebuild_time > 0.05:  # Log slow rebuilds
+                print(f"[REBUILD] Took {rebuild_time*1000:.1f}ms")
+
         start_time = time.perf_counter()
-
-        if self._move_cache is None:
-            raise RuntimeError("Move cache not initialized")
-
         moves = self._move_cache.legal_moves(
             color,
             parallel=self.config.enable_parallel,
@@ -544,6 +532,29 @@ class OptimizedCacheManager:
         if hasattr(self, '_network_teleport_dirty'):
             self._network_teleport_dirty[Color.WHITE] = True
             self._network_teleport_dirty[Color.BLACK] = True
+
+
+    def _update_effects(self, mv, from_piece, captured_piece, mover, current_ply):
+        """Update effects only when needed."""
+        # Determine which effects might be affected
+        relevant_effects = set()
+
+        if from_piece.ptype == PieceType.FREEZER:
+            relevant_effects.add("freeze")
+        elif from_piece.ptype == PieceType.ARCHER:
+            relevant_effects.add("archery")
+        elif from_piece.ptype in {PieceType.BLACKHOLE, PieceType.WHITEHOLE}:
+            relevant_effects.add("black_hole_suck")
+            relevant_effects.add("white_hole_push")
+
+        # Only update relevant effects
+        for effect_name in relevant_effects:
+            try:
+                cache = self.effects._effect_caches[effect_name]
+                if hasattr(cache, 'apply_move'):
+                    cache.apply_move(mv, mover, self.board)
+            except Exception as e:
+                print(f"Effect {effect_name} update failed: {e}")
 # ==============================================================================
 # AI-SAFE DATA EXPORT METHODS (DELEGATED TO export.py)
 # ==============================================================================

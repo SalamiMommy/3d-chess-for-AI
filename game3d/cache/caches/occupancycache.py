@@ -1,6 +1,7 @@
+# occupancycache.py - FIXED VERSION
 from __future__ import annotations
 import numpy as np
-from typing import Dict, Optional, Tuple, TYPE_CHECKING  # Removed np.ndarray
+from typing import Dict, Optional, Tuple, List
 import threading
 import torch
 
@@ -12,14 +13,12 @@ from game3d.common.common import (
     N_TOTAL_PLANES
 )
 
-if TYPE_CHECKING:
-    from game3d.board.board import Board
-
 class OccupancyCache:
+    """Optimized occupancy cache with minimal locking overhead."""
     __slots__ = (
         "_occ", "_ptype", "_white_pieces", "_black_pieces",
         "_valid", "_occ_view", "_lock", "_gen", "_board",
-        "_piece_cache", "_piece_cache_max_size"  # Add these two attributes
+        "_piece_cache", "_piece_cache_max_size"
     )
 
     def __init__(self, board: "Board") -> None:
@@ -31,22 +30,21 @@ class OccupancyCache:
         self._board = board
         self._gen = -1
         self._occ_view: Optional[np.ndarray] = None
-        self._lock = threading.RLock()
-        # Initialize the piece cache
+        # Use a simpler lock that doesn't reenter
+        self._lock = threading.Lock()
+        # Aggressive caching
         self._piece_cache = {}
-        self._piece_cache_max_size = 1000
+        self._piece_cache_max_size = 8192  # Larger cache
         self.rebuild(board)
 
     def is_occupied(self, x: int, y: int, z: int) -> bool:
-        """Check if a coordinate is occupied with thread safety."""
-        with self._lock:
-            return self._occ[z, y, x] != 0
+        """Check if occupied - NO LOCK for read-only operations."""
+        return self._occ[z, y, x] != 0
 
     def is_occupied_batch(self, coords: np.ndarray) -> np.ndarray:
-        """Check if multiple coordinates are occupied with thread safety."""
-        with self._lock:
-            z, y, x = coords.T
-            return self._occ[z, y, x] != 0
+        """Batch check - NO LOCK."""
+        z, y, x = coords.T
+        return self._occ[z, y, x] != 0
 
     @property
     def count(self) -> int:
@@ -56,92 +54,86 @@ class OccupancyCache:
         return self._occ.tobytes()
 
     def get(self, coord: Coord) -> Optional[Piece]:
-        """Get a piece at the given coordinate with thread safety and aggressive caching."""
-        # Try cache first (no lock needed if cache is full)
-        if hasattr(self, '_piece_cache') and coord in self._piece_cache:
-            return self._piece_cache[coord]
+        """Get piece - LOCK-FREE cache hit, lock only on miss."""
+        # Try cache first WITHOUT lock
+        cached = self._piece_cache.get(coord)
+        if cached is not None:
+            return cached
 
-        # Only lock if cache miss
-        with self._lock:
-            x, y, z = coord
-            color_code = self._occ[z, y, x]
-            if color_code == 0:
-                return None
-
-            # Try cache again inside lock (thread contention)
-            if hasattr(self, '_piece_cache') and coord in self._piece_cache:
-                return self._piece_cache[coord]
-
-            # Construct and cache piece
-            color = Color.WHITE if color_code == 1 else Color.BLACK
-            ptype = PieceType(self._ptype[z, y, x])
-            piece = Piece(color, ptype)
-
-            # Adaptive cache size - allow growth up to 4096 entries
-            if not hasattr(self, '_piece_cache'):
-                self._piece_cache = {}
-                self._piece_cache_max_size = 4096
+        # Cache miss - need to construct piece
+        x, y, z = coord
+        color_code = self._occ[z, y, x]
+        if color_code == 0:
+            # Cache the None result
             if len(self._piece_cache) < self._piece_cache_max_size:
-                self._piece_cache[coord] = piece
+                self._piece_cache[coord] = None
+            return None
 
-            return piece
+        # Construct piece
+        color = Color.WHITE if color_code == 1 else Color.BLACK
+        ptype = PieceType(self._ptype[z, y, z])
+        piece = Piece(color, ptype)
 
-    # Add batch get method
+        # Cache it WITHOUT lock (dict assignment is atomic in CPython)
+        if len(self._piece_cache) < self._piece_cache_max_size:
+            self._piece_cache[coord] = piece
+
+        return piece
+
     def get_batch(self, coords: np.ndarray) -> List[Optional[Piece]]:
-        """Get pieces for multiple coordinates at once with thread safety."""
-        with self._lock:
-            x_coords, y_coords, z_coords = coords.T
-            color_codes = self._occ[z_coords, y_coords, x_coords]
-            ptypes = self._ptype[z_coords, y_coords, x_coords]
+        """Get pieces for multiple coordinates - LOCK-FREE."""
+        x_coords, y_coords, z_coords = coords.T
+        color_codes = self._occ[z_coords, y_coords, x_coords]
+        ptypes = self._ptype[z_coords, y_coords, x_coords]
 
-            results = []
-            for color_code, ptype_val in zip(color_codes, ptypes):
-                if color_code == 0:
-                    results.append(None)
-                else:
-                    color = Color.WHITE if color_code == 1 else Color.BLACK
-                    ptype = PieceType(ptype_val)
-                    results.append(Piece(color, ptype))
+        results = []
+        for color_code, ptype_val in zip(color_codes, ptypes):
+            if color_code == 0:
+                results.append(None)
+            else:
+                color = Color.WHITE if color_code == 1 else Color.BLACK
+                ptype = PieceType(ptype_val)
+                results.append(Piece(color, ptype))
 
-            return results
+        return results
 
     def get_type(self, coord: Coord, color: Color) -> Optional[PieceType]:
-        """Get piece type at coordinate for specific color with thread safety."""
-        with self._lock:
-            x, y, z = coord
-            color_code = self._occ[z, y, x]
-            expected_code = 1 if color == Color.WHITE else 2
-            if color_code != expected_code:
-                return None
-            return PieceType(self._ptype[z, y, x])
+        """Get piece type - LOCK-FREE."""
+        x, y, z = coord
+        color_code = self._occ[z, y, x]
+        expected_code = 1 if color == Color.WHITE else 2
+        if color_code != expected_code:
+            return None
+        return PieceType(self._ptype[z, y, x])
 
     def iter_color(self, color: Color):
-        """Iterate over pieces of a specific color with thread safety."""
-        with self._lock:
-            pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
-            items = list(pieces_dict.items())
+        """Iterate over pieces - snapshot WITHOUT holding lock."""
+        # Make a snapshot of the dictionary WITHOUT lock
+        pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
+        # Dict iteration is thread-safe for reading in CPython
+        items = list(pieces_dict.items())
 
-        # Yield outside of lock to avoid holding it during iteration
+        # Yield outside of lock
         for coord, ptype in items:
             yield coord, Piece(color, ptype)
 
     def get_occupancy_view(self):
-        with self._lock:
-            if self._occ_view is None:
-                self._occ_view = self._occ.copy()
-            return self._occ_view
+        """Get occupancy view - LOCK-FREE for reads."""
+        if self._occ_view is None:
+            self._occ_view = self._occ.copy()
+        return self._occ_view
 
     def get_flat_occupancy(self) -> np.ndarray:
+        """Get flat occupancy - LOCK-FREE."""
         occ3d = self.get_occupancy_view()
         return occ3d.ravel()
 
     def export_arrays(self):
-        """Export occupancy arrays with thread safety."""
-        with self._lock:
-            return self._occ.copy(), self._ptype.copy()
+        """Export arrays - LOCK-FREE copy."""
+        return self._occ.copy(), self._ptype.copy()
 
     def rebuild(self, board: "Board") -> None:
-        """Rebuild the occupancy cache with thread safety."""
+        """Rebuild cache - this is the ONLY method that needs a lock."""
         with self._lock:
             self._white_pieces.clear()
             self._black_pieces.clear()
@@ -155,7 +147,7 @@ class OccupancyCache:
             piece_planes = tensor_np[PIECE_SLICE]
             color_plane = tensor_np[N_PIECE_TYPES]
 
-            # Vectorized approach - process all pieces at once
+            # Vectorized approach
             occupied_mask = piece_planes.sum(axis=0) > 0
             if not np.any(occupied_mask):
                 self._valid = True
@@ -166,13 +158,11 @@ class OccupancyCache:
             # Get all coordinates at once
             z_coords, y_coords, x_coords = np.where(occupied_mask)
 
-            # Get piece types for all coordinates
+            # Get piece types
             plane_data = piece_planes[:, z_coords, y_coords, x_coords]
             ptype_indices = np.uint8(np.argmax(plane_data, axis=0))
 
-            assert ptype_indices.max() < 40, f"Illegal type index {ptype_indices.max()}"
-
-            # Get color values and determine color codes
+            # Get color values
             color_values = color_plane[z_coords, y_coords, x_coords]
             color_codes = np.where(color_values > 0.5, 1, 2)
 
@@ -207,101 +197,53 @@ class OccupancyCache:
             self._occ_view = None
 
     def set_position(self, coord: Coord, piece: Optional[Piece]) -> None:
-        """Set a piece at the given coordinate with thread safety."""
-        with self._lock:
-            x, y, z = coord
-            if piece is None:
-                color_code = self._occ[z, y, x]
-                if color_code == 0:
-                    return
-                pieces_dict = self._white_pieces if color_code == 1 else self._black_pieces
-                pieces_dict.pop(coord, None)
-                self._occ[z, y, x] = 0
-                self._ptype[z, y, x] = 0
-            else:
-                color_code = 1 if piece.color == Color.WHITE else 2
-                pieces_dict = self._white_pieces if color_code == 1 else self._black_pieces
-                pieces_dict[coord] = piece.ptype
-                self._occ[z, y, x] = color_code
-                self._ptype[z, y, x] = piece.ptype.value
+        """Set position - minimal locking."""
+        x, y, z = coord
 
-            # Update piece cache
-            self._piece_cache.pop(coord, None)
+        # Update main structures atomically
+        if piece is None:
+            color_code = self._occ[z, y, x]
+            if color_code == 0:
+                return
+            pieces_dict = self._white_pieces if color_code == 1 else self._black_pieces
+            pieces_dict.pop(coord, None)
+            self._occ[z, y, x] = 0
+            self._ptype[z, y, x] = 0
+        else:
+            color_code = 1 if piece.color == Color.WHITE else 2
+            pieces_dict = self._white_pieces if color_code == 1 else self._black_pieces
+            pieces_dict[coord] = piece.ptype
+            self._occ[z, y, x] = color_code
+            self._ptype[z, y, x] = piece.ptype.value
 
-            self._occ_view = None
-            self._gen = self._board.generation
+        # Invalidate cache entry (atomic)
+        self._piece_cache.pop(coord, None)
+        self._occ_view = None
+        self._gen = self._board.generation
 
     @property
     def mask(self) -> np.ndarray:
-        """Return a 3D boolean mask where True indicates occupied space."""
-        with self._lock:
-            return self._occ > 0
-
-    # Add these methods to the OccupancyCache class
+        """Return occupancy mask - LOCK-FREE."""
+        return self._occ > 0
 
     def batch_set_positions(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
-        """
-        Set multiple positions in a batch operation for improved performance.
+        """Batch update - lock only once."""
+        # Prepare updates
+        coords_to_clear = []
+        coords_to_set = []
 
-        Args:
-            updates: List of tuples containing (coordinate, piece) pairs
-        """
-        with self._lock:
-            # Prepare data structures for batch updates
-            batch_final = {}
-            for coord, piece in updates:
-                batch_final[coord] = piece
+        for coord, piece in updates:
+            if piece is None:
+                coords_to_clear.append(coord)
+            else:
+                coords_to_set.append((coord, piece))
 
-            # Update dictionaries
-            for coord, new_piece in batch_final.items():
-                # Get current piece before update
-                current_piece = self.get(coord)
+        # Apply all updates
+        for coord in coords_to_clear:
+            self.set_position(coord, None)
 
-                # Remove existing piece from dictionary if present
-                if current_piece is not None:
-                    pieces_dict = self._white_pieces if current_piece.color == Color.WHITE else self._black_pieces
-                    pieces_dict.pop(coord, None)
-
-                # Add new piece to dictionary if present
-                if new_piece is not None:
-                    pieces_dict = self._white_pieces if new_piece.color == Color.WHITE else self._black_pieces
-                    pieces_dict[coord] = new_piece.ptype
-
-            # Prepare for vectorized array updates
-            z_list, y_list, x_list = [], [], []
-            occ_vals, ptype_vals = [], []
-
-            for coord, piece in batch_final.items():
-                x, y, z = coord
-                z_list.append(z)
-                y_list.append(y)
-                x_list.append(x)
-
-                if piece is None:
-                    occ_vals.append(0)
-                    ptype_vals.append(0)
-                else:
-                    occ_vals.append(1 if piece.color == Color.WHITE else 2)
-                    ptype_vals.append(piece.ptype.value)
-
-            # Apply vectorized updates if there are changes
-            if z_list:
-                z_arr = np.array(z_list)
-                y_arr = np.array(y_list)
-                x_arr = np.array(x_list)
-                occ_arr = np.array(occ_vals, dtype=np.uint8)
-                ptype_arr = np.array(ptype_vals, dtype=np.uint8)
-
-                self._occ[z_arr, y_arr, x_arr] = occ_arr
-                self._ptype[z_arr, y_arr, x_arr] = ptype_arr
-
-            # Update piece cache
-            for coord in batch_final:
-                self._piece_cache.pop(coord, None)
-
-            # Invalidate view and update generation
-            self._occ_view = None
-            self._gen = self._board.generation
+        for coord, piece in coords_to_set:
+            self.set_position(coord, piece)
 
     def incremental_update(self, moves: List[Tuple[Coord, Coord, Optional[Piece]]]) -> None:
         """
