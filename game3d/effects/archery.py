@@ -25,7 +25,7 @@ def archery_targets(board: BoardProto, controller: Color, cache_manager: Optiona
                 victim = cache_manager.piece_cache.get(sq)
             else:
                 # Fallback to board method if cache manager not available
-                victim = board.get_piece(sq)
+                victim = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
 
             if victim is not None and victim.color != controller:
                 out.append(sq)
@@ -60,7 +60,7 @@ def has_line_of_sight(archer_pos: Tuple[int, int, int], target_pos: Tuple[int, i
         if cache_manager:
             piece = cache_manager.piece_cache.get(current)
         else:
-            piece = board.get_piece(current)
+            piece = board.cache_manager.occupancy.get(current) if cache_manager else board.get_piece(current)
 
         if piece is not None:
             return False
@@ -91,7 +91,7 @@ def valid_archery_targets(board: BoardProto, controller: Color,
             if cache_manager:
                 victim = cache_manager.piece_cache.get(sq)
             else:
-                victim = board.get_piece(sq)
+                victim = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
 
             if victim is not None and victim.color != controller:
                 # Check line of sight

@@ -23,7 +23,7 @@ def detonate(board: BoardProto, trigger_sq: Tuple[int, int, int], current_color:
         if cache_manager:
             victim = cache_manager.piece_cache.get(sq)
         else:
-            victim = board.get_piece(sq)
+            victim = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
 
         if victim is None or victim.color == current_color:
             continue

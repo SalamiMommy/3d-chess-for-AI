@@ -22,7 +22,7 @@ def block_candidates(board: BoardProto, controller: Color, cache_manager: Option
                 piece = cache_manager.piece_cache.get(sq)
             else:
                 # Fallback to board method if cache manager not available
-                piece = board.get_piece(sq)
+                piece = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
 
             if piece is None:    # unoccupied only
                 out.append(sq)

@@ -72,7 +72,7 @@ def extract_enemy_slid_path(start: Tuple[int, int, int], end: Tuple[int, int, in
     if cache_manager:
         piece = cache_manager.piece_cache.get(end)
     else:
-        piece = board.get_piece(end)
+        piece = board.cache_manager.occupancy.get(end) if cache_manager else board.get_piece(end)
 
     if piece is None:
         return set()

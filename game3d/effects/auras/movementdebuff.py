@@ -15,7 +15,7 @@ def debuffed_squares(board: BoardProto, debuffer_colour: Color, cache_manager) -
                     target = cache_manager.piece_cache.get(sq)
                 else:
                     # Fallback to board method if cache manager not available
-                    target = board.get_piece(sq)
+                    target = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
                 if target is not None and target.color != debuffer_colour:
                     debuffed.add(sq)
     return debuffed

@@ -225,8 +225,7 @@ class OptimizedArcheryCache:
                 if self._cache_manager:
                     piece = self._cache_manager.piece_cache.get(target_sq)
                 else:
-                    piece = None  # Instead of board.get_piece(target_sq)
-
+                    piece = None
                 # Valid target: enemy piece
                 if piece and piece.color != color:
                     all_targets.add(target_sq)

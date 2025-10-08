@@ -138,7 +138,7 @@ class OptimizedWhiteHolePushCache:
             moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
         else:
             # Fallback to board method if cache manager not available
-            moved_piece = board.get_piece(mv.from_coord)
+            moved_piece = board.cache_manager.occupancy.get(mv.from_coord)
 
         if moved_piece and moved_piece.ptype == PieceType.WHITE_HOLE:
             return True
@@ -148,7 +148,7 @@ class OptimizedWhiteHolePushCache:
             dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
         else:
             # Fallback to board method if cache manager not available
-            dest_piece = board.get_piece(mv.to_coord)
+            dest_piece   = board.cache_manager.occupancy.get(mv.to_coord)
 
         if dest_piece and dest_piece.ptype == PieceType.WHITE_HOLE:
             return True

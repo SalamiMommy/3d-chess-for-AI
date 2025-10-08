@@ -15,7 +15,7 @@ def buffed_squares(board: BoardProto, buffer_colour: Color, cache_manager) -> Se
                     target = cache_manager.piece_cache.get(sq)
                 else:
                     # Fallback to board method if cache manager not available
-                    target = board.get_piece(sq)
+                    target = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
                 if target is not None and target.color == buffer_colour:
                     buffed.add(sq)
     return buffed

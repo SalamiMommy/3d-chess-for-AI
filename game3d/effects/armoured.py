@@ -18,7 +18,7 @@ def is_armour_protected(sq: Tuple[int, int, int], board: BoardProto,
         piece = cache_manager.piece_cache.get(sq)
     else:
         # Fallback to board method if cache manager not available
-        piece = board.get_piece(sq)
+        piece = board.cache_manager.occupancy.get(sq) if cache_manager else board.get_piece(sq)
 
     return piece is not None and piece.ptype == PieceType.ARMOUR
 
@@ -36,7 +36,7 @@ def can_pawn_capture(pawn_sq: Tuple[int, int, int], target_sq: Tuple[int, int, i
     if cache_manager:
         pawn = cache_manager.piece_cache.get(pawn_sq)
     else:
-        pawn = board.get_piece(pawn_sq)
+        pawn = board.cache_manager.occupancy.get(pawn_sq) if cache_manager else board.get_piece(pawn_sq)
 
     # Verify it's actually a pawn
     if pawn is None or pawn.ptype != PieceType.PAWN:
@@ -46,7 +46,7 @@ def can_pawn_capture(pawn_sq: Tuple[int, int, int], target_sq: Tuple[int, int, i
     if cache_manager:
         target = cache_manager.piece_cache.get(target_sq)
     else:
-        target = board.get_piece(target_sq)
+        target = board.cache_manager.occupancy.get(target_sq) if cache_manager else board.get_piece(target_sq)
 
     # Verify target exists and is enemy piece
     if target is None or target.color == pawn.color:

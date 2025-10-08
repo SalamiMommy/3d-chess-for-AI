@@ -125,7 +125,7 @@ class OptimizedMovementDebuffCache:
             moved_piece = self._cache_manager.piece_cache.get(mv.from_coord)
         else:
             # Fallback to board method if cache manager not available
-            moved_piece = board.get_piece(mv.from_coord)
+            moved_piece = board.cache_manager.occupancy.get(mv.from_coord)
 
         if moved_piece and self._is_debuff_source(moved_piece):
             return True
@@ -135,7 +135,7 @@ class OptimizedMovementDebuffCache:
             dest_piece = self._cache_manager.piece_cache.get(mv.to_coord)
         else:
             # Fallback to board method if cache manager not available
-            dest_piece = board.get_piece(mv.to_coord)
+            dest_piece   = board.cache_manager.occupancy.get(mv.to_coord)
 
         if dest_piece and self._is_debuff_source(dest_piece):
             return True
