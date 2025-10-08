@@ -124,16 +124,18 @@ def _validate_piece_moves(
 ) -> List[Move]:
     """
     Enhanced validation for piece-generated moves.
-    Uses raw occupancy arrays for direct checks, avoiding batch_get_pieces overhead.
+    Uses raw occupancy arrays for direct checks.
     """
     if not moves:
         return moves
 
-    validated_moves = []
     cache_manager = state.cache
 
     # Pre-check if piece is frozen or debuffed
     is_frozen = cache_manager.is_frozen(expected_coord, piece.color)
+    if is_frozen:
+        return []  # Early exit if frozen
+
     is_buffed = cache_manager.is_movement_buffed(expected_coord, piece.color)
     is_debuffed = (
         hasattr(cache_manager, "is_movement_debuffed")
@@ -144,38 +146,61 @@ def _validate_piece_moves(
     occ, _ptype = cache_manager.piece_cache.export_arrays()
     color_code = piece.color.value  # 1 for white, 2 for black
 
-    for move in moves:
-        # 1. Check from-square
-        if move.from_coord != expected_coord:
-            continue
-
-        # 2. Bounds check
-        to_x, to_y, to_z = move.to_coord
-        if not (0 <= to_x < 9 and 0 <= to_y < 9 and 0 <= to_z < 9):
-            continue
-
-        # 3. Check destination occupancy/color DIRECTLY
-        dest_code = occ[to_z, to_y, to_x]
-        if dest_code == color_code:  # Friendly piece blocks move
-            continue
-
-        # 4. Check frozen effect
-        if is_frozen:
-            continue
-
-        # 5. Check movement debuff (restrict to distance 1 only)
-        if is_debuffed:
-            distance = max(
-                abs(move.to_coord[0] - move.from_coord[0]),
-                abs(move.to_coord[1] - move.from_coord[1]),
-                abs(move.to_coord[2] - move.from_coord[2])
-            )
-            if distance > 1:
+    n_moves = len(moves)
+    if n_moves < 32:  # Fallback to Python loop for small lists to avoid numpy overhead
+        validated = []
+        exp_x, exp_y, exp_z = expected_coord
+        for move in moves:
+            from_x, from_y, from_z = move.from_coord
+            if (from_x, from_y, from_z) != (exp_x, exp_y, exp_z):
                 continue
 
-        validated_moves.append(move)
+            to_x, to_y, to_z = move.to_coord
+            if not (0 <= to_x < BOARD_SIZE and 0 <= to_y < BOARD_SIZE and 0 <= to_z < BOARD_SIZE):
+                continue
 
-    return validated_moves
+            dest_code = occ[to_z, to_y, to_x]
+            if dest_code == color_code:
+                continue
+
+            if is_debuffed:
+                dist = max(abs(to_x - exp_x), abs(to_y - exp_y), abs(to_z - exp_z))
+                if dist > 1:
+                    continue
+
+            validated.append(move)
+        return validated
+    else:
+        # Vectorized path for larger lists
+        # Convert moves to numpy for vectorized operations
+        from_coords = np.array([move.from_coord for move in moves])
+        to_coords = np.array([move.to_coord for move in moves])
+
+        expected_arr = np.array(expected_coord)  # For broadcasting
+
+        # 1. Check from-square consistency (vectorized)
+        valid_from = np.all(from_coords == expected_arr, axis=1)
+
+        # 2. Bounds check (vectorized)
+        valid_bounds = np.all((to_coords >= 0) & (to_coords < BOARD_SIZE), axis=1)
+
+        # 3. Check destination occupancy/color DIRECTLY (vectorized)
+        to_z, to_y, to_x = to_coords.T.astype(int)  # Ensure int for indexing
+        dest_codes = occ[to_z, to_y, to_x]
+        valid_dest = dest_codes != color_code
+
+        # 4. Check movement debuff (restrict to distance 1 only) if applicable
+        if is_debuffed:
+            distances = np.max(np.abs(to_coords - expected_arr), axis=1)
+            valid_debuff = distances <= 1
+        else:
+            valid_debuff = np.ones(n_moves, dtype=bool)
+
+        # Combine all validations
+        valid_mask = valid_from & valid_bounds & valid_dest & valid_debuff
+
+        # Return validated moves
+        return [moves[i] for i in np.flatnonzero(valid_mask)]
 
 def _is_move_valid(
     move: Move,

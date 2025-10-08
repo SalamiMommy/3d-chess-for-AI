@@ -1,19 +1,35 @@
 from __future__ import annotations
 """
 game3d/movement/movetypes/jumpmovement.py
-Zero-redundancy JUMP-move engine – 5600-X optimised, GPU code removed.
+Zero-redundancy jump-move engine — now supports disk-backed precomputed jump tables, with fallback.
 """
 
 from typing import List, Tuple, TYPE_CHECKING
+import os
 import numpy as np
 from numba import njit, prange
 
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.common.common import in_bounds
+from game3d.common.common import coord_to_idx, in_bounds
 from game3d.movement.movepiece import MOVE_FLAGS
 if TYPE_CHECKING:
     from game3d.cache.manager import CacheManager
+
+# ------------------------------------------------------------------
+#  Precomputed jump table loader
+# ------------------------------------------------------------------
+_PRECOMPUTED_DIR = os.path.join(os.path.dirname(__file__), "precomputed")
+
+def load_precomputed_jumptable(piece_name: str):
+    """Load precomputed jump table for a piece type from disk, or return None if unavailable."""
+    filename = os.path.join(_PRECOMPUTED_DIR, f"{piece_name}_jumptable.npy")
+    if not os.path.isfile(filename):
+        return None
+    arr = np.load(filename, allow_pickle=True)
+    if arr.shape[0] != 729:
+        return None
+    return arr
 
 # ------------------------------------------------------------------
 #  Tiny helpers
@@ -22,9 +38,6 @@ if TYPE_CHECKING:
 def _occ_code(occ: np.ndarray, x: int, y: int, z: int) -> int:
     return occ[x, y, z]
 
-# ------------------------------------------------------------------
-#  Inline alias for Numba – keeps same logic, zero call overhead
-# ------------------------------------------------------------------
 @njit(cache=True, inline="always")
 def _in_bounds(x: int, y: int, z: int) -> bool:
     return 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9
@@ -69,24 +82,61 @@ def _build_jump_moves(
     start: Tuple[int, int, int],
     raw: List[Tuple[int, int, int, bool]],
 ) -> List[Move]:
-    return [
-        Move(
-            from_coord=start,
-            to_coord=(x, y, z),
-            flags = MOVE_FLAGS['CAPTURE'] if is_cap else 0,
-            captured_piece=None,
-        )
-        for x, y, z, is_cap in raw
-    ]
+    if not raw:
+        return []
+
+    # Convert to numpy for batch creation
+    to_coords = np.array([(x, y, z) for x, y, z, _ in raw], dtype=np.int32)
+    captures = np.array([is_cap for _, _, _, is_cap in raw], dtype=bool)
+
+    return Move.create_batch(start, to_coords, captures)
 
 # ------------------------------------------------------------------
-#  Main generator – CUDA path removed
+#  Main generator – supports jump table fallback
 # ------------------------------------------------------------------
 class IntegratedJumpMovementGenerator:
-    __slots__ = ("cache",)
+    __slots__ = ("cache", "_jumptables")
 
     def __init__(self, cache_manager: CacheManager):
         self.cache = cache_manager
+        self._jumptables = {}
+
+    def _get_precomputed_moves(self, piece_name: str, pos: Tuple[int, int, int], color: Color, allow_capture=True):
+        """Return Move objects for all legal jumps from precomputed table, after occupancy filtering."""
+        if piece_name not in self._jumptables:
+            self._jumptables[piece_name] = load_precomputed_jumptable(piece_name)
+        table = self._jumptables[piece_name]
+        if table is None:
+            return None
+        idx = coord_to_idx(pos)
+        raw_destinations = table[idx]  # List of (x, y, z) tuples
+
+        occ, _ = self.cache.piece_cache.export_arrays()
+        own_code = 1 if color == Color.WHITE else 2
+        enemy_code = PieceType.KING.value | ((3 - own_code) << 3)
+        enemy_has_priests = self._enemy_still_has_priests(color)
+
+        moves = []
+        for tx, ty, tz in raw_destinations:
+            if not _in_bounds(tx, ty, tz):
+                continue
+            h = occ[tx, ty, tz]
+            is_cap = False
+            if h == 0:
+                is_cap = False
+            elif allow_capture and h != own_code:
+                if h == enemy_code and enemy_has_priests:
+                    continue
+                is_cap = True
+            else:
+                continue  # Blocked by friendly
+            moves.append(Move(
+                from_coord=pos,
+                to_coord=(tx, ty, tz),
+                flags=MOVE_FLAGS['CAPTURE'] if is_cap else 0,
+                captured_piece=None,
+            ))
+        return moves
 
     def generate_jump_moves(
         self,
@@ -96,7 +146,15 @@ class IntegratedJumpMovementGenerator:
         directions: np.ndarray,
         allow_capture: bool = True,
         use_amd: bool = True,  # ignored – CPU is faster
+        piece_name: str = None,  # Optional: for precomputed lookup
     ) -> List[Move]:
+        # Try precomputed first if piece_name is given
+        if piece_name:
+            moves = self._get_precomputed_moves(piece_name, pos, color, allow_capture=allow_capture)
+            if moves is not None:
+                return moves
+
+        # Fallback: use kernel
         occ, _ = self.cache.piece_cache.export_arrays()
         own_code = 1 if color == Color.WHITE else 2
         enemy_code = PieceType.KING.value | ((3 - own_code) << 3)

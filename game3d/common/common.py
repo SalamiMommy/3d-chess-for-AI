@@ -46,10 +46,23 @@ def coord_to_idx(c: Coord) -> int:
     # 9×9×9  →  z*81 + y*9 + x
     return (c[2] * 81) + (c[1] * 9) + c[0]
 
+_IDX_TO_COORD = [None] * 729
+for idx in range(729):
+    z = idx // 81
+    r = idx % 81
+    y = r // 9
+    x = r % 9
+    _IDX_TO_COORD[idx] = (x, y, z)
+
 def idx_to_coord(idx: int) -> Coord:
-    z, r = divmod(idx, 81)
-    y, x = divmod(r, 9)
-    return x, y, z
+    return _IDX_TO_COORD[idx]
+
+_COORD_TO_IDX = {}
+for x in range(9):
+    for y in range(9):
+        for z in range(9):
+            coord = (x, y, z)
+            _COORD_TO_IDX[coord] = coord_to_idx(coord)
 
 def add_coords(a: Coord, b: Coord) -> Coord:
     return a[0] + b[0], a[1] + b[1], a[2] + b[2]

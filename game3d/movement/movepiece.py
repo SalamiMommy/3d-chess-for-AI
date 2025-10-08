@@ -2,13 +2,12 @@
 Optimized Move class with object pooling and minimal overhead
 Reduces Move.__init__ time from ~47s to <5s
 """
-
 import struct
 from typing import Optional, Tuple, Dict, Any
 from enum import IntEnum
 import numpy as np
-from game3d.common.common import coord_to_idx, idx_to_coord
-# Move type flags as bit masks
+from game3d.common.common import coord_to_idx, idx_to_coord, _COORD_TO_IDX  # Added _COORD_TO_IDX import
+
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,
     'PROMOTION': 1 << 1,
@@ -63,7 +62,6 @@ class MovePool:
 # Global move pool
 _move_pool = MovePool()
 
-
 class Move:
     def __init__(
         self,
@@ -73,17 +71,19 @@ class Move:
         captured_piece: Optional[int] = None,
         promotion_type: Optional[int] = None
     ):
+        # Use struct for faster bit packing
         from_idx = coord_to_idx(from_coord)
         to_idx = coord_to_idx(to_coord)
-        self._data = (
-            from_idx |
-            (to_idx << 10) |
-            (flags << 20) |
-            ((captured_piece or 0) << 28) |
-            ((promotion_type or 0) << 34)
-        )
-        self._cached_hash = hash(self._data)
+        cap = captured_piece or 0
+        prom = promotion_type or 0
+        self._data = struct.pack('Q', from_idx | (to_idx << 10) | (flags << 20) | (cap << 28) | (prom << 34))[0]
+        self._cached_hash = None  # Lazy hash computation
         self.metadata = {}
+
+    def _compute_hash(self):
+        if self._cached_hash is None:
+            self._cached_hash = hash(self._data)
+        return self._cached_hash
 
     @property
     def from_coord(self) -> Tuple[int, int, int]:
@@ -99,15 +99,13 @@ class Move:
                      is_capture: bool = False):
         """Factory method for simple moves (most common case)."""
         move = _move_pool.acquire()
-        if not cls._initialized:
-            cls._init_lookups()
 
-        from_idx = cls._coord_to_idx[from_coord]
-        to_idx = cls._coord_to_idx[to_coord]
-        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0,
+        from_idx = _COORD_TO_IDX[from_coord]
+        to_idx = _COORD_TO_IDX[to_coord]
+        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0
 
         move._data = from_idx | (to_idx << 10) | (flags << 20)
-        move._cached_hash = hash(move._data)
+        move._cached_hash = None  # Lazy
         return move
 
     @classmethod
@@ -118,71 +116,72 @@ class Move:
         Create multiple moves from one source in batch.
         Much faster than individual creation.
         """
-        if not cls._initialized:
-            cls._init_lookups()
+        n = len(to_coords)
+        if n == 0:
+            return []
 
-        moves = []
-        from_idx = cls._coord_to_idx[from_coord]
+        # Compute from_idx once
+        from_idx = from_coord[0] + from_coord[1] * 9 + from_coord[2] * 81
 
-        for i in range(len(to_coords)):
+        # Vectorized to_idxs
+        to_idxs = to_coords[:, 0] + to_coords[:, 1] * 9 + to_coords[:, 2] * 81
+
+        # Vectorized flags
+        capture_flag = MOVE_FLAGS['CAPTURE']
+        flags = np.where(captures, capture_flag << 20, 0)
+
+        # Vectorized _data computation (use int64 for safety)
+        datas = np.int64(from_idx) | (np.int64(to_idxs) << 10) | np.int64(flags)
+
+        # Now create instances in a tight loop
+        moves = [None] * n
+        for i in range(n):
             move = _move_pool.acquire()
-            to_coord = tuple(to_coords[i])
-            to_idx = cls._coord_to_idx[to_coord]
-            flags = MOVE_FLAGS['CAPTURE'] if captures[i] else 0
-
-            move._data = from_idx | (to_idx << 10) | (flags << 20)
-            move._cached_hash = hash(move._data)
-            moves.append(move)
+            move._data = datas[i]
+            move._cached_hash = None  # Lazy
+            moves[i] = move
 
         return moves
 
     @property
     def is_capture(self) -> bool:
-        """Check if move is a capture."""
         return bool(self._data & (MOVE_FLAGS['CAPTURE'] << 20))
 
     @property
     def is_promotion(self) -> bool:
-        """Check if move is a promotion."""
         return bool(self._data & (MOVE_FLAGS['PROMOTION'] << 20))
 
     @property
     def flags(self) -> int:
-        """Get all flags as integer."""
         return (self._data >> 20) & 0xFF
 
     def __hash__(self):
-        """Return cached hash."""
-        return self._cached_hash
+        return self._compute_hash()
 
     def __eq__(self, other):
-        """Fast equality check."""
         if not isinstance(other, Move):
             return False
         return self._data == other._data
 
     def __repr__(self):
-        """String representation."""
         fx, fy, fz = self.from_coord
         tx, ty, tz = self.to_coord
         capture = "x" if self.is_capture else "-"
         return f"({fx},{fy},{fz}){capture}({tx},{ty},{tz})"
 
     def release(self):
-        """Return this move to the pool."""
         _move_pool.release(self)
 
     @property
     def captured_piece_type(self) -> Optional[int]:
-        """Extract captured piece type (int enum value)."""
         val = (self._data >> 28) & 0x3F
         return val if val != 0 else None
 
     @property
     def promotion_type(self) -> Optional[int]:
-        """Extract promotion piece type (int enum value)."""
         val = (self._data >> 34) & 0x3F
         return val if val != 0 else None
+
 
 def convert_legacy_move_args(
     from_coord,
@@ -238,6 +237,7 @@ def optimize_move_creation():
 
     # Create wrapper that converts calls
     class MoveWrapper:
+
         def __new__(cls, *args, **kwargs):
             if len(args) >= 2 and not kwargs:
                 # Simple case: Move(from_coord, to_coord)
