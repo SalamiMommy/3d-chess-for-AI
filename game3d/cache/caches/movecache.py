@@ -207,12 +207,12 @@ class OptimizedMoveCache:
         Order is critical: hash update uses the *current* board state.
         """
         # 1. Read the state BEFORE we touch the board
-        piece = self._board.piece_at(mv.to_coord)  # piece that just arrived here
+        piece = self._board.piece_at(mv.to_coord)          # piece that just arrived here
         captured_piece = None
         if getattr(mv, "is_capture", False):
             captured_type = getattr(mv, "captured_ptype", None)
             if captured_type is not None:
-                from game3d.pieces.piece import Piece  # ADDED: Missing import
+                from game3d.pieces.piece import Piece      # local import to avoid cycle
                 captured_piece = Piece(color.opposite(), captured_type)
 
         # 2. Roll the hash back while the position is still intact
@@ -336,10 +336,19 @@ class OptimizedMoveCache:
         self._attacked_squares_valid[Color.WHITE] = False
         self._attacked_squares_valid[Color.BLACK] = False
 
-    def _batch_update_pieces(self, affected_squares: Set[Tuple[int, int, int]], color: Color) -> None:
+    def _batch_update_pieces(self, affected_squares: Set[Coord], color: Color) -> None:
         """Only update if cache is valid - otherwise mark for rebuild."""
+        # ---- NEW: consistency check ----
+        for coord in affected_squares:
+            cache_piece = self._cache_manager.occupancy.get(coord)
+            board_piece = self._board.piece_at(coord)
+            if cache_piece != board_piece:          # mismatch → give up
+                self._needs_rebuild = True
+                return
+        # ---------------------------------
+
         if self._needs_rebuild:
-            return  # Don't waste time on incremental updates if full rebuild is pending
+            return
 
         # Clear affected pieces from cache
         for coord in affected_squares:

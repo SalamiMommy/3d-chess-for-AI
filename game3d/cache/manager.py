@@ -147,6 +147,13 @@ class OptimizedCacheManager:
                 self._age_counter += 1
                 return
 
+            dest_piece = self.occupancy.get(mv.to_coord)
+            if (dest_piece and dest_piece.color == mover and
+                    from_piece.ptype is not PieceType.KNIGHT):
+                raise ValueError(
+                    f"Illegal move: {from_piece} may not land on friendly {dest_piece}"
+                )
+
             if from_piece.color != mover:
                 raise ValueError(f"Wrong color piece at {mv.from_coord}")
 
@@ -155,11 +162,7 @@ class OptimizedCacheManager:
 
             # Update Zobrist (fast)
             self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, from_piece, captured_piece,
-                old_castling=0, new_castling=0,
-                old_ep=None, new_ep=None,
-                old_ply=current_ply, new_ply=current_ply + 1
-            )
+                self._current_zobrist_hash, mv, from_piece, captured_piece, cache=self)
 
             # Apply to board
             self.board.apply_move(mv)
@@ -213,8 +216,7 @@ class OptimizedCacheManager:
 
             # Update Zobrist hash BEFORE board mutation
             self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, piece, captured_piece
-            )
+                self._current_zobrist_hash, mv, from_piece, captured_piece, cache=self)
 
             # Now mutate the board
             self._undo_move_optimized(mv, mover, piece, captured_piece)

@@ -39,6 +39,19 @@ def validate_legal_moves(cache: OptimizedCacheManager, moves: List[Move], color:
 # ==============================================================================
 # CHECK VALIDATION
 # ==============================================================================
+def _blocked_by_own_color(move: Move, state: 'GameState') -> bool:
+    """True = move is illegal because destination is occupied by same color."""
+    dest_piece = state.cache.occupancy.get(move.to_coord)
+    if dest_piece is None:                       # empty square → always OK
+        return False
+    if dest_piece.color == state.color:          # friendly blocker
+        # ---  KNIGHT EXCEPTION  ------------------------------------
+        mover_piece = state.cache.occupancy.get(move.from_coord)
+        if mover_piece and mover_piece.ptype is PieceType.KNIGHT:
+            return False                         # regular knights ARE allowed
+        return True                              # every other friendly = illegal
+    return False                                   # enemy piece → will be captured
+
 
 def leaves_king_in_check(move: Move, state: 'GameState') -> bool:
     """Check if move leaves king in check."""
@@ -48,7 +61,8 @@ def leaves_king_in_check(move: Move, state: 'GameState') -> bool:
 
 
 def leaves_king_in_check_optimized(move: Move, state: 'GameState', check_summary: Dict[str, Any]) -> bool:
-    """Optimized check validation using pre-computed position state."""
+    if _blocked_by_own_color(move, state):       # <-- NEW guard
+        return True
     king_color = state.color
     king_pos = check_summary[f'{king_color.name.lower()}_king_position']
     if not king_pos:
@@ -74,7 +88,8 @@ def leaves_king_in_check_optimized(move: Move, state: 'GameState', check_summary
 
 
 def resolves_check(move: Move, state: 'GameState', check_summary: Dict[str, Any]) -> bool:
-    """Check if move resolves the current check situation."""
+    if _blocked_by_own_color(move, state):       # <-- NEW guard
+        return False
     king_color = state.color
     king_pos = check_summary[f'{king_color.name.lower()}_king_position']
 

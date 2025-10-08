@@ -206,7 +206,10 @@ def _validate_piece_moves(
         # 3. Check destination occupancy/color DIRECTLY (vectorized)
         to_z, to_y, to_x = to_coords.T.astype(int)  # Ensure int for indexing
         dest_codes = occ[to_z, to_y, to_x]
-        valid_dest = dest_codes != color_code
+        if piece.ptype is PieceType.KNIGHT:
+            valid_dest = (dest_codes == 0) | (dest_codes != color_code)  # empty OR enemy
+        else:
+            valid_dest = dest_codes != color_code
 
         # Combine all validations
         valid_mask = valid_from & valid_bounds & valid_dest

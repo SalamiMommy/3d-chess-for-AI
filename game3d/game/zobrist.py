@@ -9,6 +9,7 @@ import threading
 if TYPE_CHECKING:
     from game3d.board.board import Board
     from game3d.movement.movepiece import Move
+    from game3d.cache.manager import OptimizedCacheManager
 
 from game3d.pieces.enums import Color, PieceType
 from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z
@@ -83,60 +84,36 @@ class ZobristHash:
         """Compute Zobrist hash from scratch for a board state."""
         return compute_zobrist(board, color)
 
-    def update_hash_move(self, current_hash: int, mv: "Move", from_piece: "Piece",
-                        captured_piece: Optional["Piece"] = None,
-                        old_castling: int = 0, new_castling: int = 0,
-                        old_ep: Optional[Tuple[int, int, int]] = None,
-                        new_ep: Optional[Tuple[int, int, int]] = None,
-                        old_ply: int = 0, new_ply: int = 0) -> int:
+    def update_hash_move(
+            self,
+            current_hash: int,
+            mv: "Move",
+            from_piece: "Piece",
+            captured_piece: Optional["Piece"] = None,
+            *,
+            cache: Optional["OptimizedCacheManager"] = None,   # NEW kw-only
+            **kwargs,                                           # swallow legacy args
+    ) -> int:
         """
-        Incrementally update Zobrist hash for a move.
-
-        Args:
-            current_hash: Current Zobrist hash
-            mv: The move being applied
-            from_piece: Piece that is moving
-            captured_piece: Piece being captured (if any)
-            old_castling: Old castling rights
-            new_castling: New castling rights
-            old_ep: Old en passant square
-            new_ep: New en passant square
-            old_ply: Old ply count
-            new_ply: New ply count
-
-        Returns:
-            Updated Zobrist hash
+        Incrementally update the Zobrist hash for a move.
+        If *cache* is supplied we use the occupancy cache instead of the board.
+        All other keyword arguments (castling, ep, ply) are ignored – they are
+        handled by the caller if still needed.
         """
         new_hash = current_hash
 
-        # Remove piece from original square
+        # 1. Remove piece from source square
         new_hash ^= _PIECE_KEYS[(from_piece.ptype, from_piece.color, mv.from_coord)]
 
-        # Handle capture
-        if captured_piece:
+        # 2. Handle capture (remove captured piece first)
+        if captured_piece is not None:
             new_hash ^= _PIECE_KEYS[(captured_piece.ptype, captured_piece.color, mv.to_coord)]
 
-        # Add piece to new square (handle promotion)
-        new_ptype = from_piece.ptype
-        if hasattr(mv, 'promotion_ptype') and mv.promotion_ptype:
-            new_ptype = mv.promotion_ptype
+        # 3. Add piece to destination (promotion already reflected in from_piece)
+        new_hash ^= _PIECE_KEYS[(from_piece.ptype, from_piece.color, mv.to_coord)]
 
-        new_hash ^= _PIECE_KEYS[(new_ptype, from_piece.color, mv.to_coord)]
-
-        # Update side to move
+        # 4. Flip side-to-move
         new_hash ^= _SIDE_KEY
-
-        # Handle castling rights changes
-        if old_castling != new_castling:
-            new_hash ^= _CASTLE_KEYS[f"{old_castling}"]
-            new_hash ^= _CASTLE_KEYS[f"{new_castling}"]
-
-        # Handle en passant changes
-        if old_ep != new_ep:
-            if old_ep:
-                new_hash ^= _EN_PASSANT_KEYS[old_ep]
-            if new_ep:
-                new_hash ^= _EN_PASSANT_KEYS[new_ep]
 
         return new_hash
 

@@ -180,7 +180,7 @@ def _compute_undo_info(game_state: 'GameState', mv: Move, moving_piece: Piece,
                        captured_piece: Optional[Piece]) -> Dict[str, Any]:
     """Pre-compute information needed for efficient undo."""
     return {
-        'original_board_tensor': game_state.board.tensor().clone(),
+        'original_board_tensor': game_state.board.tensor().clone().detach().cpu(),  # immutable
         'moving_piece': moving_piece,
         'captured_piece': captured_piece,
         'original_halfmove_clock': game_state.halfmove_clock,
