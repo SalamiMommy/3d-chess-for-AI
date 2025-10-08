@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 # ==============================================================================
-# BASIC MOVE VALIDATION
+# BASIC MOVE VALIDATION (MOVED TO PSEUDO_LEGAL.PY)
 # ==============================================================================
 
 def validate_legal_moves(cache: OptimizedCacheManager, moves: List[Move], color: Color) -> List[Move]:
@@ -26,7 +26,7 @@ def validate_legal_moves(cache: OptimizedCacheManager, moves: List[Move], color:
     valid_moves = []
 
     for move in moves:
-        piece = cache.piece_cache.get(move.from_coord)
+        piece = cache.occupancy.get(move.from_coord)
         if piece is None:
             continue  # Skip instead of raise to avoid crash, but log
         # Additional validation
@@ -35,21 +35,6 @@ def validate_legal_moves(cache: OptimizedCacheManager, moves: List[Move], color:
         valid_moves.append(move)
 
     return valid_moves
-
-
-def is_basic_legal(move: Move, state: 'GameState') -> bool:
-    """Basic legality checks."""
-    if not (0 <= move.to_coord[0] < 9 and
-            0 <= move.to_coord[1] < 9 and
-            0 <= move.to_coord[2] < 9):
-        return False
-
-    dest_piece = state.cache.piece_cache.get(move.to_coord)
-    if dest_piece and dest_piece.color == state.color:
-        return False
-
-    return True
-
 
 # ==============================================================================
 # CHECK VALIDATION
@@ -188,7 +173,7 @@ def along_pin_line(move: Move, pin_direction: Tuple[int, int, int]) -> bool:
 # BATCH VALIDATION
 # ==============================================================================
 def batch_check_validation(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch validation."""
+    """Optimized batch validation (assumes basic-legal)."""
     if not moves:
         return []
 
@@ -197,19 +182,19 @@ def batch_check_validation(moves: List[Move], state: GameState) -> List[Move]:
     in_check = check_summary[f'{state.color.name.lower()}_check']
 
     if not in_check:
-        # Fast path - only basic validation needed
-        return [mv for mv in moves if is_basic_legal(mv, state)]
+        # Fast path - no check validation needed
+        return moves
 
     # Full validation only when in check
     # Use list comprehension instead of loop for performance
     return [
         mv for mv in moves
-        if is_basic_legal(mv, state) and not leaves_king_in_check(mv, state)
+        if not leaves_king_in_check(mv, state)
     ]
 
 
 def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
-    """Validate a batch of moves in parallel."""
+    """Validate a batch of moves in parallel (assumes basic-legal)."""
     legal_batch = []
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(leaves_king_in_check, move, state) for move in moves]
@@ -223,7 +208,7 @@ def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
 # LEGAL MOVE FILTERING
 # ==============================================================================
 def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch legal move filtering with incremental validation."""
+    """Optimized batch legal move filtering with incremental validation (assumes basic-legal)."""
     if not moves:
         return moves
 
@@ -237,10 +222,6 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
     in_check = check_summary[f'{state.color.name.lower()}_check']
 
     for move in moves:
-        # Basic legality check
-        if not is_basic_legal(move, state):
-            continue
-
         # Fast check for king moves
         if move.from_coord == king_pos:
             if move.to_coord in attacked_squares:
@@ -278,44 +259,3 @@ def validate_hive_moves(game_state: GameState, moves: List[Move]) -> Dict[str, A
     if not moves:
         return {'valid': False, 'message': "No moves submitted."}
 
-    # Check all pieces are hive pieces
-    for move in moves:
-        piece = game_state.cache.piece_cache.get(move.from_coord)
-        if not piece or piece.ptype != PieceType.HIVE or piece.color != game_state.color:
-            return {'valid': False, 'message': "Only Hive pieces may move."}
-
-    # Check no non-hive alternatives exist
-    all_legal = game_state.legal_moves()
-    non_hive_moves = [m for m in all_legal if
-                      game_state.cache.piece_cache.get(m.from_coord).ptype != PieceType.HIVE]
-    if non_hive_moves:
-        return {'valid': False, 'message': "Must move only Hive pieces this turn."}
-
-    # Validate each move
-    for move in moves:
-        if move not in all_legal:
-            return {'valid': False, 'message': f"Illegal move: {move}"}
-
-    return {'valid': True, 'message': ""}
-
-
-def validate_move_fast(move: Move, state: GameState, legal_moves: List[Move]) -> Dict[str, Any]:
-    """Fast move validation pipeline."""
-    # Check game over
-    if state.is_game_over():
-        return {'valid': False, 'message': "Game already finished."}
-
-    # Check piece exists
-    piece = state.cache.piece_cache.get(move.from_coord)
-    if piece is None:
-        return {'valid': False, 'message': f"No piece at {move.from_coord}"}
-
-    # Check color
-    if piece.color != state.color:
-        return {'valid': False, 'message': "Not your turn."}
-
-    # Check legality (cached)
-    if move not in legal_moves:
-        return {'valid': False, 'message': "Illegal move."}
-
-    return {'valid': True, 'message': ""}

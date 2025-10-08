@@ -70,16 +70,53 @@ def generate_pseudo_legal_moves(state: GameState) -> List[Move]:
     """Entry-point that always uses the standard path."""
     return _generate_pseudo_legal_moves_impl(state, mode=PseudoLegalMode.STANDARD)
 
+def generate_pseudo_legal_moves_for_piece(state: GameState, coord: Tuple[int, int, int]) -> List[Move]:
+    """Generate pseudo-legal moves for a specific piece."""
+    piece = state.cache.occupancy.get(coord)
+    if not piece or piece.color != state.color:
+        return []
+
+    dispatcher = get_dispatcher(piece.ptype)
+    if dispatcher is None:
+        return []
+
+    piece_moves = dispatcher(state, *coord)
+    modified_moves = _apply_movement_modifiers(piece_moves, coord, state)
+    validated_moves = _validate_piece_moves(modified_moves, coord, piece, state)
+
+    return validated_moves
+
 def _generate_pseudo_legal_batch(state: GameState) -> list[Move]:
     """Batch pseudo-legal move generation – now *really* batched."""
     coords, types = [], []
 
-    for coord, piece in state.board.list_occupied():
-        if piece.color == state.color:
-            coords.append(coord)
-            types.append(piece.ptype)
+    for coord, piece in _get_current_player_pieces(state):
+        coords.append(coord)
+        types.append(piece.ptype)
 
-    return dispatch_batch(state, coords, types, state.color)
+    raw_moves = dispatch_batch(state, coords, types, state.color)
+
+    # Apply modifiers and validations post-batch
+    all_moves = []
+    cache_manager = state.cache
+    color = state.color
+    # Group moves by from_coord for per-piece processing
+    moves_by_from = defaultdict(list)
+    for move in raw_moves:
+        moves_by_from[move.from_coord].append(move)
+
+    for from_coord, piece_moves in moves_by_from.items():
+        # Get piece once per group
+        piece = state.cache.occupancy.get(from_coord)
+        if not piece:
+            continue
+        modified_moves = _apply_movement_modifiers(piece_moves, from_coord, state)
+        validated_moves = _validate_piece_moves(modified_moves, from_coord, piece, state)
+        all_moves.extend(validated_moves)
+        _STATS.piece_breakdown[piece.ptype] += len(validated_moves)
+        _STATS.total_moves_generated += len(validated_moves)
+
+    return all_moves
 
 def _generate_pseudo_legal_incremental(state: GameState) -> List[Move]:
     """Incremental pseudo-legal move generation (for small changes)."""
@@ -90,17 +127,15 @@ def _generate_pseudo_legal_standard(state: GameState) -> List[Move]:
     """Standard pseudo-legal move generation - CORRECTED."""
     all_moves: List[Move] = []
 
-    for coord, piece in state.board.list_occupied():
-        if piece.color != state.color:
-            continue
-
+    for coord, piece in _get_current_player_pieces(state):
         dispatcher = get_dispatcher(piece.ptype)
         if dispatcher is None:
             continue
 
         try:
             piece_moves = dispatcher(state, *coord)
-            validated_moves = _validate_piece_moves(piece_moves, coord, piece, state)
+            modified_moves = _apply_movement_modifiers(piece_moves, coord, state)
+            validated_moves = _validate_piece_moves(modified_moves, coord, piece, state)
 
             if validated_moves:
                 all_moves.extend(validated_moves)
@@ -123,7 +158,7 @@ def _validate_piece_moves(
     state: "GameState"
 ) -> List[Move]:
     """
-    Enhanced validation for piece-generated moves.
+    Enhanced validation for piece-generated moves (basic checks only: bounds, from-consistency, dest not friendly).
     Uses raw occupancy arrays for direct checks.
     """
     if not moves:
@@ -131,19 +166,8 @@ def _validate_piece_moves(
 
     cache_manager = state.cache
 
-    # Pre-check if piece is frozen or debuffed
-    is_frozen = cache_manager.is_frozen(expected_coord, piece.color)
-    if is_frozen:
-        return []  # Early exit if frozen
-
-    is_buffed = cache_manager.is_movement_buffed(expected_coord, piece.color)
-    is_debuffed = (
-        hasattr(cache_manager, "is_movement_debuffed")
-        and cache_manager.is_movement_debuffed(expected_coord, piece.color)
-    )
-
     # Get raw numpy arrays (no locking needed for reads)
-    occ, _ptype = cache_manager.piece_cache.export_arrays()
+    occ, _ptype = cache_manager.occupancy.export_arrays()
     color_code = piece.color.value  # 1 for white, 2 for black
 
     n_moves = len(moves)
@@ -162,11 +186,6 @@ def _validate_piece_moves(
             dest_code = occ[to_z, to_y, to_x]
             if dest_code == color_code:
                 continue
-
-            if is_debuffed:
-                dist = max(abs(to_x - exp_x), abs(to_y - exp_y), abs(to_z - exp_z))
-                if dist > 1:
-                    continue
 
             validated.append(move)
         return validated
@@ -189,86 +208,101 @@ def _validate_piece_moves(
         dest_codes = occ[to_z, to_y, to_x]
         valid_dest = dest_codes != color_code
 
-        # 4. Check movement debuff (restrict to distance 1 only) if applicable
-        if is_debuffed:
-            distances = np.max(np.abs(to_coords - expected_arr), axis=1)
-            valid_debuff = distances <= 1
-        else:
-            valid_debuff = np.ones(n_moves, dtype=bool)
-
         # Combine all validations
-        valid_mask = valid_from & valid_bounds & valid_dest & valid_debuff
+        valid_mask = valid_from & valid_bounds & valid_dest
 
         # Return validated moves
         return [moves[i] for i in np.flatnonzero(valid_mask)]
 
-def _is_move_valid(
-    move: Move,
-    expected_coord: Tuple[int, int, int],
-    piece,
-    state: GameState
-) -> bool:
-    """Basic move validation."""
-    # Check coordinate consistency
-    if move.from_coord != expected_coord:
-        return False
-
-    # Check bounds
-    to_x, to_y, to_z = move.to_coord
-    if not (0 <= to_x < BOARD_SIZE and 0 <= to_y < BOARD_SIZE and 0 <= to_z < BOARD_SIZE):
-        return False
-
-    # Check destination piece
-    dest_piece = state.cache.piece_cache.get(move.to_coord)
-    if dest_piece and dest_piece.color == piece.color:
-        return False
-
-    return True
-
-def _is_move_legal_for_piece_type(move: Move, piece, state: GameState) -> bool:
-    """Piece-type specific move validation - CORRECTED."""
+# ==============================================================================
+# MOVEMENT MODIFIERS (CONSOLIDATED HERE)
+# ==============================================================================
+def _apply_movement_modifiers(
+    moves: List[Move],
+    start_sq: Tuple[int, int, int],
+    state: GameState,
+) -> List[Move]:
+    """Apply movement buffs/debuffs/freeze - CONSOLIDATED."""
     cache_manager = state.cache
+    color = state.color
+    if not moves:
+        return moves
 
-    # Check freeze effects first (highest priority)
-    if cache_manager.is_frozen(move.from_coord, piece.color):
-        return False
+    # Pre-check if piece is frozen or debuffed/buffed
+    is_frozen = cache_manager.is_frozen(start_sq, color)
+    if is_frozen:
+        return []  # Early exit if frozen
 
-    # Check movement buffs
-    if cache_manager.is_movement_buffed(move.from_coord, piece.color):
-        pass  # Allow extended movement
+    is_buffed = cache_manager.is_movement_buffed(start_sq, color)
+    is_debuffed = (
+        hasattr(cache_manager, "is_movement_debuffed")
+        and cache_manager.is_movement_debuffed(start_sq, color)
+    )
 
-    # Check movement debuffs with proper hasattr check
-    elif (hasattr(cache_manager, "is_movement_debuffed") and
-          cache_manager.is_movement_debuffed(move.from_coord, piece.color)):
-        distance = max(
-            abs(move.to_coord[0] - move.from_coord[0]),
-            abs(move.to_coord[1] - move.from_coord[1]),
-            abs(move.to_coord[2] - move.from_coord[2])
+    modified_moves = []
+
+    for move in moves:
+        # Apply debuff restriction
+        if is_debuffed:
+            dist = max(
+                abs(move.to_coord[0] - start_sq[0]),
+                abs(move.to_coord[1] - start_sq[1]),
+                abs(move.to_coord[2] - start_sq[2])
+            )
+            if dist > 1:
+                continue
+            modified_moves.append(move)
+        elif is_buffed:
+            # Extend if buffed
+            extended_moves = _extend_move_range(move, start_sq, state)
+            modified_moves.extend(extended_moves)
+        else:
+            modified_moves.append(move)
+
+    return modified_moves
+
+def _extend_move_range(move: Move, start_sq: Tuple[int, int, int], state: GameState) -> List[Move]:
+    """Extend movement range for buffed pieces."""
+    direction = (
+        move.to_coord[0] - move.from_coord[0],
+        move.to_coord[1] - move.from_coord[1],
+        move.to_coord[2] - move.from_coord[2],
+    )
+
+    length = max(abs(d) for d in direction)
+    if length == 0:
+        return [move]
+
+    normalized_dir = tuple(d // length for d in direction)
+
+    extended_coord = (
+        move.to_coord[0] + normalized_dir[0],
+        move.to_coord[1] + normalized_dir[1],
+        move.to_coord[2] + normalized_dir[2],
+    )
+
+    extended_moves = [move]
+
+    if (0 <= extended_coord[0] < BOARD_SIZE and
+        0 <= extended_coord[1] < BOARD_SIZE and
+        0 <= extended_coord[2] < BOARD_SIZE):
+        extended_move = Move(
+            from_coord=move.from_coord,
+            to_coord=extended_coord,
+            is_capture=move.is_capture,
+            metadata={**move.metadata, 'extended': True}
         )
-        if distance > 1:
-            return False
+        extended_moves.append(extended_move)
 
-    return True
+    return extended_moves
 
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================
 
 def _get_current_player_pieces(state: GameState) -> List[Tuple[Tuple[int, int, int], Any]]:
-    """Get all pieces for current player - CORRECTED."""
-    current_pieces = []
-
-    for coord, piece in state.board.list_occupied():
-        if piece.color == state.color:  # This is correct
-            current_pieces.append((coord, piece))
-
-    return current_pieces
-
-def _estimate_move_count(state: GameState) -> int:
-    """Estimate number of moves for pre-allocation."""
-    # Rough estimate based on piece count
-    piece_count = sum(1 for _, piece in state.board.list_occupied() if piece.color == state.color)
-    return piece_count * 15  # Average 15 moves per piece
+    """Get all pieces for current player using cache - CENTRALIZED."""
+    return list(state.cache.occupancy.iter_color(state.color))
 
 def _update_stats(elapsed_ms: float, move_count: int) -> None:
     """Update performance statistics."""

@@ -13,7 +13,6 @@ from game3d.cache.manager import get_cache_manager
 from game3d.board.board import Board
 from game3d.game.gamestate import GameState
 from game3d.game.gamestate import GameMode
-from game3d.movement.validation import validate_move_fast, validate_archery_attack, validate_hive_moves  # NEW IMPORT
 
 
 class OptimizedGame3D:
@@ -77,13 +76,7 @@ class OptimizedGame3D:
         if self._debug_turn_info:
             print(f"[Turn {self._state.turn_number}] {self.current_player.name} submits {move}")
 
-        # Fast validation pipeline
-        legal_moves = self._state.legal_moves()
-        validation_result = validate_move_fast(move, self._state, legal_moves)  # UPDATED
-        if not validation_result['valid']:
-            return self._create_error_receipt(validation_result['message'], start_time)
-
-        # Process move
+        # Process move (validation handled in make_move)
         try:
             new_state = self._state.make_move(move)
 

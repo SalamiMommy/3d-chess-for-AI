@@ -13,10 +13,10 @@ if TYPE_CHECKING:
 from game3d.movement.movepiece import Move
 from game3d.common.common import Coord, in_bounds
 from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers
-from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+from game3d.movement.pseudo_legal import generate_pseudo_legal_moves, generate_pseudo_legal_moves_for_piece
 from game3d.attacks.check import king_in_check, get_check_summary
 from game3d.movement.validation import (  # UPDATED IMPORT
-    is_basic_legal, leaves_king_in_check, leaves_king_in_check_optimized,
+    leaves_king_in_check, leaves_king_in_check_optimized,
     resolves_check, batch_check_validation, validate_move_batch, filter_legal_moves  # Added filter_legal_moves
 )
 import sys
@@ -43,27 +43,8 @@ def recursion_limit(max_depth):
 
 def _generate_legal_moves_fallback(state: GameState) -> List[Move]:
     """Simple fallback move generation when recursion is detected."""
-    legal_moves = []
-    current_color = state.color
-
-    for coord, piece in state.board.list_occupied():
-        if piece.color != current_color:
-            continue
-
-        # Only generate basic moves without complex validation
-        dispatcher = get_dispatcher(piece.ptype)
-        if dispatcher:
-            moves = dispatcher(state, coord[0], coord[1], coord[2])
-            for move in moves:
-                # Only basic bounds and destination checks
-                if (0 <= move.to_coord[0] < 9 and
-                    0 <= move.to_coord[1] < 9 and
-                    0 <= move.to_coord[2] < 9):
-                    # Fix: Use occupancy cache instead of piece_cache
-                    dest_piece = state.cache.occupancy.get(move.to_coord)
-                    if not dest_piece or dest_piece.color != current_color:
-                        legal_moves.append(move)
-    return legal_moves
+    pseudo_moves = generate_pseudo_legal_moves(state)
+    return filter_legal_moves(pseudo_moves, state)
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -141,63 +122,19 @@ def generate_legal_moves(state: GameState) -> List[Move]:
     return _generate_legal_moves_impl(state, mode=MoveGenMode.STANDARD)
 
 def _generate_legal_moves_batch(state: GameState) -> List[Move]:
-    """Batch move generation - CORRECTED."""
-    # Validate coordinates first
-    for coord, piece in state.board.list_occupied():
-        assert len(coord) == 3 and all(0 <= c < 9 for c in coord), coord
-
-    cache_manager = state.cache
-    legal_moves = []
-
-    current_pieces = []
-    for coord, piece in state.board.list_occupied():
-        if piece.color == state.color:
-            current_pieces.append((coord, piece))
-
-    pieces_by_type: Dict[PieceType, List[Tuple[Coord, Any]]] = defaultdict(list)
-    for coord, piece in current_pieces:
-        pieces_by_type[piece.ptype].append((coord, piece))
-
-    for piece_type, pieces in pieces_by_type.items():
-        dispatcher = get_dispatcher(piece_type)
-        if dispatcher:
-            for coord, piece in pieces:
-                # Unpack coordinates properly
-                moves = dispatcher(state, coord[0], coord[1], coord[2])
-
-                # Apply movement modifiers
-                moves = _apply_movement_modifiers(moves, coord, state, cache_manager)
-
-                # Filter legal moves
-                legal_moves.extend(filter_legal_moves(moves, state))  # UPDATED: use validation function
-
-    return legal_moves
+    """Batch move generation - CORRECTED. Relies on pseudo-legal for iteration and basics."""
+    pseudo_moves = generate_pseudo_legal_moves(state)
+    return filter_legal_moves(pseudo_moves, state)  # UPDATED: use validation function
 
 def _generate_legal_moves_parallel(state: GameState) -> List[Move]:
-    """Parallel legal move generation with freeze and check filtering."""
-    # Get pseudo-legal moves
+    """Parallel legal move generation with check filtering (freeze/modifiers handled in pseudo)."""
     pseudo_legal_moves = generate_pseudo_legal_moves(state)
 
     if not pseudo_legal_moves:
         return []
 
-    # Pre-filter frozen pieces
-    freeze_cache = state.cache.effects["freeze"]
-    color = state.color
-
-    # Filter out frozen pieces first (fast operation)
-    unfrozen_moves = [
-        mv for mv in pseudo_legal_moves
-        if not freeze_cache.is_frozen(mv.from_coord, color)
-    ]
-
-    _STATS.freeze_filtered += len(pseudo_legal_moves) - len(unfrozen_moves)
-
-    if not unfrozen_moves:
-        return []
-
-    # Batch check validation in parallel
-    legal_moves = batch_check_validation(unfrozen_moves, state)  # UPDATED
+    # Batch check validation in parallel (assumes pseudo-moves are basic-legal)
+    legal_moves = batch_check_validation(pseudo_legal_moves, state)  # UPDATED
 
     return legal_moves
 
@@ -205,85 +142,6 @@ def _generate_legal_moves_standard(state: GameState) -> List[Move]:
     """Standard legal move generation with optimized filtering."""
     pseudo_moves = generate_pseudo_legal_moves(state)
     return filter_legal_moves(pseudo_moves, state)  # UPDATED: use validation function
-
-# ==============================================================================
-# MOVEMENT MODIFIERS
-# ==============================================================================
-def _apply_movement_modifiers(
-    moves: List[Move],
-    start_sq: Tuple[int, int, int],
-    state: GameState,
-    cache_manager=None
-) -> List[Move]:
-    """Apply movement buffs/debuffs - CORRECTED."""
-    if cache_manager is None:
-        cache_manager = state.cache
-    if not moves:
-        return moves
-
-    modified_moves = []
-
-    for move in moves:
-        if cache_manager.is_movement_buffed(start_sq, state.color):  # Fixed
-            extended_moves = _extend_move_range(move, start_sq, state)
-            modified_moves.extend(extended_moves)
-        elif (hasattr(cache_manager, "is_movement_debuffed") and  # Added hasattr check
-              cache_manager.is_movement_debuffed(start_sq, state.color)):  # Fixed
-            restricted_move = _restrict_move_range(move, start_sq, state)
-            if restricted_move:
-                modified_moves.append(restricted_move)
-        else:
-            modified_moves.append(move)
-
-    return modified_moves
-
-def _extend_move_range(move: Move, start_sq: Tuple[int, int, int], state: GameState) -> List[Move]:
-    """Extend movement range for buffed pieces."""
-    direction = (
-        move.to_coord[0] - move.from_coord[0],
-        move.to_coord[1] - move.from_coord[1],
-        move.to_coord[2] - move.from_coord[2],
-    )
-
-    length = max(abs(d) for d in direction)
-    if length == 0:
-        return [move]
-
-    normalized_dir = tuple(d // length for d in direction)
-
-    extended_coord = (
-        move.to_coord[0] + normalized_dir[0],
-        move.to_coord[1] + normalized_dir[1],
-        move.to_coord[2] + normalized_dir[2],
-    )
-
-    extended_moves = [move]
-
-    if (0 <= extended_coord[0] < 9 and
-        0 <= extended_coord[1] < 9 and
-        0 <= extended_coord[2] < 9):
-        extended_move = Move(
-            from_coord=move.from_coord,
-            to_coord=extended_coord,
-            is_capture=move.is_capture,
-            metadata={**move.metadata, 'extended': True}
-        )
-        extended_moves.append(extended_move)
-
-    return extended_moves
-
-def _restrict_move_range(move: Move, start_sq: Tuple[int, int, int], state: GameState) -> Optional[Move]:
-    """Restrict movement range for debuffed pieces."""
-    distance = max(
-        abs(move.to_coord[0] - move.from_coord[0]),
-        abs(move.to_coord[1] - move.from_coord[1]),
-        abs(move.to_coord[2] - move.from_coord[2])
-    )
-
-    if distance <= 1:
-        return move
-
-    return None
 
 # ==============================================================================
 # PIECE-SPECIFIC OPTIMIZATIONS
@@ -323,29 +181,12 @@ def get_max_steps(piece_type: PieceType, start_sq: Tuple[int, int, int], state: 
 
 def generate_legal_moves_excluding_checks(state: GameState) -> List[Move]:
     """Generate moves without check validation (for performance)."""
-    pseudo_moves = generate_pseudo_legal_moves(state)
-
-    # Only apply basic filters
-    freeze_cache = state.cache.effects["freeze"]
-    color = state.color
-
-    return [
-        mv for mv in pseudo_moves
-        if not freeze_cache.is_frozen(mv.from_coord, color)
-    ]
+    return generate_pseudo_legal_moves(state)  # Modifiers/freeze already applied
 
 def generate_legal_moves_for_piece(state: GameState, coord: Tuple[int, int, int]) -> List[Move]:
     """Generate legal moves only for a specific piece."""
-    piece = state.cache.piece_cache.get(coord) if hasattr(state.cache, 'piece_cache') else state.cache.occupancy.get(coord)
-    if not piece or piece.color != state.color:
-        return []
-
-    dispatcher = get_dispatcher(piece.ptype)
-    if not dispatcher:
-        return []
-
-    moves = dispatcher(state, coord[0], coord[1], coord[2])
-    return filter_legal_moves(moves, state)  # UPDATED: use validation function
+    pseudo_moves = generate_pseudo_legal_moves_for_piece(state, coord)
+    return filter_legal_moves(pseudo_moves, state)  # UPDATED: use validation function
 
 def generate_legal_captures(state: GameState) -> List[Move]:
     """Generate only legal capturing moves."""
