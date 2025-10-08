@@ -207,7 +207,7 @@ class OptimizedMoveCache:
         Order is critical: hash update uses the *current* board state.
         """
         # 1. Read the state BEFORE we touch the board
-        piece = self._board.piece_at(mv.to_coord)          # piece that just arrived here
+        piece = self._cache_manager.occupancy.get(mv.to_coord)
         captured_piece = None
         if getattr(mv, "is_capture", False):
             captured_type = getattr(mv, "captured_ptype", None)
@@ -243,7 +243,7 @@ class OptimizedMoveCache:
                 self._board.set_piece(mv.to_coord, Piece(color.opposite(), captured_type))
 
         # Get piece at destination (what was moved)
-        piece = self._board.piece_at(mv.to_coord)
+        piece = self._cache_manager.occupancy.get(mv.to_coord)
         if piece:
             # Move it back
             self._board.set_piece(mv.from_coord, piece)
@@ -380,7 +380,7 @@ class OptimizedMoveCache:
 
     def _generate_piece_moves(self, coord: Tuple[int, int, int]) -> List[Move]:
         from game3d.game.gamestate import GameState
-        piece = self._board.piece_at(coord)
+        piece = self._cache_manager.occupancy.get(coord)
         if not piece:
             return []
 
@@ -393,7 +393,7 @@ class OptimizedMoveCache:
         for coord, moves in self._legal_per_piece.items():
             if not moves:
                 continue
-            piece = self._board.piece_at(coord)
+            piece = self._cache_manager.occupancy.get(coord)
             if not piece:
                 continue
             if piece.color == Color.WHITE:
@@ -434,7 +434,7 @@ class OptimizedMoveCache:
 
     def _find_king(self, color: Color) -> Optional[Tuple[int, int, int]]:
         if self._king_pos[color]:
-            king = self._board.piece_at(self._king_pos[color])
+            king = self._cache_manager.occupancy.get(self._king_pos[color])
             if king and king.color == color and king.ptype == PieceType.KING:
                 return self._king_pos[color]
         for coord, piece in self._board.list_occupied():

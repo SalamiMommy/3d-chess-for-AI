@@ -1,22 +1,26 @@
 # validation.py
-"""
-game3d/movement/validation.py
-Centralized validation logic for move generation and game rules.
-"""
+"""Centralized validation logic – now fully cache-centric."""
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from game3d.movement.movepiece import Move
 from game3d.pieces.enums import Color, PieceType
 
-from game3d.common.common import Coord
-from game3d.attacks.check import king_in_check, get_check_summary
-
-# Use forward references to avoid circular imports
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+
+# ------------------------------------------------------------------
+# 1.  ONE-LINE CACHE HELPERS
+# ------------------------------------------------------------------
+def _get_check_summary(state: GameState) -> Dict[str, Any]:
+    """Return the *single* check summary object stored in cache."""
+    # lazily computed once per ply inside the cache manager
+    return state.cache.get_check_summary()
+
+
+def _attacked_by(state: GameState, attacker: Color) -> set[Tuple[int, int, int]]:
+    """Attacked squares for a colour – straight from AttacksCache."""
+    return state.cache.effects.attacks.get_for_color(attacker) or set()
 # ==============================================================================
 # BASIC MOVE VALIDATION (MOVED TO PSEUDO_LEGAL.PY)
 # ==============================================================================
@@ -39,51 +43,54 @@ def validate_legal_moves(cache: OptimizedCacheManager, moves: List[Move], color:
 # ==============================================================================
 # CHECK VALIDATION
 # ==============================================================================
-def _blocked_by_own_color(move: Move, state: 'GameState') -> bool:
-    """True = move is illegal because destination is occupied by same color."""
-    dest_piece = state.cache.occupancy.get(move.to_coord)
-    if dest_piece is None:                       # empty square → always OK
+def _blocked_by_own_color(move: Move, state: GameState) -> bool:
+    """True if destination is friendly (KNIGHT exception handled)."""
+    dest = state.cache.occupancy.get(move.to_coord)
+    if dest is None:
         return False
-    if dest_piece.color == state.color:          # friendly blocker
-        # ---  KNIGHT EXCEPTION  ------------------------------------
-        mover_piece = state.cache.occupancy.get(move.from_coord)
-        if mover_piece and mover_piece.ptype is PieceType.KNIGHT:
-            return False                         # regular knights ARE allowed
-        return True                              # every other friendly = illegal
-    return False                                   # enemy piece → will be captured
+    if dest.color != state.color:
+        return False
+    # Knight may jump over friends
+    mover = state.cache.occupancy.get(move.from_coord)
+    return mover is None or mover.ptype is not PieceType.KNIGHT
 
 
-def leaves_king_in_check(move: Move, state: 'GameState') -> bool:
-    """Check if move leaves king in check."""
-    temp_state = state.clone()
-    temp_state.make_move(move)
-    return king_in_check(temp_state.board, state.color, state.color.opposite(), temp_state.cache)
+def leaves_king_in_check(move: Move, state: State) -> bool:
+    """Slower path that actually plays the move and re-uses cache."""
+    tmp = state.clone()
+    tmp.make_move(move)
+    summary = _get_check_summary(tmp)
+    return summary[f"{state.color.name.lower()}_check"]
 
 
-def leaves_king_in_check_optimized(move: Move, state: 'GameState', check_summary: Dict[str, Any]) -> bool:
-    if _blocked_by_own_color(move, state):       # <-- NEW guard
+def leaves_king_in_check_optimized(
+    move: Move,
+    state: GameState,
+    summary: Dict[str, Any]
+) -> bool:
+    """Fast path: every lookup is cached."""
+    if _blocked_by_own_color(move, state):
         return True
-    king_color = state.color
-    king_pos = check_summary[f'{king_color.name.lower()}_king_position']
+
+    king_pos = summary[f"{state.color.name.lower()}_king_position"]
     if not king_pos:
         return False
 
-    # Case 1: Moving the king - check destination safety
+    # King move -> verify destination not attacked
     if move.from_coord == king_pos:
-        attacked_squares = check_summary[f'attacked_squares_{king_color.opposite().name.lower()}']
-        return move.to_coord in attacked_squares
+        attacked = summary[f"attacked_squares_{state.color.opposite().name.lower()}"]
+        return move.to_coord in attacked
 
-    # Case 2: In check - must block or capture
-    if check_summary[f'{king_color.name.lower()}_check']:
+    # Already in check → must resolve
+    if summary[f"{state.color.name.lower()}_check"]:
+        # fall back to full test (still cache-based)
         return leaves_king_in_check(move, state)
 
-    # Case 3: Check for discovered attacks (pinned pieces)
+    # Discovered-check (pin) test
     if state.cache.is_pinned(move.from_coord):
-        pin_direction = state.cache.get_pin_direction(move.from_coord)
-        if not along_pin_line(move, pin_direction):
-            return True
+        pin_dir = state.cache.get_pin_direction(move.from_coord)
+        return not along_pin_line(move, pin_dir)
 
-    # Fast case: no immediate check concerns
     return False
 
 
@@ -129,7 +136,7 @@ def resolves_check(move: Move, state: 'GameState', check_summary: Dict[str, Any]
 # GEOMETRIC VALIDATION
 # ==============================================================================
 
-def is_between(point: Coord, start: Coord, end: Coord) -> bool:
+def is_between(p: Coord, start: Coord, end: Coord) -> bool:
     """Check if point lies on the line segment between start and end."""
     # Check if point is collinear with start and end
     dx1 = point[0] - start[0]
@@ -161,12 +168,10 @@ def is_between(point: Coord, start: Coord, end: Coord) -> bool:
     return 0 <= t <= 1
 
 
-def blocks_check(move: Move, king_pos: Coord, checker_pos: Coord) -> bool:
-    """Check if move blocks the check ray."""
-    return is_between(move.to_coord, king_pos, checker_pos)
+def blocks_check(move: Move, king: Coord, checker: Coord) -> bool:
+    return is_between(move.to_coord, king, checker)
 
-
-def along_pin_line(move: Move, pin_direction: Tuple[int, int, int]) -> bool:
+def along_pin_line(move: Move, pin_dir: Tuple[int, int, int]) -> bool:
     """Check if move stays along pin line."""
     move_direction = (
         move.to_coord[0] - move.from_coord[0],
@@ -218,38 +223,29 @@ def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
                 legal_batch.append(move)
     return legal_batch
 
-
-# ==============================================================================
-# LEGAL MOVE FILTERING
-# ==============================================================================
+# ------------------------------------------------------------------
+# 4.  BATCH VALIDATION – ZERO BOARD SCANNING
+# ------------------------------------------------------------------
 def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch legal move filtering with incremental validation (assumes basic-legal)."""
+    """Return fully legal moves – all data already in cache."""
     if not moves:
-        return moves
+        return []
 
-    # Get position state ONCE for all moves
-    check_summary = get_check_summary(state.board, state.cache)
-    legal_moves = []
+    summary = _get_check_summary(state)
+    attacked = summary[f"attacked_squares_{state.color.opposite().name.lower()}"]
+    king_pos = summary[f"{state.color.name.lower()}_king_position"]
+    in_check = summary[f"{state.color.name.lower()}_check"]
 
-    # Pre-compute attacked squares for efficiency
-    attacked_squares = check_summary[f'attacked_squares_{state.color.opposite().name.lower()}']
-    king_pos = check_summary[f'{state.color.name.lower()}_king_position']
-    in_check = check_summary[f'{state.color.name.lower()}_check']
-
-    for move in moves:
-        # Fast check for king moves
-        if move.from_coord == king_pos:
-            if move.to_coord in attacked_squares:
-                continue
-        # If in check, only allow moves that resolve the check
-        elif in_check:
-            if not resolves_check(move, state, check_summary):
-                continue
-
-        legal_moves.append(move)
-
-    return legal_moves
-
+    legal = []
+    for m in moves:
+        # Fast king safety
+        if king_pos and m.from_coord == king_pos and m.to_coord in attacked:
+            continue
+        # Must resolve check
+        if in_check and not resolves_check(m, state, summary):
+            continue
+        legal.append(m)
+    return legal
 
 # ==============================================================================
 # SPECIAL MOVE VALIDATION

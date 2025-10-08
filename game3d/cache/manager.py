@@ -100,6 +100,9 @@ class OptimizedCacheManager:
         self._skip_effect_updates = False
         self._effect_update_counter = 0
         self._effect_update_interval = 10
+        self._check_summary_cache: dict[str, Any] | None = None
+        self._check_summary_age = -1
+
 
     @property
     def cache(self):
@@ -614,6 +617,59 @@ class OptimizedCacheManager:
         if hasattr(self, '_swap_targets_dirty'):
             self._swap_targets_dirty[Color.WHITE] = True
             self._swap_targets_dirty[Color.BLACK] = True
+
+    def get_check_summary(self) -> dict[str, Any]:
+        if self._check_summary_age != self._age_counter:
+            self._check_summary_cache = self._recompute_check_summary()
+            self._check_summary_age = self._age_counter
+        return self._check_summary_cache
+
+
+    def get_check_summary(self) -> dict[str, Any]:
+        if self._check_summary_age != self._age_counter:
+            self._check_summary_cache = self._recompute_check_summary()
+            self._check_summary_age = self._age_counter
+        return self._check_summary_cache
+
+    # ---------- private ----------
+
+    def _recompute_check_summary(self) -> dict[str, Any]:
+        # --- helpers ---
+        def king_pos(color: Color) -> tuple[int, int, int] | None:
+            for sq, p in self.board.list_occupied():
+                if p.color == color and p.ptype is PieceType.KING:
+                    return sq
+            return None
+
+        def has_priest(color: Color) -> bool:
+            return any(
+                p.ptype is PieceType.PRIEST
+                for _, p in self.board.list_occupied()
+                if p.color == color
+            )
+
+        # --- king squares ---
+        w_k = king_pos(Color.WHITE)
+        b_k = king_pos(Color.BLACK)
+
+        # --- attacked squares (always cheap; we still need them for other logic) ---
+        w_at = self.get_attacked_squares(Color.WHITE)
+        b_at = self.get_attacked_squares(Color.BLACK)
+
+        # --- checkers / check flags (skip when priests guard the king) ---
+        w_checkers = [] if has_priest(Color.WHITE) else [sq for sq in b_at if sq == w_k] if w_k else []
+        b_checkers = [] if has_priest(Color.BLACK) else [sq for sq in w_at if sq == b_k] if b_k else []
+
+        return {
+            "white_check": bool(w_checkers),
+            "black_check": bool(b_checkers),
+            "white_king_position": w_k,
+            "black_king_position": b_k,
+            "white_checkers": w_checkers,
+            "black_checkers": b_checkers,
+            "attacked_squares_white": w_at,
+            "attacked_squares_black": b_at,
+        }
 # ==============================================================================
 # FACTORY & BACKWARD COMPATIBILITY
 # ==============================================================================
