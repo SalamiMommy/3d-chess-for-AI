@@ -36,21 +36,21 @@ def _is_armoured(piece) -> bool:
 # --------------------------------------------------------------------------- #
 def generate_pawn_moves(cache, color: Color, x: int, y: int, z: int) -> List[Move]:
     pos = (x, y, z)
-    occ, piece_arr = cache.piece_cache.export_arrays()
+    # FIXED: Use cache_manager's occupancy
+    occ, piece_arr = cache.occupancy.export_arrays()
     own_code = 1 if color == Color.WHITE else 2
 
-    # quick sanity: is there actually our pawn here?
     if occ[z, y, x] != own_code or piece_arr[z, y, x] != PieceType.PAWN.value:
         return []
 
     moves: List[Move] = []
     dz = 1 if color == Color.WHITE else -1
+    # FIXED: Pass cache_manager
     jump = get_integrated_jump_movement_generator(cache)
 
-    # 1.  Push (never captures)
+    # Push moves
     push_moves = jump.generate_jump_moves(
-        color=color,
-        pos=pos,
+        color=color, pos=pos,
         directions=_push_dirs(color),
         allow_capture=False,
     )
@@ -59,33 +59,30 @@ def generate_pawn_moves(cache, color: Color, x: int, y: int, z: int) -> List[Mov
         flags = MOVE_FLAGS['PROMOTION'] if _is_promotion_rank(tz, color) else 0
         moves.append(Move(pos, mv.to_coord, flags=flags))
 
-        # double push from start rank
         if _is_on_start_rank(z, color):
             db = (x, y, z + 2 * dz)
             if in_bounds(db) and occ[db[2], db[1], db[0]] == 0:
                 flags = MOVE_FLAGS['PROMOTION'] if _is_promotion_rank(db[2], color) else 0
                 moves.append(Move(pos, db, flags=flags))
 
-    # 2.  Trigonal captures (with armour filter)
+    # Capture moves
     cap_moves = jump.generate_jump_moves(
-        color=color,
-        pos=pos,
+        color=color, pos=pos,
         directions=_capture_dirs(color),
         allow_capture=True,
     )
     for mv in cap_moves:
         tx, ty, tz = mv.to_coord
-        victim = cache.piece_cache.get(mv.to_coord)
+        # FIXED: Use cache_manager's occupancy
+        victim = cache.occupancy.get(mv.to_coord)
         if victim is None or victim.color == color or _is_armoured(victim):
-            continue  # skip empty, friendly, or armoured
+            continue
         flags = MOVE_FLAGS['CAPTURE']
         if _is_promotion_rank(tz, color):
             flags |= MOVE_FLAGS['PROMOTION']
         moves.append(Move(pos, mv.to_coord, flags=flags, captured_piece=victim.ptype.value))
 
-    # (en-passant can be inserted here later via cache.ep_square)
     return moves
-
 # --------------------------------------------------------------------------- #
 #  Tiny helpers                                                               #
 # --------------------------------------------------------------------------- #

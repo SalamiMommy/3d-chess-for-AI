@@ -58,20 +58,18 @@ def _block_in_bounds(anchor: Tuple[int, int, int]) -> bool:
 # Public generator – used by dispatcher and AI
 # ------------------------------------------------------------------
 def generate_wall_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """All legal Wall moves from its anchor square (x,y,z)."""
     anchor = (x, y, z)
-    if not _block_in_bounds(anchor):  # safety check
+    if not _block_in_bounds(anchor):
         return []
 
-    gen = get_integrated_jump_movement_generator(state.cache)
+    # FIXED: No need to get jump generator, just use direct moves
     moves: List[Move] = []
 
     for dx, dy, dz in KING_DIRECTIONS_3D:
         new_anchor = (x + dx, y + dy, z + dz)
         if not _block_in_bounds(new_anchor):
-            continue  # part of the block would fall off the board
+            continue
 
-        # Build the move – **never a capture**
         moves.append(convert_legacy_move_args(
             from_coord=anchor,
             to_coord=new_anchor,
@@ -79,7 +77,6 @@ def generate_wall_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
         ))
 
     return moves
-
 # ------------------------------------------------------------------
 # Behind-capture validation (used by the cache manager)
 # ------------------------------------------------------------------

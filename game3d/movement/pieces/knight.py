@@ -40,38 +40,29 @@ KNIGHT_OFFSETS = np.array([
 # Public generator – used by dispatcher and AI
 # ------------------------------------------------------------------
 def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """All legal Knight moves from (x,y,z) including share-square landings."""
     pos = (x, y, z)
+    # FIXED: Pass cache_manager to jump generator
     gen = get_integrated_jump_movement_generator(state.cache)
 
-    # 1.  Let the jump engine discard off-board, enemy-king-with-priest, walls, etc.
     raw_moves = gen.generate_jump_moves(
         color=state.color,
         pos=pos,
         directions=KNIGHT_OFFSETS,
     )
 
-    # 2.  Post-process for share-square
     moves: List[Move] = []
     for m in raw_moves:
-        occupants = state.cache.pieces_at(m.to_coord)   # List[Piece] (empty → [])
+        # FIXED: Use cache_manager's method
+        occupants = state.cache.pieces_at(m.to_coord)
         enemy_here = any(p.color != state.color for p in occupants)
 
         if enemy_here:
-            # Normal capture – keep the move exactly as returned
             moves.append(m)
         else:
-            # Empty or **only** friendly pieces → share-square
-            # Force the capture flag off (it is **not** a capture)
-            moves.append(
-                convert_legacy_move_args(
-                    m.from_coord,
-                    m.to_coord,
-                    is_capture=False
-                )
-            )
+            moves.append(convert_legacy_move_args(
+                m.from_coord, m.to_coord, is_capture=False
+            ))
     return moves
-
 # ------------------------------------------------------------------
 # Dispatcher registration (old name kept)
 # ------------------------------------------------------------------

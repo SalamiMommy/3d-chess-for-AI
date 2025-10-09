@@ -48,10 +48,9 @@ _build_edge_graph()
 # ----------------------------------------------------------
 def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List[Move]:
     start = (x, y, z)
-    if start not in _EDGE_GRAPH:          # not on edge
+    if start not in _EDGE_GRAPH:
         return []
 
-    # 3a. BFS to discover every reachable edge square
     visited: set[tuple[int, int, int]] = set()
     queue: deque[tuple[int, int, int]] = deque([start])
     visited.add(start)
@@ -61,38 +60,36 @@ def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, 
         for nxt in _EDGE_GRAPH[cur]:
             if nxt in visited:
                 continue
-            # stop traversal at first blocker, but still include as destination
             visited.add(nxt)
-            if cache.piece_cache.get(nxt) is None:        # empty → continue
+            # FIXED: Use cache_manager's occupancy
+            if cache.occupancy.get(nxt) is None:
                 queue.append(nxt)
 
-    # 3b. Build direction array (empty OR enemy & not armoured)
     targets = []
     for tx, ty, tz in visited:
         if (tx, ty, tz) == start:
             continue
-        if cache.occupancy.mask[tz, ty, tx]:              # occupied
-            victim = cache.piece_cache.get((tx, ty, tz))
+        # FIXED: Use cache_manager's occupancy
+        if cache.occupancy.mask[tz, ty, tx]:
+            victim = cache.occupancy.get((tx, ty, tz))
             if victim and victim.color != color:
                 targets.append((tx, ty, tz))
-        else:                                             # empty
+        else:
             targets.append((tx, ty, tz))
 
     if not targets:
         return []
 
-    # 3c. Single vectorised batch to jump engine
     tarr = np.array(targets, dtype=np.int16)
     directions = tarr - np.array(start, dtype=np.int16)
 
+    # FIXED: Pass cache_manager
     jump = get_integrated_jump_movement_generator(cache)
     return jump.generate_jump_moves(
-        color=color,
-        pos=start,
+        color=color, pos=start,
         directions=directions.astype(np.int8),
         allow_capture=True,
     )
-
 # ----------------------------------------------------------
 # 4.  Dispatcher – in-file
 # ----------------------------------------------------------

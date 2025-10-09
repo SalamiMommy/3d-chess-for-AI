@@ -31,28 +31,17 @@ KING_DIRECTIONS_3D = np.array([
 #  Base move generator
 # ------------------------------------------------------------------
 def generate_king_moves(
-    cache: CacheManager,
+    cache: CacheManager,  # This is the cache_manager
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """
-    Generate all legal king moves (single-step, no castling).
-
-    Delegates final-square legality to the integrated jump generator:
-    - off-board          → discarded
-    - friendly piece     → discarded
-    - enemy king w/ priests → discarded
-    - wall               → discarded
-    """
     pos = (x, y, z)
-
-    jump_gen = get_integrated_jump_movement_generator(cache)
+    jump_gen = get_integrated_jump_movement_generator(cache)  # Pass cache_manager
     return jump_gen.generate_jump_moves(
         color=color,
         pos=pos,
         directions=KING_DIRECTIONS_3D,
     )
-
 # ------------------------------------------------------------------
 #  Aliases for each piece type
 # ------------------------------------------------------------------

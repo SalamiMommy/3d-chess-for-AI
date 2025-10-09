@@ -102,9 +102,10 @@ class IntegratedJumpMovementGenerator:
     __slots__ = ("cache", "_jumptables")
 
     def __init__(self, cache_manager: CacheManager):
-        self.cache = cache_manager
+        self.cache = cache_manager  # Store the full cache manager
         self._jumptables = {}
 
+    # Fix _get_precomputed_moves to use cache_manager properly:
     def _get_precomputed_moves(self, piece_name: str, pos: Tuple[int, int, int], color: Color, allow_capture=True):
         """Return Move objects for all legal jumps from precomputed table, after occupancy filtering."""
         if piece_name not in self._jumptables:
@@ -113,9 +114,10 @@ class IntegratedJumpMovementGenerator:
         if table is None:
             return None
         idx = coord_to_idx(pos)
-        raw_destinations = table[idx]  # List of (x, y, z) tuples
+        raw_destinations = table[idx]
 
-        occ, _ = self.cache.piece_cache.export_arrays()
+        # FIXED: Use cache_manager's occupancy cache
+        occ, _ = self.cache.occupancy.export_arrays()  # Use cache_manager.occupancy
         own_code = 1 if color == Color.WHITE else 2
         enemy_code = PieceType.KING.value | ((3 - own_code) << 3)
         enemy_has_priests = self._enemy_still_has_priests(color)
@@ -124,7 +126,7 @@ class IntegratedJumpMovementGenerator:
         for tx, ty, tz in raw_destinations:
             if not _in_bounds(tx, ty, tz):
                 continue
-            h = occ[tx, ty, tz]
+            h = occ[tz, ty, tx]
             is_cap = False
             if h == 0:
                 is_cap = False
@@ -133,13 +135,11 @@ class IntegratedJumpMovementGenerator:
                     continue
                 is_cap = True
             else:
-                continue  # Blocked by friendly
-            moves.append(Move.create_simple(
-                pos, (tx, ty, tz),
-                is_capture=is_cap
-            ))
+                continue
+            moves.append(Move.create_simple(pos, (tx, ty, tz), is_capture=is_cap))
         return moves
 
+    # Fix generate_jump_moves to use cache_manager:
     def generate_jump_moves(
         self,
         *,
@@ -147,34 +147,30 @@ class IntegratedJumpMovementGenerator:
         pos: Tuple[int, int, int],
         directions: np.ndarray,
         allow_capture: bool = True,
-        use_amd: bool = True,  # ignored – CPU is faster
-        piece_name: str = None,  # Optional: for precomputed lookup
+        use_amd: bool = True,
+        piece_name: str = None,
     ) -> List[Move]:
-        # Try precomputed first if piece_name is given
+        # Try precomputed first
         if piece_name:
             moves = self._get_precomputed_moves(piece_name, pos, color, allow_capture=allow_capture)
             if moves is not None:
                 return moves
 
-        # Fallback: use kernel
-        occ, _ = self.cache.piece_cache.export_arrays()
+        # FIXED: Use cache_manager's occupancy cache
+        occ, _ = self.cache.occupancy.export_arrays()  # Use cache_manager.occupancy
         own_code = 1 if color == Color.WHITE else 2
         enemy_code = PieceType.KING.value | ((3 - own_code) << 3)
         enemy_has_priests = self._enemy_still_has_priests(color)
 
         raw = _jump_kernel_direct(
-            pos,
-            directions.astype(np.int16),
-            occ,
-            own_code,
-            enemy_code,
-            allow_capture,
-            enemy_has_priests,
+            pos, directions.astype(np.int16), occ,
+            own_code, enemy_code, allow_capture, enemy_has_priests,
         )
         return _build_jump_moves(color, PieceType.PAWN, pos, raw)
 
     def _enemy_still_has_priests(self, color: Color) -> bool:
-        occ, piece_array = self.cache.piece_cache.export_arrays()
+        # FIXED: Use cache_manager's occupancy cache
+        occ, piece_array = self.cache.occupancy.export_arrays()  # Use cache_manager.occupancy
         enemy_color = Color.BLACK if color == Color.WHITE else Color.WHITE
         priest_code = PieceType.PRIEST.value | ((1 if enemy_color == Color.WHITE else 2) << 3)
         return np.any(piece_array == priest_code)
@@ -212,8 +208,9 @@ def dirty_squares_jump(
 #  Singleton access
 # ------------------------------------------------------------------
 def get_integrated_jump_movement_generator(cm: CacheManager) -> IntegratedJumpMovementGenerator:
+    """Get or create the integrated jump movement generator for this cache manager."""
     if cm._integrated_jump_gen is None:
-        #  create AND assign in one step
+        # Create and store in cache manager
         cm._integrated_jump_gen = IntegratedJumpMovementGenerator(cm)
     return cm._integrated_jump_gen
 

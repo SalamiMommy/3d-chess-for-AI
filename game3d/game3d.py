@@ -7,7 +7,7 @@ Game engine that manages game rules and provides high-level API.
 import time
 from typing import List, Tuple, Optional, Dict, Any
 
-from game3d.pieces.enums import Color, Result
+from game3d.pieces.enums import Color, Result, PieceType
 from game3d.movement.movepiece import Move, MoveReceipt
 from game3d.cache.manager import get_cache_manager
 from game3d.board.board import Board

@@ -29,22 +29,22 @@ def generate_mirror_teleport_moves(cache, color: Color, x: int, y: int, z: int) 
     if start == target:
         return []
 
+    # FIXED: Use cache_manager's occupancy
     occ_mask = cache.occupancy.mask
     tx, ty, tz = target
     if not in_bounds((tx, ty, tz)):
         return []
 
     if occ_mask[tz, ty, tx]:
-        victim = cache.piece_cache.get(target)
+        # FIXED: Use cache_manager's occupancy
+        victim = cache.occupancy.get(target)
         if victim is None or victim.color == color:
             return []
-        # legal capture – keep
-    # else: empty – keep
 
     dirs = np.array([[tx - x, ty - y, tz - z]], dtype=np.int8)
+    # FIXED: Pass cache_manager
     jump = get_integrated_jump_movement_generator(cache)
     return jump.generate_jump_moves(color=color, pos=start, directions=dirs, allow_capture=True)
-
 # ----------------------------------------------------------
 # 3.  Dispatcher – state-first
 # ----------------------------------------------------------

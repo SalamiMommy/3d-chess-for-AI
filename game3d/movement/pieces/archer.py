@@ -36,16 +36,16 @@ def _archer_intent(start: Tuple[int, int, int], target: Tuple[int, int, int]) ->
 # 2.  Core move generator
 # ------------------------------------------------------------------
 def generate_archer_moves(
-    cache: OptimizedCacheManager,
+    cache: OptimizedCacheManager,  # This is the cache_manager
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
     start = (x, y, z)
     moves: List[Move] = []
 
-    # Check if archer is affected by any effects
+    # FIXED: Use cache_manager methods
     if cache.is_frozen(start, color):
-        return []  # No moves if frozen
+        return []
 
     for dx in (-2, -1, 0, 1, 2):
         for dy in (-2, -1, 0, 1, 2):
@@ -58,24 +58,24 @@ def generate_archer_moves(
 
                 intent = _archer_intent(start, target)
                 if intent == "move":
+                    # FIXED: Use cache_manager's occupancy
                     victim = cache.occupancy.get(target)
                     is_cap = victim is not None and victim.color != color
                     moves.append(convert_legacy_move_args(start, target, is_capture=is_cap))
 
                 elif intent == "shoot":
+                    # FIXED: Use cache_manager's occupancy
                     victim = cache.occupancy.get(target)
                     if victim and victim.color != color:
                         if cache.is_valid_archery_attack(target, color):
-                            # Build special flag move
                             mv = convert_legacy_move_args(
                                 start, start,
                                 is_capture=True,
                                 flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
                             )
-                            mv.metadata["target_square"] = target   # extra info for UI
+                            mv.metadata["target_square"] = target
                             moves.append(mv)
     return moves
-
 # ------------------------------------------------------------------
 # 3.  Dispatcher registration
 # ------------------------------------------------------------------

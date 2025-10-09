@@ -42,50 +42,46 @@ _GEOMANCY_DIRS = np.array([
 # ----------------------------------------------------------
 def generate_geomancer_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List[Move]:
     start = (x, y, z)
+    # FIXED: Use cache_manager's occupancy
     occ_mask = cache.occupancy.mask
     moves: List[Move] = []
 
+    # FIXED: Pass cache_manager
     jump = get_integrated_jump_movement_generator(cache)
 
-    # 3a. Normal 1-radius walk (King moves)
+    # Normal moves
     king_moves = jump.generate_jump_moves(
-        color=color,
-        pos=start,
-        directions=_KING_DIRS,
-        allow_capture=True,
+        color=color, pos=start,
+        directions=_KING_DIRS, allow_capture=True,
     )
     moves.extend(king_moves)
 
-    # 3b. 3-sphere surface → effect move (no movement, no capture, must be EMPTY)
+    # Effect moves
     effect_targets = []
     for dx, dy, dz in _GEOMANCY_DIRS:
         tx, ty, tz = x + dx, y + dy, z + dz
         if not in_bounds((tx, ty, tz)):
             continue
-        if occ_mask[tz, ty, tx]:              # occupied → skip
+        if occ_mask[tz, ty, tx]:
             continue
         effect_targets.append((tx, ty, tz))
 
     if effect_targets:
-        # vectorised batch: self-move to self, flagged as geomancy
         tarr = np.array(effect_targets, dtype=np.int16)
         directions = tarr - np.array(start, dtype=np.int16)
 
         effect_moves = jump.generate_jump_moves(
-            color=color,
-            pos=start,
+            color=color, pos=start,
             directions=directions.astype(np.int8),
-            allow_capture=False,            # no captures
+            allow_capture=False,
         )
-        # mark them so the board knows to apply the block
         for mv in effect_moves:
             mv.metadata["is_geomancy_effect"] = True
-            mv.metadata["geomancy_target"] = mv.to_coord   # real square to block
-            mv.to_coord = start                            # piece does NOT move
+            mv.metadata["geomancy_target"] = mv.to_coord
+            mv.to_coord = start
         moves.extend(effect_moves)
 
     return moves
-
 # ----------------------------------------------------------
 # 4.  Dispatcher – in-file
 # ----------------------------------------------------------
