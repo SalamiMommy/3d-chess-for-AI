@@ -26,7 +26,7 @@ import numpy as np
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import convert_legacy_move_args
 from game3d.movement.registry import register
-from game3d.movement.movetypes.jumpmovement import get_jump_generator
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -53,20 +53,16 @@ def generate_king_moves(
 ) -> List[Move]:
     """
     Generate all **one-step** moves for a King (or Hive) located at (x,y,z).
-    Final-square legality is delegated to the integrated slider engine
-    used with max_distance=1.
     """
     pos = (x, y, z)
-    engine = get_jump_generator()
-    return engine.generate_moves(
-        piece_type='king',               # cache key
+    engine = get_integrated_jump_movement_generator(cache)   # << supply cache
+    return engine.generate_jump_moves(
+        color=color,
         pos=pos,
-        board_occupancy=cache.occupancy.mask,
-        color=color.value,
-        max_distance=1,
-        directions=KING_DIRECTIONS_3D
+        directions=KING_DIRECTIONS_3D,
+        allow_capture=True,
+        piece_name='king'
     )
-
 # ---------------------------------------------------------------------------
 # Hive dispatcher – simply aliases the king generator
 # ---------------------------------------------------------------------------

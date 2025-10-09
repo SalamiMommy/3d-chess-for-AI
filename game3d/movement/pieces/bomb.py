@@ -18,7 +18,7 @@ import numpy as np
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.movement.registry import register
-from game3d.movement.movetypes.jumpmovement import get_jump_generator
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.attacks.check import _any_priest_alive  # reused for king-protection rule
 
 if TYPE_CHECKING:
@@ -41,16 +41,15 @@ KING_DIRECTIONS_3D = np.array([
 def generate_bomb_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """All legal Bomb moves from (x,y,z) including self-detonation."""
     pos = (x, y, z)
-    engine = get_jump_generator()
+    engine = get_integrated_jump_movement_generator(state.cache)   # << FIXED
 
     # 1.  Normal king-step moves (off-board, friendly, walls already filtered)
-    raw_moves = engine.generate_moves(
-        piece_type='bomb',
+    raw_moves = engine.generate_jump_moves(
+        color=Color(state.color.value),      # <- must be the enum, not int
         pos=pos,
-        board_occupancy=state.cache.occupancy.mask,
-        color=state.color.value,
-        max_distance=1,
-        directions=KING_DIRECTIONS_3D
+        directions=KING_DIRECTIONS_3D,
+        allow_capture=True,
+        piece_name='bomb'                    # optional – lets it try pre-computed table
     )
 
     # 2.  Add the **self-detonation** pseudo-move

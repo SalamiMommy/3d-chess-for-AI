@@ -10,6 +10,7 @@ from typing import List, TYPE_CHECKING
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
+from game3d.movement.movetypes.slidermovement import get_slider_generator
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager

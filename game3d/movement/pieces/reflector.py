@@ -113,12 +113,13 @@ class _ReflectingBishopGen:
 # ----------------------------------------------------------
 # Singleton helper
 # ----------------------------------------------------------
-# reflector.py
 def _get_gen(cache: OptimizedCacheManager) -> _ReflectingBishopGen:
-    # NEVER return None
-    if not hasattr(cache, "_reflecting_bishop_gen"):
-        cache._reflecting_bishop_gen = _ReflectingBishopGen(cache)
-    return cache._reflecting_bishop_gen
+    # double-checked pattern
+    gen = cache._reflecting_bishop_gen
+    if gen is None:
+        gen = _ReflectingBishopGen(cache)
+        cache._reflecting_bishop_gen = gen
+    return gen
 # ----------------------------------------------------------
 # Public API + dispatcher
 # ----------------------------------------------------------
@@ -131,6 +132,8 @@ def generate_reflecting_bishop_moves(
 
 @register(PieceType.REFLECTOR)
 def reflector_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
-    return generate_reflecting_bishop_moves(state.cache, state.color, x, y, z)
+    gen = _get_gen(state.cache)
+    assert gen is not None, "Reflector generator is None – cache helper broken?"
+    return gen.generate(state.color, (x, y, z))
 
 __all__ = ["generate_reflecting_bishop_moves"]

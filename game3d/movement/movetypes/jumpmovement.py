@@ -48,21 +48,26 @@ def _in_bounds(x: int, y: int, z: int) -> bool:
 @njit(parallel=False, fastmath=True, nogil=False, cache=True)
 def _jump_kernel_direct(
     start: Tuple[int, int, int],
-    dirs: np.ndarray,
+    dirs: np.ndarray,               # (N,3)  int16
     occ: np.ndarray,
     own_code: int,
     enemy_code: int,
     allow_capture: bool,
     enemy_has_priests: bool,
 ) -> List[Tuple[int, int, int, bool]]:
+
     out: List[Tuple[int, int, int, bool]] = []
     sx, sy, sz = start
     for d in prange(dirs.shape[0]):
-        dx, dy, dz = dirs[d]
+        # --- explicit indexing instead of unpacking ---
+        dx = dirs[d, 0]
+        dy = dirs[d, 1]
+        dz = dirs[d, 2]
+        # ----------------------------------------------
         tx = sx + dx
         ty = sy + dy
         tz = sz + dz
-        if not _in_bounds(tx, ty, tz):          # <-- local alias
+        if not _in_bounds(tx, ty, tz):
             continue
         h = occ[tx, ty, tz]
         if h == 0:
@@ -72,7 +77,6 @@ def _jump_kernel_direct(
                 continue
             out.append((tx, ty, tz, True))
     return out
-
 # ------------------------------------------------------------------
 #  Public wrapper – zero Python loops
 # ------------------------------------------------------------------

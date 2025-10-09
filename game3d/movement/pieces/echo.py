@@ -8,7 +8,7 @@ from typing import List, TYPE_CHECKING
 
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movetypes.jumpmovement import get_jump_generator
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move, convert_legacy_move_args
 
 if TYPE_CHECKING:
@@ -31,17 +31,16 @@ _ECHO_DIRS = (_ANCHORS[:, None, :] + _BUBBLE[None, :, :]).reshape(-1, 3)
 
 def generate_echo_moves(cache, color: Color, x: int, y: int, z: int) -> List[Move]:
     """Echo jumps to any square on the 2-sphere surface anchored 3 steps away."""
-    return get_jump_generator().generate_moves(
-        piece_type='echo',
+    return get_integrated_jump_movement_generator(cache).generate_jump_moves(
+        piece_name='echo',          # enables pre-computed table lookup
+        color=color,
         pos=(x, y, z),
-        board_occupancy=cache.occupancy.mask,
-        color=color.value,
-        max_distance=1,
-        directions=_ECHO_DIRS
+        directions=_ECHO_DIRS,
+        allow_capture=True
     )
 
 @register(PieceType.ECHO)
-def echo_move_dispatcher(state: State, x: int, y: int, z: int):
+def echo_move_dispatcher(state: GameState, x: int, y: int, z: int):
     return generate_echo_moves(state.cache, state.color, x, y, z)
 
 __all__ = ["generate_echo_moves"]
