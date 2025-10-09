@@ -1,4 +1,4 @@
-"""Movement Debuff – enemy pieces inside 2-sphere have reduced movement."""
+"""Movement Debuff – enemy pieces inside 2-sphere aura move like pawns."""
 from __future__ import annotations
 from typing import List, Tuple, Set
 from game3d.pieces.enums import Color, PieceType

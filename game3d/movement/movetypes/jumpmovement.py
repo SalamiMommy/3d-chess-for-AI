@@ -209,9 +209,10 @@ def dirty_squares_jump(
 # ------------------------------------------------------------------
 #  Singleton access
 # ------------------------------------------------------------------
-def get_integrated_jump_movement_generator(cache_manager: CacheManager) -> IntegratedJumpMovementGenerator:
-    if not hasattr(cache_manager, "_integrated_jump_gen"):
-        cache_manager._integrated_jump_gen = IntegratedJumpMovementGenerator(cache_manager)
-    return cache_manager._integrated_jump_gen
+def get_integrated_jump_movement_generator(cm: CacheManager) -> IntegratedJumpMovementGenerator:
+    if cm._integrated_jump_gen is None:
+        #  create AND assign in one step
+        cm._integrated_jump_gen = IntegratedJumpMovementGenerator(cm)
+    return cm._integrated_jump_gen
 
 __all__ = ["get_integrated_jump_movement_generator"]

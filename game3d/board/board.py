@@ -72,7 +72,9 @@ class Board:
 
         # Quick name → PieceType lookup
         name_to_pt = {pt.name.lower(): pt for pt in PieceType}
-        def parse(name: str) -> PieceType:
+        def parse(name: str | None) -> PieceType | None:
+            if name is None:               # empty square
+                return None
             try:
                 return name_to_pt[name.lower()]
             except KeyError as e:
@@ -100,29 +102,31 @@ class Board:
         for y in range(9):
             for x in range(9):
                 pt = parse(rank1[y][x])
-                put(x, y, 0, pt, Color.WHITE)
-                put(x, y, 8, pt, Color.BLACK)
+                if pt is not None:
+                    put(x, y, 0, pt, Color.WHITE)
+                    put(x, y, 8, pt, Color.BLACK)
 
         # ------------------------------------------------------------------
         # 2nd Rank (z=1 for White, z=7 for Black)
         # ------------------------------------------------------------------
         rank2 = [
             ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
-            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
-            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
+            ["speeder", "wall", None, "armour", "trigonalbishop", "armour", "wall", None, "speeder"],
+            ["whitehole", None, None, "priest", "knight", "priest", None, None, "whitehole"],
             ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
             ["bishop", "trigonalbishop", "knight", "xyqueen", "vectorslider", "xyqueen", "knight", "trigonalbishop", "bishop"],
             ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
-            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
-            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
+            ["whitehole", "wall", None, "priest", "knight", "priest", "wall", None, "whitehole"],
+            ["speeder", None, None, "armour", "trigonalbishop", "armour", None, None, "speeder"],
             ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
         ]
 
         for y in range(9):
             for x in range(9):
                 pt = parse(rank2[y][x])
-                put(x, y, 1, pt, Color.WHITE)
-                put(x, y, 7, pt, Color.BLACK)
+                if pt is not None:          # only place a piece when the square is not empty
+                    put(x, y, 1, pt, Color.WHITE)
+                    put(x, y, 7, pt, Color.BLACK)
 
         # ------------------------------------------------------------------
         # 3rd Rank - Pawns (z=2 for White, z=6 for Black)
@@ -131,6 +135,7 @@ class Board:
             for y in range(9):
                 put(x, y, 2, PieceType.PAWN, Color.WHITE)
                 put(x, y, 6, PieceType.PAWN, Color.BLACK)
+
 
         # ------------------------------------------------------------------
         # z=3,4,5 remain empty
@@ -274,6 +279,19 @@ class Board:
         # ----------  original logic unchanged  ----------
         if mv.is_capture:
             self.set_piece(to_coord, None)
+
+        if mv.metadata.get("is_geomancy_effect"):
+            target = mv.metadata["geomancy_target"]
+            # block the empty square via the geomancy cache
+            self.cache.effects["geomancy"].block_square(target, current_ply)
+            return True          # early exit – no piece movement
+
+        if mv.metadata.get("is_swap"):
+            # mv.from_coord == swapper, mv.to_coord == friendly target
+            target_piece = self.piece_at(mv.to_coord)
+            self.set_piece(mv.to_coord, self.piece_at(mv.from_coord))  # move swapper there
+            self.set_piece(mv.from_coord, target_piece)               # friend moves here
+            return True  # early exit – no further move logic needed
 
         if getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
             promoted_piece = Piece(piece.color, mv.promotion_type)

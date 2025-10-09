@@ -94,17 +94,4 @@ def _batch_kernel(
                     break
     return out_raw
 
-@njit(cache=True)
-def _get_directions(pt: PieceType) -> np.ndarray:
-    if pt.value == PieceType.ROOK.value:
-        return np.array([[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]], dtype=np.int8)
-    if pt.value == PieceType.BISHOP.value:
-        return np.array([[1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],[-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1]], dtype=np.int8)
-    if pt.value == PieceType.QUEEN.value:
-        return np.array([
-            [1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1],
-            [1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],[-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1]
-        ], dtype=np.int8)
-    return np.empty((0, 3), dtype=np.int8)
-
 __all__ = ["register", "get_dispatcher", "get_all_dispatchers", "dispatch_batch"]

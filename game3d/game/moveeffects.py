@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 # Keep only archery-specific function here
 # moveeffects.py - Add archery function
 def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int]) -> 'GameState':
-    """Apply archery attack to create new game state."""
-    from .performance import track_operation_time
+    from .performance import track_operation_time  # Lazy import
+    from .gamestate import GameState as GS  # Lazy import
 
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1

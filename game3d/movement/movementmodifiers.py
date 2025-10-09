@@ -7,10 +7,7 @@ from enum import Enum
 import time
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.cache.manager import get_cache_manager
-from game3d.common.common import add_coords
-from game3d.geometry import euclidean_distance, manhattan
-from game3d.geometry import get_path_squares  # Moved to top
+from game3d.common.common import add_coords, euclidean_distance, manhattan, get_path_squares
 
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
@@ -33,7 +30,6 @@ class MovementEffectType(Enum):
     """Types of movement effects."""
     BUFF_RANGE = "buff_range"
     DEBUFF_RANGE = "debuff_range"
-    BLOCK_DIAGONAL = "block_diagonal"
     GEOMANCY_BLOCK = "geomancy_block"
     WALL_CAPTURE_RESTRICTION = "wall_capture_restriction"
     FREEZE = "freeze"
@@ -50,7 +46,6 @@ EFFECT_PRIORITIES = {
     MovementEffectType.FREEZE: 100,      # Highest - prevents all movement
     MovementEffectType.GEOMANCY_BLOCK: 90,
     MovementEffectType.WALL_CAPTURE_RESTRICTION: 80,
-    MovementEffectType.BLOCK_DIAGONAL: 70,
     MovementEffectType.DEBUFF_RANGE: 60,
     MovementEffectType.SLOW: 50,
     MovementEffectType.BUFF_RANGE: 10,    # Lowest - applied last
@@ -65,14 +60,15 @@ def apply_movement_effects(
     cache_manager: Optional = None
 ) -> Tuple[List[Tuple[int, int, int]], int]:
     """
-    Optimized movement effects application - CORRECTED.
-    Removed duplicate definition at end of file.
+    Optimized movement effects application.
     """
     start_time = time.perf_counter()
     _STATS.total_calls += 1
 
     if cache_manager is None:
-        cache_manager = state.cache
+        # Lazy import
+        from game3d.cache.manager import get_cache_manager
+        cache_manager = get_cache_manager(state.board, state.color)
 
     try:
         # Quick freeze check (highest priority)
@@ -91,10 +87,6 @@ def apply_movement_effects(
                 if _has_slow_effect(cache_manager, start, state.color):
                     current_max_steps = max(1, current_max_steps - 1)
                     _STATS.debuffs_applied += 1
-            elif effect_type == MovementEffectType.BLOCK_DIAGONAL:
-                if _has_diagonal_block(cache_manager, start, state.color):
-                    directions = _filter_diagonal_directions(directions)
-                    _STATS.directions_filtered += len(raw_directions) - len(directions)
             elif effect_type == MovementEffectType.GEOMANCY_BLOCK:
                 directions = _filter_geomancy_blocked_directions(
                     directions, start, current_max_steps, cache_manager, state
@@ -117,18 +109,8 @@ def apply_movement_effects(
         return _fallback_movement_effects(start, raw_directions, max_steps, cache_manager, state)
 
 def _has_slow_effect(cache_manager, start: Tuple[int, int, int], color: Color) -> bool:
-    """Check if piece has slow effect."""
-    return (hasattr(cache_manager, "is_movement_slowed") and
-            cache_manager.is_movement_slowed(start, color))
-
-def _has_diagonal_block(cache_manager, start: Tuple[int, int, int], color: Color) -> bool:
-    """Check if diagonal movement is blocked."""
-    return (hasattr(cache_manager, "is_diagonal_blocked") and
-            cache_manager.is_diagonal_blocked(start, color))
-
-def _filter_diagonal_directions(directions: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
-    """Filter out diagonal directions (keep axis-aligned)."""
-    return [d for d in directions if sum(1 for coord in d if coord != 0) <= 1]  # Updated to strictly axis-aligned
+    """Check if piece has slow effect using movement debuff cache."""
+    return cache_manager.is_movement_debuffed(start, color)
 
 def _filter_geomancy_blocked_directions(
     directions: List[Tuple[int, int, int]],
@@ -192,21 +174,15 @@ def _fallback_movement_effects(
     cache_manager,
     state
 ) -> Tuple[List[Tuple[int, int, int]], int]:
-    """Fallback to original implementation - CORRECTED."""
+    """Fallback to original implementation."""
     directions = raw_directions.copy()
 
     # 1. range buffs / debuffs
-    if cache_manager.is_movement_buffed(start, state.color):  # Fixed state.color
+    if cache_manager.is_movement_buffed(start, state.color):
         max_steps += 1
 
-    if (hasattr(cache_manager, "is_movement_slowed") and
-        cache_manager.is_movement_slowed(start, state.color)):  # Fixed state.color
+    if cache_manager.is_movement_debuffed(start, state.color):
         max_steps = max(1, max_steps - 1)
-
-    # 2. direction filters
-    if (hasattr(cache_manager, "is_diagonal_blocked") and
-        cache_manager.is_diagonal_blocked(start, state.color)):  # Fixed state.color
-        directions = [d for d in directions if sum(1 for coord in d if coord != 0) <= 1]
 
     # 4. geomancy blocked squares
     if hasattr(cache_manager, "is_geomancy_blocked") and hasattr(state, "halfmove_clock"):
@@ -222,7 +198,7 @@ def _fallback_movement_effects(
     victim = state.cache.piece_cache.get(start)
     if victim is not None and victim.ptype == PieceType.WALL:
         if (hasattr(cache_manager, "can_capture_wall") and
-            not cache_manager.can_capture_wall(start, start, state.color)):  # Fixed state.color
+            not cache_manager.can_capture_wall(start, start, state.color)):
             return [], max_steps
 
     return directions, max_steps
@@ -236,7 +212,7 @@ def apply_archery_effects(
     state,
     cache_manager: Optional = None
 ) -> List[Tuple[int, int, int]]:
-    """Apply archery-specific movement effects - CORRECTED."""
+    """Apply archery-specific movement effects."""
     if cache_manager is None:
         cache_manager = state.cache
 
@@ -273,7 +249,7 @@ def apply_hive_effects(
     state,
     cache_manager: Optional = None
 ) -> List[Tuple[int, int, int]]:
-    """Apply hive-specific movement effects - CORRECTED."""
+    """Apply hive-specific movement effects."""
     if cache_manager is None:
         cache_manager = state.cache
 
@@ -311,7 +287,6 @@ def get_movement_effects_stats() -> Dict[str, Any]:
         'effect_breakdown': {
             'buff_range': _STATS.buffs_applied,
             'debuff_range': _STATS.debuffs_applied,
-            'diagonal_blocks': _STATS.directions_filtered,
             'geomancy_blocks': _STATS.geomancy_blocks,
             'wall_restrictions': _STATS.wall_captures_prevented,
         }
@@ -357,3 +332,122 @@ def apply_movement_effects_legacy(
 ) -> Tuple[List[Tuple[int, int, int]], int]:
     """Legacy interface for backward compatibility."""
     return apply_movement_effects(state, start, raw_directions, max_steps)
+
+
+# ==============================================================================
+# MAIN ENTRY POINT
+# ==============================================================================
+def modify_raw_moves(
+    raw_moves: List["Move"],
+    start: Tuple[int, int, int],
+    state,
+    cache_manager=None
+) -> List["Move"]:
+    """
+    Central entry-point used by pseudo_legal.py.
+    Applies *all* movement effects (buff, debuff, freeze, slow, geomancy, wall-capture, hive, archery, …) to the *raw* Move list returned
+    by the piece dispatcher.
+    Returns a new list of Moves that are safe to pass to the final
+    bounds/friendly-colour filter.
+    """
+    # Lazy import get_cache_manager
+    from game3d.cache.manager import get_cache_manager
+
+    if cache_manager is None:
+        cache_manager = state.cache
+
+    # 1.  Early exit if the square is frozen
+    if cache_manager.is_frozen(start, state.color):
+        return []
+
+    # 2.  Range modifiers (buff / debuff / slow)
+    max_steps = _extract_max_steps(raw_moves)          # local helper below
+    directions = _extract_directions(raw_moves, start)  # local helper below
+    directions, max_steps = apply_movement_effects(
+        state, start, directions, max_steps,
+        piece_type=None, cache_manager=cache_manager
+    )
+
+    # 3.  Re-build the move list with the new directions / range
+    moves = _rebuild_moves(raw_moves, start, directions, max_steps)
+
+    # 4.  Piece-specific post-filters
+    piece = cache_manager.occupancy.get(start)
+    if piece is None:
+        return []
+
+    # 4a.  Hive
+    if piece.ptype is PieceType.HIVE:
+        moves = [_ for _ in moves if not cache_manager.is_movement_blocked_for_hive(
+                 _.to_coord, state.color)]
+
+    # 4b.  Archery (range-2 slide that needs LOS)
+    if piece.ptype is PieceType.ARCHER:
+        moves = [_ for _ in moves
+                 if euclidean_distance(start, _.to_coord) == 2.0 and
+                    _has_clear_line_of_sight(start, _.to_coord, state)]
+
+    # 5.  Range-buff extension (if still needed)
+    if cache_manager.is_movement_buffed(start, state.color):
+        extended: List["Move"] = []
+        for m in moves:
+            extended.extend(_extend_move_range(m, start, state))
+        moves = extended
+
+    return moves
+
+
+# ----------  tiny local helpers  ---------- #
+
+def _extract_max_steps(moves: List["Move"]) -> int:
+    """Largest coordinate delta found in the list."""
+    if not moves:
+        return 0
+    return max(max(abs(a - b) for a, b in zip(m.from_coord, m.to_coord))
+               for m in moves)
+
+def _extract_directions(moves: List["Move"], start: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
+    """Unique unit directions present in the raw move list."""
+    dirs = set()
+    for m in moves:
+        dx, dy, dz = (b - a for a, b in zip(start, m.to_coord))
+        norm = max(abs(dx), abs(dy), abs(dz))
+        if norm:
+            dirs.add((dx // norm, dy // norm, dz // norm))
+    return list(dirs)
+
+def _rebuild_moves(
+    raw: List["Move"],
+    start: Tuple[int, int, int],
+    directions: List[Tuple[int, int, int]],
+    max_steps: int
+) -> List["Move"]:
+    """Rebuild Move objects that respect the new directions / range."""
+    rebuilt: List["Move"] = []
+    for d in directions:
+        for step in range(1, max_steps + 1):
+            to_coord = tuple(a + step * b for a, b in zip(start, d))
+            # preserve capture flag from any original raw move that ends here
+            capture = any(m.to_coord == to_coord and m.is_capture for m in raw)
+            rebuilt.append(Move(from_coord=start, to_coord=to_coord, is_capture=capture))
+    return rebuilt
+
+def _extend_move_range(m: "Move", start: Tuple[int, int, int], state) -> List["Move"]:
+    """Extend move range for buffed pieces."""
+    extended = []
+    direction = tuple((b - a) for a, b in zip(start, m.to_coord))
+    norm = max(abs(d) for d in direction)
+    if norm == 0:
+        return [m]
+
+    unit_dir = tuple(d // norm for d in direction)
+
+    # Add one more step in the same direction
+    next_step = tuple(a + b for a, b in zip(m.to_coord, unit_dir))
+
+    # Check if next step is within board bounds
+    if all(0 <= c < BOARD_SIZE for c in next_step):
+        # Preserve capture flag from original move
+        extended.append(Move(from_coord=start, to_coord=next_step, is_capture=m.is_capture))
+
+    return [m] + extended

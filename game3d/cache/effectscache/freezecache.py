@@ -320,6 +320,25 @@ class OptimizedFreezeCache:
         for flag in self._dirty_flags:
             self._dirty_flags[flag] = True
 
+    def end_turn_update(self, board: Board, current_player: Color) -> None:
+        """
+        Update freeze effects at the end of a turn.
+        - Remove freeze effects set by the opponent (they expire at the end of the current turn).
+        - Apply freeze effects for the current_player (who just ended their turn).
+        """
+        opponent = current_player.opposite()
+
+        # Clear the opponent's freeze effects (they expire)
+        self._frozen[opponent].clear()
+        self._affected_squares[opponent].clear()
+        self._source_tracking[opponent].clear()
+        self._freeze_durations[opponent].clear()
+
+        # Recalculate freeze effects for the current player
+        self._rebuild_frozen_squares_for_color(board, current_player)
+
+        # Mark that we have updated, so no need to rebuild until next change
+        self._dirty_flags['frozen'] = False
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================

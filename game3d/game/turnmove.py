@@ -78,7 +78,7 @@ def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
 # OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
-    """Fixed move making with proper fifty-move rule implementation."""
+    from .gamestate import GameState
     global _DEBUG_MOVE_COUNTER
 
     if game_state.cache.piece_cache.get(mv.from_coord) is None:
@@ -131,20 +131,12 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         is_pawn = moving_piece.ptype == PieceType.PAWN
         is_capture = captured_piece is not None
 
-        # Debug: Print when halfmove_clock would reset
-        # if is_pawn or is_capture:
-        #     print(f"[DEBUG] Halfmove clock reset: pawn move={is_pawn}, capture={is_capture}")
-        #     if is_pawn:
-        #         print(f"[DEBUG] Pawn move detected: {moving_piece.color.name} pawn from {mv.from_coord} to {mv.to_coord}")
-        #     if is_capture:
-        #         print(f"[DEBUG] Capture detected: {captured_piece.color.name} {captured_piece.ptype.name} at {mv.to_coord}")
-
         new_clock = 0 if (is_pawn or is_capture) else game_state.halfmove_clock + 1
 
         # Create enriched move
         enriched_move = _create_enriched_move(
             game_state, mv, removed_pieces, moved_pieces, is_self_detonate, undo_info, captured_piece,
-            is_pawn, is_capture  # Pass pawn and capture flags
+            is_pawn, is_capture
         )
 
         # Create NEW cache for new state
@@ -173,6 +165,9 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
             turn_number=game_state.turn_number + 1,
         )
         object.__setattr__(new_state, '_zkey', new_key)
+
+        # Apply freeze effects at the end of the turn for the mover
+        new_state.cache.effects['freeze'].end_turn_update(new_state.board, game_state.color)
 
         return new_state
 

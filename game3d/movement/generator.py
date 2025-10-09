@@ -15,9 +15,10 @@ from game3d.common.common import Coord, in_bounds
 from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves, generate_pseudo_legal_moves_for_piece
 from game3d.attacks.check import king_in_check, get_check_summary
-from game3d.movement.validation import (  # UPDATED IMPORT
-    leaves_king_in_check, leaves_king_in_check_optimized,
-    resolves_check, batch_check_validation, validate_move_batch, filter_legal_moves  # Added filter_legal_moves
+from game3d.movement.validation import (
+    leaves_king_in_check,
+    resolves_check,
+    filter_legal_moves
 )
 import sys
 from functools import wraps
@@ -133,8 +134,8 @@ def _generate_legal_moves_parallel(state: GameState) -> List[Move]:
     if not pseudo_legal_moves:
         return []
 
-    # Batch check validation in parallel (assumes pseudo-moves are basic-legal)
-    legal_moves = batch_check_validation(pseudo_legal_moves, state)  # UPDATED
+    # Use filter_legal_moves instead of batch_check_validation
+    legal_moves = filter_legal_moves(pseudo_legal_moves, state)
 
     return legal_moves
 

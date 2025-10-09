@@ -106,3 +106,10 @@ def get_vulnerable_enemies(board: BoardProto, controller: Color,
                 vulnerable_squares.add(coord)
 
     return vulnerable_squares
+
+def is_armoured(piece) -> bool:
+    """Universal check: works for Piece objects and cache entries."""
+    return piece is not None and (
+        (hasattr(piece, "armoured") and piece.armoured) or
+        piece.ptype is PieceType.ARMOUR          # fallback for legacy code
+    )

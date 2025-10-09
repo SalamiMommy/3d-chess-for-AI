@@ -1,4 +1,3 @@
-# validation.py
 """Centralized validation logic – now fully cache-centric."""
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
@@ -21,6 +20,7 @@ def _get_check_summary(state: GameState) -> Dict[str, Any]:
 def _attacked_by(state: GameState, attacker: Color) -> set[Tuple[int, int, int]]:
     """Attacked squares for a colour – straight from AttacksCache."""
     return state.cache.effects.attacks.get_for_color(attacker) or set()
+
 # ==============================================================================
 # BASIC MOVE VALIDATION (MOVED TO PSEUDO_LEGAL.PY)
 # ==============================================================================
@@ -55,53 +55,34 @@ def _blocked_by_own_color(move: Move, state: GameState) -> bool:
     return mover is None or mover.ptype is not PieceType.KNIGHT
 
 
-def leaves_king_in_check(move: Move, state: State) -> bool:
+def leaves_king_in_check(move: Move, state: GameState) -> bool:
     """Slower path that actually plays the move and re-uses cache."""
+    # Check if piece is frozen before attempting move
+    if state.cache.is_frozen(move.from_coord, state.color):
+        return True  # Frozen piece can't move, so would leave king in check
+
     tmp = state.clone()
     tmp.make_move(move)
     summary = _get_check_summary(tmp)
     return summary[f"{state.color.name.lower()}_check"]
 
 
-def leaves_king_in_check_optimized(
-    move: Move,
-    state: GameState,
-    summary: Dict[str, Any]
-) -> bool:
-    """Fast path: every lookup is cached."""
-    if _blocked_by_own_color(move, state):
-        return True
+# Remove the optimized version since we don't have pinning in cache yet
+# def leaves_king_in_check_optimized(...): ...
 
-    king_pos = summary[f"{state.color.name.lower()}_king_position"]
-    if not king_pos:
+
+def resolves_check(move: Move, state: GameState, check_summary: Dict[str, Any]) -> bool:
+    # First check if the move is even possible (frozen pieces can't move)
+    if state.cache.is_frozen(move.from_coord, state.color):
         return False
 
-    # King move -> verify destination not attacked
-    if move.from_coord == king_pos:
-        attacked = summary[f"attacked_squares_{state.color.opposite().name.lower()}"]
-        return move.to_coord in attacked
-
-    # Already in check → must resolve
-    if summary[f"{state.color.name.lower()}_check"]:
-        # fall back to full test (still cache-based)
-        return leaves_king_in_check(move, state)
-
-    # Discovered-check (pin) test
-    if state.cache.is_pinned(move.from_coord):
-        pin_dir = state.cache.get_pin_direction(move.from_coord)
-        return not along_pin_line(move, pin_dir)
-
-    return False
-
-
-def resolves_check(move: Move, state: 'GameState', check_summary: Dict[str, Any]) -> bool:
     if _blocked_by_own_color(move, state):       # <-- NEW guard
         return False
     king_color = state.color
     king_pos = check_summary[f'{king_color.name.lower()}_king_position']
 
     if not king_pos:
-        return False
+        return True  # No king, so no check
 
     # Get checkers information
     checkers = check_summary.get(f'{king_color.name.lower()}_checkers', [])
@@ -109,39 +90,20 @@ def resolves_check(move: Move, state: 'GameState', check_summary: Dict[str, Any]
     if not checkers:
         return True  # No check, any move is fine
 
-    # If multiple checkers, only king moves can resolve
-    if len(checkers) > 1:
-        return move.from_coord == king_pos
-
-    # Single checker - can block, capture, or move king
-    checker_pos = checkers[0]
-
-    # Moving the king
-    if move.from_coord == king_pos:
-        attacked_squares = check_summary[f'attacked_squares_{king_color.opposite().name.lower()}']
-        return move.to_coord not in attacked_squares
-
-    # Capturing the checker
-    if move.to_coord == checker_pos:
-        return True
-
-    # Blocking the check ray
-    if blocks_check(move, king_pos, checker_pos):
-        return True
-
-    return False
+    # Always use the full check validation for safety
+    return not leaves_king_in_check(move, state)
 
 
 # ==============================================================================
 # GEOMETRIC VALIDATION
 # ==============================================================================
 
-def is_between(p: Coord, start: Coord, end: Coord) -> bool:
+def is_between(p: Tuple[int, int, int], start: Tuple[int, int, int], end: Tuple[int, int, int]) -> bool:
     """Check if point lies on the line segment between start and end."""
     # Check if point is collinear with start and end
-    dx1 = point[0] - start[0]
-    dy1 = point[1] - start[1]
-    dz1 = point[2] - start[2]
+    dx1 = p[0] - start[0]
+    dy1 = p[1] - start[1]
+    dz1 = p[2] - start[2]
 
     dx2 = end[0] - start[0]
     dy2 = end[1] - start[1]
@@ -163,65 +125,53 @@ def is_between(p: Coord, start: Coord, end: Coord) -> bool:
     elif dz2 != 0:
         t = dz1 / dz2
     else:
-        return point == start  # start and end are the same
+        return p == start  # start and end are the same
 
     return 0 <= t <= 1
 
 
-def blocks_check(move: Move, king: Coord, checker: Coord) -> bool:
+def blocks_check(move: Move, king: Tuple[int, int, int], checker: Tuple[int, int, int]) -> bool:
     return is_between(move.to_coord, king, checker)
 
-def along_pin_line(move: Move, pin_dir: Tuple[int, int, int]) -> bool:
-    """Check if move stays along pin line."""
-    move_direction = (
-        move.to_coord[0] - move.from_coord[0],
-        move.to_coord[1] - move.from_coord[1],
-        move.to_coord[2] - move.from_coord[2]
-    )
-
-    # Normalize directions for comparison
-    def normalize_direction(dx, dy, dz):
-        length = max(abs(dx), abs(dy), abs(dz))
-        if length == 0:
-            return (0, 0, 0)
-        return (dx // length, dy // length, dz // length)
-
-    return normalize_direction(*move_direction) == normalize_direction(*pin_direction)
-
-
 # ==============================================================================
-# BATCH VALIDATION
+# SPECIAL MOVE VALIDATION
 # ==============================================================================
-def batch_check_validation(moves: List[Move], state: GameState) -> List[Move]:
-    """Optimized batch validation (assumes basic-legal)."""
+
+def validate_archery_attack(game_state: GameState, target_sq: Tuple[int, int, int]) -> Dict[str, Any]:
+    """Validate archery attack for current player."""
+    # First check if archer is frozen
+    archer_pos = None
+    for coord, piece in _get_current_player_pieces(game_state):
+        if piece.ptype == PieceType.ARCHER:
+            archer_pos = coord
+            break
+
+    if archer_pos is None:
+        return {'valid': False, 'message': "No archer controlled."}
+
+    if game_state.cache.is_frozen(archer_pos, game_state.color):
+        return {'valid': False, 'message': "Archer is frozen and cannot attack."}
+
+    if not game_state._is_valid_archery_target(target_sq):
+        return {'valid': False, 'message': "Invalid archery target - must be on 2-radius sphere surface."}
+
+    if not game_state._has_archery_line_of_sight(target_sq):
+        return {'valid': False, 'message': "No clear line of sight to target."}
+
+    return {'valid': True, 'message': ""}
+
+
+def validate_hive_moves(game_state: GameState, moves: List[Move]) -> Dict[str, Any]:
+    """Validate hive moves for current player."""
     if not moves:
-        return []
+        return {'valid': False, 'message': "No moves submitted."}
 
-    # Cache expensive lookups
-    check_summary = get_check_summary(state.board, state.cache)
-    in_check = check_summary[f'{state.color.name.lower()}_check']
+    # Check if any hive piece is frozen
+    for coord, piece in _get_current_player_pieces(game_state):
+        if piece.ptype == PieceType.HIVE and game_state.cache.is_frozen(coord, game_state.color):
+            return {'valid': False, 'message': "Hive is frozen and cannot move."}
 
-    if not in_check:
-        # Fast path - no check validation needed
-        return moves
-
-    # Full validation only when in check
-    # Use list comprehension instead of loop for performance
-    return [
-        mv for mv in moves
-        if not leaves_king_in_check(mv, state)
-    ]
-
-
-def validate_move_batch(moves: List[Move], state: GameState) -> List[Move]:
-    """Validate a batch of moves in parallel (assumes basic-legal)."""
-    legal_batch = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(leaves_king_in_check, move, state) for move in moves]
-        for future, move in zip(as_completed(futures), moves):
-            if not future.result():
-                legal_batch.append(move)
-    return legal_batch
+    return {'valid': True, 'message': ""}
 
 # ------------------------------------------------------------------
 # 4.  BATCH VALIDATION – ZERO BOARD SCANNING
@@ -238,6 +188,10 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
 
     legal = []
     for m in moves:
+        # Skip moves from frozen pieces
+        if state.cache.is_frozen(m.from_coord, state.color):
+            continue
+
         # Fast king safety
         if king_pos and m.from_coord == king_pos and m.to_coord in attacked:
             continue
@@ -247,26 +201,6 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
         legal.append(m)
     return legal
 
-# ==============================================================================
-# SPECIAL MOVE VALIDATION
-# ==============================================================================
-
-def validate_archery_attack(game_state: GameState, target_sq: Tuple[int, int, int]) -> Dict[str, Any]:
-    """Validate archery attack for current player."""
-    if not game_state._current_player_has_archer():
-        return {'valid': False, 'message': "No archer controlled."}
-
-    if not game_state._is_valid_archery_target(target_sq):
-        return {'valid': False, 'message': "Invalid archery target - must be on 2-radius sphere surface."}
-
-    if not game_state._has_archery_line_of_sight(target_sq):
-        return {'valid': False, 'message': "No clear line of sight to target."}
-
-    return {'valid': True, 'message': ""}
-
-
-def validate_hive_moves(game_state: GameState, moves: List[Move]) -> Dict[str, Any]:
-    """Validate hive moves for current player."""
-    if not moves:
-        return {'valid': False, 'message': "No moves submitted."}
-
+# Remove unused batch validation functions
+# def batch_check_validation(...): ...
+# def validate_move_batch(...): ...

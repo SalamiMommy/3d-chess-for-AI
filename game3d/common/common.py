@@ -1,10 +1,10 @@
 #game3d/common/common.py
-#game3d/common/common.py
 # ------------------------------------------------------------------
 # Coordinate utilities – optimised drop-in replacements
 # ------------------------------------------------------------------
 from __future__ import annotations
 import torch
+import math
 from typing import Tuple, List, Optional
 from game3d.pieces.enums import PieceType
 
@@ -76,9 +76,52 @@ def scale_coord(c: Coord, k: int) -> Coord:
 # ------------------------------------------------------------------
 # Distance helpers – kept as one-liners, already fast
 # ------------------------------------------------------------------
-manhattan_distance      = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
-chebyshev_distance      = lambda a, b: max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
+manhattan_distance = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+chebyshev_distance = lambda a, b: max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2]))
 euclidean_distance_squared = lambda a, b: (a[0] - b[0])**2 + (a[1] - b[1])**2 + (a[2] - b[2])**2
+
+# Add the missing euclidean_distance function
+def euclidean_distance(a: Coord, b: Coord) -> float:
+    """Calculate the Euclidean distance between two coordinates."""
+    return math.sqrt(euclidean_distance_squared(a, b))
+
+# Add the missing manhattan function (alias for manhattan_distance)
+def manhattan(a: Coord, b: Coord) -> int:
+    """Calculate the Manhattan distance between two coordinates."""
+    return manhattan_distance(a, b)
+
+# Add the missing get_path_squares function
+def get_path_squares(start: Coord, end: Coord) -> List[Coord]:
+    """Get all squares on the path from start to end, including both endpoints."""
+    if start == end:
+        return [start]
+
+    diff = subtract_coords(end, start)
+    non_zero = [d for d in diff if d != 0]
+    if not non_zero:
+        return [start]
+
+    # Check if straight line: orthogonal or diagonal
+    abs_vals = [abs(d) for d in non_zero]
+    is_orthogonal = len(non_zero) == 1
+    is_diagonal = len(set(abs_vals)) == 1
+
+    if not (is_orthogonal or is_diagonal):
+        # Not a straight line, just return start and end
+        return [start, end]
+
+    step = tuple(0 if d == 0 else (1 if d > 0 else -1) for d in diff)
+    distance = max(abs_vals)
+
+    path = [start]
+    for i in range(1, distance + 1):
+        sq = add_coords(start, scale_coord(step, i))
+        if in_bounds(sq):
+            path.append(sq)
+        else:
+            break
+
+    return path
 
 # ------------------------------------------------------------------
 # Ray generation (keep — useful for some pieces)
