@@ -10,7 +10,7 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.common.common import in_bounds
-
+from game3d.movement.movepiece import convert_legacy_move_args
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
 
@@ -103,21 +103,22 @@ class _ReflectingBishopGen:
                 from_coord = (fr_idx % 9, (fr_idx // 9) % 9, fr_idx // 81)
                 to_coord   = (to_idx % 9, (to_idx // 9) % 9, to_idx // 81)
 
-                moves.append(Move(
+                moves.append(convert_legacy_move_args(
                     from_coord=from_coord,
                     to_coord=to_coord,
-                    flags=MOVE_FLAGS['CAPTURE'] if is_cap else 0,
+                    is_capture=is_cap
                 ))
         return moves
 
 # ----------------------------------------------------------
 # Singleton helper
 # ----------------------------------------------------------
+# reflector.py
 def _get_gen(cache: OptimizedCacheManager) -> _ReflectingBishopGen:
+    # NEVER return None
     if not hasattr(cache, "_reflecting_bishop_gen"):
         cache._reflecting_bishop_gen = _ReflectingBishopGen(cache)
     return cache._reflecting_bishop_gen
-
 # ----------------------------------------------------------
 # Public API + dispatcher
 # ----------------------------------------------------------

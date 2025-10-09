@@ -14,9 +14,9 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.movement.movepiece import Move
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 def _cone_dirs() -> np.ndarray:
     dirs = set()
@@ -40,21 +40,20 @@ def _cone_dirs() -> np.ndarray:
 
 CONE_DIRECTIONS = _cone_dirs()
 
-def generate_face_cone_slider_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
+def generate_face_cone_slider_moves(cache: CacheManager,
+                                    color: Color,
+                                    x: int, y: int, z: int) -> List[Move]:
     return get_slider_generator().generate_moves(
         piece_type='cone_slider',
         pos=(x, y, z),
-        board_occupancy=cache.occupancy.mask,
         color=color.value,
-        max_distance=32
+        max_distance=32,
+        cache_manager=cache,          # ← REQUIRED
+        directions=CONE_DIRECTIONS
     )
 
 @register(PieceType.CONESLIDER)
-def face_cone_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def face_cone_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
     return generate_face_cone_slider_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_face_cone_slider_moves']

@@ -58,3 +58,9 @@ class ArmourCache:
         return {
             'armoured_squares': len(self._armoured_squares),
         }
+    def can_capture(self, attacker_sq, wall_sq, controller) -> bool:
+        """
+        Armour never helps anyone *capture* a wall – it only *blocks* pawn
+        captures against itself.  Hence this cache always returns False.
+        """
+        return False

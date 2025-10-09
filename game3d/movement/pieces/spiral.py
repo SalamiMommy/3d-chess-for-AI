@@ -13,9 +13,9 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.movement.movepiece import Move
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 # same 6×8 offset table you already use
 _SPIRAL_OFFS = np.vstack([
@@ -37,21 +37,20 @@ _SPIRAL_OFFS = np.vstack([
     for i, off in enumerate(offsets)
 ])
 
-def generate_spiral_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
+def generate_spiral_moves(cache: CacheManager,
+                          color: Color,
+                          x: int, y: int, z: int) -> List[Move]:
     return get_slider_generator().generate_moves(
         piece_type='spiral',
         pos=(x, y, z),
-        board_occupancy=cache.occupancy.mask,
         color=color.value,
-        max_distance=32
+        max_distance=32,
+        cache_manager=cache,          # ← REQUIRED keyword-only argument
+        directions=_SPIRAL_OFFS
     )
 
 @register(PieceType.SPIRAL)
-def spiral_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def spiral_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
     return generate_spiral_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_spiral_moves']

@@ -16,9 +16,9 @@ from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.movement.registry import register
-from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.movement.movetypes.jumpmovement import get_jump_generator
 from game3d.attacks.check import _any_priest_alive  # reused for king-protection rule
 
 if TYPE_CHECKING:
@@ -41,30 +41,31 @@ KING_DIRECTIONS_3D = np.array([
 def generate_bomb_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
     """All legal Bomb moves from (x,y,z) including self-detonation."""
     pos = (x, y, z)
-    gen = get_integrated_jump_movement_generator(state.cache)
+    engine = get_jump_generator()
 
     # 1.  Normal king-step moves (off-board, friendly, walls already filtered)
-    raw_moves = gen.generate_jump_moves(
-        color=state.color,
+    raw_moves = engine.generate_moves(
+        piece_type='bomb',
         pos=pos,
-        directions=KING_DIRECTIONS_3D,
+        board_occupancy=state.cache.occupancy.mask,
+        color=state.color.value,
+        max_distance=1,
+        directions=KING_DIRECTIONS_3D
     )
 
     # 2.  Add the **self-detonation** pseudo-move
-    #     (we mark it with a special flag so the side-effect layer knows)
-    self_det = Move(
-        from_coord=pos,
-        to_coord=pos,
-        flags=MOVE_FLAGS['SELF_DETONATE'],
-        metadata={'self_detonate': True}
+    self_det = convert_legacy_move_args(
+        pos, pos,
+        flags=MOVE_FLAGS['SELF_DETONATE']
     )
+    self_det.metadata['self_detonate'] = True
     raw_moves.append(self_det)
 
     # 3.  Final legality filter – kings with priests are immune to the blast
     moves: List[Move] = []
     for m in raw_moves:
         # Normal king-step – keep as-is
-        if m.to_coord != pos or not getattr(m.metadata, 'self_detonate', False):
+        if m.to_coord != pos or not m.metadata.get('self_detonate'):
             moves.append(m)
             continue
 
@@ -102,5 +103,5 @@ def bomb_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]
 
 # ------------------------------------------------------------------
 # Backward compatibility exports
-# ----------------------------------------------------------------__
+# ------------------------------------------------------------------
 __all__ = ["generate_bomb_moves"]

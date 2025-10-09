@@ -48,7 +48,7 @@ def generate_infiltrator_moves(cache, color, x, y, z) -> List[Move]:
     dirs = []
 
     # Use cache.occupancy.list_occupied() instead of cache.board.list_occupied()
-    for pos, piece in cache.occupancy.list_occupied():
+    for pos, piece in cache.piece_cache.iter_color(enemy_color):
         px, py, pz = pos
         if piece.color.value == enemy_code and piece.ptype == PieceType.PAWN:
             front = (px, py, pz + 1) if enemy_code == 2 else (px, py, pz - 1)

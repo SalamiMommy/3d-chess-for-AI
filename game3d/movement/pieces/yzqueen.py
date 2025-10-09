@@ -1,5 +1,6 @@
 """
 YZ-Queen: 8 slider rays in YZ-plane + full 3-D king hop (26 directions, 1 step).
+Now uses the **hot slider kernel** for both parts.
 Exports:
   generate_yz_queen_moves(cache, color, x, y, z) -> list[Move]
   (decorated) yz_queen_dispatcher(state, x, y, z) -> list[Move]
@@ -12,11 +13,9 @@ import numpy as np
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import get_slider_generator
-from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import Move
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 # 8 directions confined to the YZ-plane (X fixed)
 _YZ_SLIDER_DIRS = np.array([
@@ -35,37 +34,36 @@ _KING_3D_DIRS = np.array([
     if (dx, dy, dz) != (0, 0, 0)
 ], dtype=np.int8)
 
-def generate_yz_queen_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
-    """Slider rays (YZ-plane) + full 3-D king hop."""
-    pos = (x, y, z)
-    # 1.  Slider rays (long range)
-    slider_engine = get_slider_generator()
-    slider_moves = slider_engine.generate_moves(
+def generate_yz_queen_moves(cache: CacheManager,
+                            color: Color,
+                            x: int, y: int, z: int) -> List:
+    """Slider rays (YZ-plane, 8 dirs, 8 steps) + king hop (26 dirs, 1 step)."""
+    engine = get_slider_generator()
+
+    # 1.  Long-range YZ-plane slides
+    slider_moves = engine.generate_moves(
         piece_type='yz_queen',
-        pos=pos,
-        board_occupancy=cache.occupancy.mask,
+        pos=(x, y, z),
         color=color.value,
-        max_distance=8
+        max_distance=8,
+        cache_manager=cache,          # ← REQUIRED keyword-only argument
+        directions=_YZ_SLIDER_DIRS
     )
 
-    # 2.  King hop (26 directions, 1 step)
-    jump_gen = get_integrated_jump_movement_generator(cache)
-    king_moves = jump_gen.generate_jump_moves(
-        color=color,
-        pos=pos,
-        directions=_KING_3D_DIRS,
-        allow_capture=True
+    # 2.  One-step king hop – same kernel, max_distance=1
+    king_moves = engine.generate_moves(
+        piece_type='yz_queen_kinghop',   # distinct cache key
+        pos=(x, y, z),
+        color=color.value,
+        max_distance=1,
+        cache_manager=cache,          # ← REQUIRED keyword-only argument
+        directions=_KING_3D_DIRS
     )
 
-    # 3.  Merge; no dedupe needed (slider never leaves the plane)
     return slider_moves + king_moves
 
 @register(PieceType.YZQUEEN)
-def yz_queen_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def yz_queen_move_dispatcher(state, x: int, y: int, z: int) -> List:
     return generate_yz_queen_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_yz_queen_moves']

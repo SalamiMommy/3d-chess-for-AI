@@ -10,13 +10,12 @@ from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import MOVE_FLAGS
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import generate_slider_moves_kernel
-from game3d.movement.movepiece import Move
+from game3d.movement.movepiece import Move, MOVE_FLAGS
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 # ----------------------------------------------------------
 # 1.  Pre-computed zig-zag vectors (YZ-plane)
@@ -29,7 +28,8 @@ def _build_yz_zigzag_vectors() -> np.ndarray:
         move_primary = True
         for seg in range(3):
             step = np.zeros(3, dtype=np.int8)
-            step[1 if move_primary else 2] = pri if move_primary else sec
+            ax = 1 if move_primary else 2
+            step[ax] = pri if move_primary else sec
             for _ in range(3):
                 curr += step
                 seq.append(curr.copy())
@@ -42,17 +42,14 @@ YZ_ZIGZAG_DIRECTIONS = _build_yz_zigzag_vectors()
 # ----------------------------------------------------------
 # 2.  Public generator
 # ----------------------------------------------------------
-def generate_yz_zigzag_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
+def generate_yz_zigzag_moves(cache: CacheManager,
+                             color: Color,
+                             x: int, y: int, z: int) -> List[Move]:
     """Generate YZ-zig-zag moves using only the slider kernel."""
-    occ = cache.piece_cache.export_arrays()[0]
     raw = generate_slider_moves_kernel(
         pos=(x, y, z),
         directions=YZ_ZIGZAG_DIRECTIONS,
-        occupancy=occ,
+        occupancy=cache.occupancy.mask,
         color=color.value,
         max_distance=16
     )
@@ -66,7 +63,7 @@ def generate_yz_zigzag_moves(
 # 3.  Dispatcher
 # ----------------------------------------------------------
 @register(PieceType.YZZIGZAG)
-def yz_zigzag_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def yz_zigzag_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
     return generate_yz_zigzag_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_yz_zigzag_moves']

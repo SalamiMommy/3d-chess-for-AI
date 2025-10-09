@@ -9,7 +9,7 @@ from typing import List, TYPE_CHECKING
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.common import in_bounds
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ def generate_network_teleport_with_king_moves(
 
     # 4. single jump-batch
     jump = get_integrated_jump_movement_generator(cache)
-    moves = jump.generate_jump_moves(
+    raw_moves = jump.generate_jump_moves(
         color=color,
         pos=start,
         directions=all_dirs,
@@ -78,17 +78,26 @@ def generate_network_teleport_with_king_moves(
 
     # 5. mark teleports (optional metadata)
     tel_set = {tuple(t) for t in tel_dirs}
-    for m in moves:
-        if tuple(np.array(m.to_coord) - np.array(start)) in tel_set:
-            m.metadata["is_teleport"] = True
-
-    return moves
+    moves = []
+    for m in raw_moves:
+        # friendlytp.py
+        mv = convert_legacy_move_args(
+                from_coord=start,
+                to_coord=m.to_coord,
+                is_capture=m.is_capture)
+        if tuple(np.array(mv.to_coord) - np.array(start)) in tel_set:
+            mv.metadata["is_teleport"] = True
+        moves.append(mv)
+    return [convert_legacy_move_args(from_coord=(x,y,z),
+                                    to_coord=(tx,ty,tz),
+                                    is_capture=ic)
+            for (tx,ty,tz),ic in raw_destinations]
 
 # ----------------------------------------------------------
 # 4.  Dispatcher – state-first
 # ----------------------------------------------------------
 @register(PieceType.FRIENDLYTELEPORTER)
-def friendlytp_move_dispatcher(state: State, x: int, y: int, z: int) -> List[Move]:
+def friendlytp_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     return generate_network_teleport_with_king_moves(state.cache, state.color, x, y, z)
 
 __all__ = ["generate_network_teleport_with_king_moves"]

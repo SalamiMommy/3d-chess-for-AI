@@ -1,4 +1,3 @@
-# turnmove.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
@@ -9,22 +8,23 @@ from game3d.movement.generator import generate_legal_moves
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.pieces.enums import Color, PieceType
 from game3d.pieces.piece import Piece
-from game3d.cache.manager import get_cache_manager
+# DELETE this line
+# from game3d.cache.manager import get_cache_manager
 from game3d.attacks.check import _any_priest_alive
 from .performance import track_operation_time
 from .zobrist import compute_zobrist
 from game3d.movement.movepiece import MOVE_FLAGS
 
-# Import from move_utils instead of moveeffects
 from .move_utils import (
     apply_hole_effects,
     apply_bomb_effects,
     apply_trailblaze_effect,
     reconstruct_trailblazer_path,
-    extract_enemy_slid_path
+    extract_enemy_slid_path,
 )
 
 if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager   # ← type only
     from .gamestate import GameState
 
 _DEBUG_MOVE_COUNTER = 0
@@ -79,6 +79,7 @@ def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     from .gamestate import GameState
+    from game3d.cache.manager import get_cache_manager
     global _DEBUG_MOVE_COUNTER
 
     if game_state.cache.piece_cache.get(mv.from_coord) is None:
@@ -236,6 +237,7 @@ def undo_move(game_state: 'GameState') -> 'GameState':
             return _full_undo(game_state)
 
 def _fast_undo(game_state: 'GameState') -> 'GameState':
+    from game3d.cache.manager import get_cache_manager
     """Fast undo using cached undo information."""
     if game_state._undo_info is None:
         raise ValueError("No undo info available for fast undo")

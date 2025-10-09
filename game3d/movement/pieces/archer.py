@@ -9,13 +9,13 @@ import math
 from typing import List, Tuple, TYPE_CHECKING
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.common import in_bounds
 from game3d.movement.registry import register
 
 if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
 
 # ------------------------------------------------------------------
 # 1.  Internal helper: classify square
@@ -58,21 +58,21 @@ def generate_archer_moves(
 
                 intent = _archer_intent(start, target)
                 if intent == "move":
-                    # Use cache.occupancy instead of cache.piece_cache
                     victim = cache.occupancy.get(target)
                     is_cap = victim is not None and victim.color != color
-                    moves.append(Move.create_simple(start, target, is_capture=is_cap))
+                    moves.append(convert_legacy_move_args(start, target, is_capture=is_cap))
 
                 elif intent == "shoot":
-                    # Use cache.occupancy instead of cache.piece_cache
                     victim = cache.occupancy.get(target)
                     if victim and victim.color != color:
-                        # Check if target is valid for archery attack
                         if cache.is_valid_archery_attack(target, color):
-                            mv = Move(start, start,
-                                      flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE'],
-                                      captured_piece=victim.ptype.value)
-                            mv.metadata["target_square"] = target
+                            # Build special flag move
+                            mv = convert_legacy_move_args(
+                                start, start,
+                                is_capture=True,
+                                flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
+                            )
+                            mv.metadata["target_square"] = target   # extra info for UI
                             moves.append(mv)
     return moves
 
@@ -83,7 +83,4 @@ def generate_archer_moves(
 def archer_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     return generate_archer_moves(state.cache, state.color, x, y, z)
 
-# ------------------------------------------------------------------
-# 4.  Public alias (kept for backward compatibility)
-# ------------------------------------------------------------------
 __all__ = ["generate_archer_moves"]

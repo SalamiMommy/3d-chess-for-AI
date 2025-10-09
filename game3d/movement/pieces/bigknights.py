@@ -6,7 +6,7 @@ from typing import List, TYPE_CHECKING
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import convert_legacy_move_args
 from game3d.common.common import in_bounds
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ def _generate_knight_leaps(
     targets = []
     for dx, dy, dz in dirs:
         tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds(tx, ty, tz):
+        if not in_bounds((tx, ty, tz)):
             continue
         if occ_mask[tz, ty, tx]:               # occupied – may be capture
             victim = cache.piece_cache.get((tx, ty, tz))
@@ -64,20 +64,19 @@ def _generate_knight_leaps(
     return jump.generate_jump_moves(
         color=color,
         pos=start,
-        directions=directions,
+        directions=directions.astype(np.int8),
         allow_capture=True,
     )
-
 
 # ----------------------------------------------------------
 #  Dispatchers – both piece types in the same file
 # ----------------------------------------------------------
 @register(PieceType.KNIGHT31)
-def knight31_move_dispatcher(state: State, x: int, y: int, z: int) -> List[Move]:
+def knight31_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     return _generate_knight_leaps(state.cache, state.color, x, y, z, _KNIGHT31_DIRS)
 
 @register(PieceType.KNIGHT32)
-def knight32_move_dispatcher(state: State, x: int, y: int, z: int) -> List[Move]:
+def knight32_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
     return _generate_knight_leaps(state.cache, state.color, x, y, z, _KNIGHT32_DIRS)
 
 __all__ = []

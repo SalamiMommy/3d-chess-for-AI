@@ -49,7 +49,7 @@ def generate_panel_moves(cache, color: Color, x: int, y: int, z: int) -> List[Mo
     # 3a. panel leaps (same-plane)
     for dx, dy, dz in _PANEL_DIRS:
         tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds(tx, ty, tz):
+        if not in_bounds((tx, ty, tz)):
             continue
         if occ_mask[tz, ty, tx]:
             victim = cache.piece_cache.get((tx, ty, tz))
@@ -61,7 +61,7 @@ def generate_panel_moves(cache, color: Color, x: int, y: int, z: int) -> List[Mo
     # 3b. king walks
     for dx, dy, dz in _KING_DIRS:
         tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds(tx, ty, tz):
+        if not in_bounds((tx, ty, tz)):
             continue
         if occ_mask[tz, ty, tx]:
             victim = cache.piece_cache.get((tx, ty, tz))

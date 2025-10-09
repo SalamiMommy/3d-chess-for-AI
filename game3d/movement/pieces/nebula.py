@@ -37,7 +37,7 @@ def generate_nebula_moves(cache: OptimizedCacheManager, color: Color, x: int, y:
 
     for dx, dy, dz in _NEBULA_DIRS:
         tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds(tx, ty, tz):
+        if not in_bounds((tx, ty, tz)):
             continue
         if occ_mask[tz, ty, tx]:
             victim = cache.piece_cache.get((tx, ty, tz))

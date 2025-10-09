@@ -13,9 +13,9 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.movement.movepiece import Move
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 # 8 true 3-D diagonals
 _TRIGONAL_DIRS = np.array([
@@ -23,22 +23,21 @@ _TRIGONAL_DIRS = np.array([
     (-1,  1,  1), (-1,  1, -1), (-1, -1,  1), (-1, -1, -1)
 ], dtype=np.int8)
 
-def generate_trigonal_bishop_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
+def generate_trigonal_bishop_moves(cache: CacheManager,
+                                   color: Color,
+                                   x: int, y: int, z: int) -> List[Move]:
     """Space-diagonal slider up to board edge."""
     return get_slider_generator().generate_moves(
         piece_type='trigonal_bishop',
         pos=(x, y, z),
-        board_occupancy=cache.occupancy.mask,
         color=color.value,
-        max_distance=8
+        max_distance=8,
+        cache_manager=cache,          # ← REQUIRED keyword-only argument
+        directions=_TRIGONAL_DIRS
     )
 
 @register(PieceType.TRIGONALBISHOP)
-def trigonal_bishop_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def trigonal_bishop_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
     return generate_trigonal_bishop_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_trigonal_bishop_moves']

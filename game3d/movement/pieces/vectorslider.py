@@ -1,5 +1,5 @@
 """
-Vector-Slider — 152 primitive directions ≤ 3 via slidermovement (consolidated).
+Vector-Slider — 152 primitive directions ≤ 3 via slider movement (consolidated).
 Exports:
   generate_vector_slider_moves(cache, color, x, y, z) -> list[Move]
   (decorated) vectorslider_dispatcher(state, x, y, z) -> list[Move]
@@ -14,9 +14,9 @@ from game3d.pieces.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import get_slider_generator
 from game3d.movement.movepiece import Move
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager as CacheManager
-    from game3d.game.gamestate import GameState
 
 # 152 primitive directions |dx|,|dy|,|dz| ≤ 3
 def _vector_dirs() -> np.ndarray:
@@ -32,22 +32,21 @@ def _vector_dirs() -> np.ndarray:
 
 VECTOR_DIRECTIONS = _vector_dirs()
 
-def generate_vector_slider_moves(
-    cache: CacheManager,
-    color: Color,
-    x: int, y: int, z: int
-) -> List:
+def generate_vector_slider_moves(cache: CacheManager,
+                                 color: Color,
+                                 x: int, y: int, z: int) -> List[Move]:
     """Single call to slider engine."""
     return get_slider_generator().generate_moves(
         piece_type='vector_slider',
         pos=(x, y, z),
-        board_occupancy=cache.occupancy.mask,
         color=color.value,
-        max_distance=8
+        max_distance=8,
+        cache_manager=cache,          # ← REQUIRED
+        directions=VECTOR_DIRECTIONS
     )
 
 @register(PieceType.VECTORSLIDER)
-def vectorslider_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List:
+def vectorslider_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
     return generate_vector_slider_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_vector_slider_moves']

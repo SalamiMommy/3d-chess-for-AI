@@ -17,7 +17,7 @@ from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move
+from game3d.movement.movepiece import Move, convert_legacy_move_args
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 
@@ -64,11 +64,10 @@ def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move
             # Empty or **only** friendly pieces → share-square
             # Force the capture flag off (it is **not** a capture)
             moves.append(
-                Move(
-                    from_coord=m.from_coord,
-                    to_coord=m.to_coord,
-                    flags=0,               # not a capture
-                    metadata=m.metadata,   # preserve anything else
+                convert_legacy_move_args(
+                    m.from_coord,
+                    m.to_coord,
+                    is_capture=False
                 )
             )
     return moves

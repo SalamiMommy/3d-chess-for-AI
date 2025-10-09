@@ -29,11 +29,11 @@ class MovePool:
         self._initialized = False
 
     def _initialize_pool(self):
-        """Initialize the pool with Move instances if not already done."""
         if not self._initialized:
-            # Pre-allocate moves
             for _ in range(self._initial_size):
-                self._pool.append(Move.__new__(Move))
+                m = Move.__new__(Move)
+                m.metadata = {}
+                self._pool.append(m)
             self._initialized = True
 
     def acquire(self):
@@ -44,6 +44,7 @@ class MovePool:
             move = self._pool.pop()
         else:
             move = Move.__new__(Move)
+            move.metadata = {}   # <-- add this line
         self._in_use.add(id(move))
         return move
 
@@ -222,49 +223,6 @@ def convert_legacy_move_args(
     promotion_int = promotion_type.ptype.value if promotion_type and hasattr(promotion_type, 'ptype') else (promotion_type.value if promotion_type else None)
 
     return Move(from_coord, to_coord, flags, captured_int, promotion_int)
-
-
-# Monkey-patch replacement for existing Move class
-def optimize_move_creation():
-    """
-    Replace the existing Move class with Move.
-    Call this once at startup.
-    """
-    import game3d.movement.movepiece as movepiece_module
-
-    # Save original Move class
-    original_move = movepiece_module.Move
-
-    # Create wrapper that converts calls
-    class MoveWrapper:
-
-        def __new__(cls, *args, **kwargs):
-            if len(args) >= 2 and not kwargs:
-                # Simple case: Move(from_coord, to_coord)
-                return Move.create_simple(args[0], args[1])
-            else:
-                # Complex case: convert all arguments
-                return convert_legacy_move_args(*args, **kwargs)
-
-        # Copy over class methods from original
-        @classmethod
-        def create_archery_move(cls, *args, **kwargs):
-            return original_move.create_archery_move(*args, **kwargs)
-
-        @classmethod
-        def create_hive_move(cls, *args, **kwargs):
-            return original_move.create_hive_move(*args, **kwargs)
-
-        @classmethod
-        def create_castle_move(cls, *args, **kwargs):
-            return original_move.create_castle_move(*args, **kwargs)
-
-    # Replace the module's Move class
-    movepiece_module.Move = MoveWrapper
-
-    print("Move class optimized - using object pooling and bit packing")
-
-
 # ==============================================================================
 # MOVE RECEIPT - Result object for move submission
 # ==============================================================================
@@ -302,3 +260,10 @@ class MoveReceipt:
     def __bool__(self) -> bool:
         """Allow boolean checks: if receipt: ..."""
         return self.is_legal
+
+__all__ = [
+    'Move',
+    'MoveReceipt',
+    'MOVE_FLAGS',
+    'convert_legacy_move_args',   # <-- add
+]

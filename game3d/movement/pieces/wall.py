@@ -17,7 +17,7 @@ from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move
+from game3d.movement.movepiece import Move, convert_legacy_move_args
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.common.common import in_bounds
@@ -72,13 +72,11 @@ def generate_wall_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
             continue  # part of the block would fall off the board
 
         # Build the move – **never a capture**
-        moves.append(
-            Move(
-                from_coord=anchor,
-                to_coord=new_anchor,
-                flags=0,  # force non-capture
-            )
-        )
+        moves.append(convert_legacy_move_args(
+            from_coord=anchor,
+            to_coord=new_anchor,
+            is_capture=False
+        ))
 
     return moves
 

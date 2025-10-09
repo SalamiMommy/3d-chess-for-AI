@@ -1,4 +1,3 @@
-# moveeffects.py - Updated to use move_utils
 from __future__ import annotations
 from typing import List, Tuple, Optional, Set, TYPE_CHECKING
 import time
@@ -6,10 +5,10 @@ import time
 from game3d.board.board import Board
 from game3d.pieces.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
+# DELETE this line
+# from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
 from game3d.pieces.piece import Piece
 from game3d.movement.movepiece import MOVE_FLAGS
-# Import shared utilities
 from .move_utils import (
     apply_hole_effects,
     apply_bomb_effects,
@@ -20,13 +19,14 @@ from .move_utils import (
 from .zobrist import compute_zobrist
 
 if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager   # ← type only
     from .gamestate import GameState
 
 # Keep only archery-specific function here
 # moveeffects.py - Add archery function
 def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int]) -> 'GameState':
-    from .performance import track_operation_time  # Lazy import
-    from .gamestate import GameState as GS  # Lazy import
+    from game3d.cache.manager import get_cache_manager   # ← local import
+    from .performance import track_operation_time
 
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1
@@ -73,6 +73,7 @@ def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int
 def apply_hive_moves(game_state: 'GameState', moves: List[Move]) -> 'GameState':
     """Apply a series of hive moves to create new game state."""
     from .performance import track_operation_time
+    from game3d.cache.manager import get_cache_manager
 
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1

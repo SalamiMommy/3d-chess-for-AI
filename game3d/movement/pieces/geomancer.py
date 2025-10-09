@@ -60,7 +60,7 @@ def generate_geomancer_moves(cache: OptimizedCacheManager, color: Color, x: int,
     effect_targets = []
     for dx, dy, dz in _GEOMANCY_DIRS:
         tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds(tx, ty, tz):
+        if not in_bounds((tx, ty, tz)):
             continue
         if occ_mask[tz, ty, tx]:              # occupied → skip
             continue

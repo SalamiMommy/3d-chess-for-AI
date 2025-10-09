@@ -8,7 +8,7 @@ import time
 
 from game3d.pieces.enums import Color, PieceType
 from game3d.common.common import add_coords, euclidean_distance, manhattan, get_path_squares
-
+from game3d.movement.movepiece import Move
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -429,7 +429,7 @@ def _rebuild_moves(
             to_coord = tuple(a + step * b for a, b in zip(start, d))
             # preserve capture flag from any original raw move that ends here
             capture = any(m.to_coord == to_coord and m.is_capture for m in raw)
-            rebuilt.append(Move(from_coord=start, to_coord=to_coord, is_capture=capture))
+            rebuilt.append(Move.create_simple(start, to_coord, is_capture=capture))
     return rebuilt
 
 def _extend_move_range(m: "Move", start: Tuple[int, int, int], state) -> List["Move"]:
@@ -448,6 +448,6 @@ def _extend_move_range(m: "Move", start: Tuple[int, int, int], state) -> List["M
     # Check if next step is within board bounds
     if all(0 <= c < BOARD_SIZE for c in next_step):
         # Preserve capture flag from original move
-        extended.append(Move(from_coord=start, to_coord=next_step, is_capture=m.is_capture))
+        extended.append(Move.create_simple(start, next_step, is_capture=m.is_capture))
 
     return [m] + extended

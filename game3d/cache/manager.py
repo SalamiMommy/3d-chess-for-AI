@@ -30,7 +30,6 @@ from game3d.cache.caches.movecache import (
 from game3d.cache.caches.occupancycache import OccupancyCache
 from game3d.cache.caches.transposition import TTEntry          # ← was missing
 from game3d.game.zobrist import ZobristHash, compute_zobrist
-
 # ---------- helpers ----------
 from .managerconfig import ManagerConfig
 from .managerperformance import CachePerformanceMonitor, CacheEventType, MemoryManager
@@ -124,8 +123,7 @@ class OptimizedCacheManager:
     #  Initialisation
     # ------------------------------------------------------------------ #
     def initialise(self, current: Color) -> None:
-        """Call once after __init__ to bootstrap the move cache."""
-        self._current = current
+        from game3d.game.zobrist import compute_zobrist   # ← local import
         self._current_zobrist_hash = compute_zobrist(self.board, current)
         self._move_cache = create_optimized_move_cache(self.board, current, self)
         self._move_cache._full_rebuild()

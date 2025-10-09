@@ -15,7 +15,8 @@ from game3d.board.board import Board
 from game3d.pieces.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
 from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
-from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 from game3d.pieces.piece import Piece
 from game3d.cache.effects_cache import EffectsCache  # Import EffectsCache
 
@@ -250,9 +251,10 @@ class GameState:
         moves = self.legal_moves()
         return moves[0] if moves else None
 
-    def clone(self) -> 'GameState':
-        new_board = Board(self.board.tensor().clone())
+    def clone(self) -> GameState:
+        from game3d.cache.manager import get_cache_manager   # ← local
         new_cache = get_cache_manager(new_board, self.color)
+        new_board = Board(self.board.tensor().clone())
         return GameState(
             board=new_board,
             color=self.color,

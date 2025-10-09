@@ -10,7 +10,7 @@ import numpy as np
 from numba import njit, prange
 
 from game3d.pieces.enums import Color, PieceType
-from game3d.movement.movepiece import Move
+from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.common.common import coord_to_idx, in_bounds
 from game3d.movement.movepiece import MOVE_FLAGS
 if TYPE_CHECKING:
@@ -130,11 +130,9 @@ class IntegratedJumpMovementGenerator:
                 is_cap = True
             else:
                 continue  # Blocked by friendly
-            moves.append(Move(
-                from_coord=pos,
-                to_coord=(tx, ty, tz),
-                flags=MOVE_FLAGS['CAPTURE'] if is_cap else 0,
-                captured_piece=None,
+            moves.append(Move.create_simple(
+                pos, (tx, ty, tz),
+                is_capture=is_cap
             ))
         return moves
 
