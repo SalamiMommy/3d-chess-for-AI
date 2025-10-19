@@ -1,31 +1,8 @@
-# debug_moves.py
-from game3d.pieces.enums import PieceType
-from game3d.movement.registry import get_dispatcher
-from game3d.game.gamestate import GameState   # adjust import if your path differs
-
-print('--- dispatcher lookup ---')
-for pt in (PieceType.REFLECTOR, PieceType.FRIENDLYTELEPORTER):
-    print(pt.name, ':', get_dispatcher(pt))
-
-print('--- live generation test ---')
-# build the smallest 9×9×9 board that owns the two pieces
-state = GameState.starting_position()   # or however you obtain a GameState
-
-for x, y, z, pt in [
-    (0, 0, 8, PieceType.REFLECTOR),
-    (1, 2, 8, PieceType.FRIENDLYTELEPORTER),
-]:
-    print(f'\nGenerating {pt.name} at {(x,y,z)}')
-    disp = get_dispatcher(pt)
-    if disp is None:
-        print('  ❌ dispatcher is None')
-        continue
-    try:
-        moves = disp(state, x, y, z)
-        print('  ✅ returned', type(moves), 'with', len(moves), 'items')
-        if moves:
-            print('     first move:', moves[0])
-    except Exception as e:
-        import traceback
-        print('  ❌ exception:', e)
-        traceback.print_exc()
+import torch
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"PyTorch: {torch.__version__}, ROCm: {torch.version.hip}, Device: {device}, GPU: {torch.cuda.get_device_name(0) if device=='cuda' else 'N/A'}")
+tensor = torch.randn(100, device=device)  # Small tensor
+model = torch.nn.Linear(100, 1).to(device)  # Simple model
+out = model(tensor)
+print(out.sum())  # Force compute
+print("Test passed")

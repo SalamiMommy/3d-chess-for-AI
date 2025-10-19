@@ -4,9 +4,11 @@ Defines opponent types for self-play in 3D chess, with custom reward logic.
 """
 
 from typing import List, Optional, Tuple, Dict, Any
-from game3d.pieces.enums import Color, PieceType
+from game3d.common.enums import Color, PieceType
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
+from game3d.cache.manager import get_cache_manager
+from game3d.board.board import Board
 
 # Utility: Center squares (middle layer, center of board)
 CENTER_SQUARES = [
@@ -25,10 +27,27 @@ def is_priest(piece) -> bool:
 def is_king(piece) -> bool:
     return piece is not None and piece.ptype == PieceType.KING
 
+
 class OpponentBase:
     """Base class for all opponents."""
     def __init__(self, color: Color):
         self.color = color
+
+    def _get_simulated_state(self, state: GameState, move: Move) -> GameState:
+        """Create an isolated simulated state after the move."""
+        temp_board = Board(state.board.tensor().clone())
+        temp_cache = get_cache_manager(temp_board, state.color)
+        temp_state = GameState(
+            board=temp_board,
+            color=state.color,
+            cache=temp_cache,
+            history=state.history,
+            halfmove_clock=state.halfmove_clock,
+            game_mode=state.game_mode,
+            turn_number=state.turn_number,
+        )
+        next_state = temp_state.make_move(move)
+        return next_state
 
     def reward(self, state: GameState, move: Move) -> float:
         """Compute reward for a move given the current state."""
@@ -37,6 +56,7 @@ class OpponentBase:
     def observe(self, state: GameState):
         """Update opponent's internal state if needed."""
         pass
+
 
 class AdversarialOpponent(OpponentBase):
     """Adversarial opponent: tries to win, rewards for check, priest capture."""
@@ -55,21 +75,22 @@ class AdversarialOpponent(OpponentBase):
             reward += 0.5
 
         # Small reward for putting king in check (after move)
-        next_state = state.make_move(move)
-        opp_king_pos = next_state.cache.move._king_pos.get(self.color.opposite())
+        next_state = self._get_simulated_state(state, move)
+        opp_king_pos = next_state.cache.occupancy.find_king(self.color.opposite())
         if opp_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.move._king_pos.get(self.color)
+        my_king_pos = next_state.cache.occupancy.find_king(self.color)
         if my_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
         return reward
+
 
 class CenterControlOpponent(OpponentBase):
     """Opponent that favors moving to/controlling the center."""
@@ -92,21 +113,22 @@ class CenterControlOpponent(OpponentBase):
             reward += 0.5
 
         # Small reward for putting king in check
-        next_state = state.make_move(move)
-        opp_king_pos = next_state.cache.move._king_pos.get(self.color.opposite())
+        next_state = self._get_simulated_state(state, move)
+        opp_king_pos = next_state.cache.occupancy.find_king(self.color.opposite())
         if opp_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.move._king_pos.get(self.color)
+        my_king_pos = next_state.cache.occupancy.find_king(self.color)
         if my_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
         return reward
+
 
 class PieceCaptureOpponent(OpponentBase):
     """Opponent that gets a small reward for capturing any piece."""
@@ -124,21 +146,22 @@ class PieceCaptureOpponent(OpponentBase):
             reward += 0.5
 
         # Small reward for putting king in check
-        next_state = state.make_move(move)
-        opp_king_pos = next_state.cache.move._king_pos.get(self.color.opposite())
+        next_state = self._get_simulated_state(state, move)
+        opp_king_pos = next_state.cache.occupancy.find_king(self.color.opposite())
         if opp_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.move._king_pos.get(self.color)
+        my_king_pos = next_state.cache.occupancy.find_king(self.color)
         if my_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
         return reward
+
 
 class PriestHunterOpponent(OpponentBase):
     """Opponent that gets a big reward for capturing priests."""
@@ -157,21 +180,22 @@ class PriestHunterOpponent(OpponentBase):
             reward += 0.5
 
         # Small reward for putting king in check
-        next_state = state.make_move(move)
-        opp_king_pos = next_state.cache.move._king_pos.get(self.color.opposite())
+        next_state = self._get_simulated_state(state, move)
+        opp_king_pos = next_state.cache.occupancy.find_king(self.color.opposite())
         if opp_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.move._king_pos.get(self.color)
+        my_king_pos = next_state.cache.occupancy.find_king(self.color)
         if my_king_pos is not None:
             attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
         return reward
+
 
 # Factory to create opponents by name
 def create_opponent(opponent_type: str, color: Color) -> OpponentBase:
@@ -184,6 +208,7 @@ def create_opponent(opponent_type: str, color: Color) -> OpponentBase:
     if opponent_type not in types:
         raise ValueError(f"Unknown opponent type: {opponent_type}")
     return types[opponent_type](color)
+
 
 # List of available opponent types
 AVAILABLE_OPPONENTS = [

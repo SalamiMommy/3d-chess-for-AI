@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 from game3d.cache.caches.transposition import TranspositionTable, TTEntry, CompactMove
 from game3d.board.symmetry import SymmetryManager, RotationType
-from game3d.pieces.enums import Color
+from game3d.common.enums import Color
 from game3d.game.zobrist import compute_zobrist
 
 @dataclass
@@ -195,7 +195,7 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         from_canon = self._apply_transform_to_coord(from_coord, transform_name)
         to_canon = self._apply_transform_to_coord(to_coord, transform_name)
         # Reconstruct with proper piece type handling
-        from game3d.pieces.enums import PieceType
+        from game3d.common.enums import PieceType
         piece_type_value = (move.data >> 20) & 0x3F
         piece_type = PieceType(piece_type_value)
         captured_type_value = (move.data >> 26) & 0x3F

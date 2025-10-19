@@ -4,25 +4,21 @@ from typing import Optional, TYPE_CHECKING
 import torch
 
 from game3d.board.board import Board
-from game3d.pieces.enums import Color
-
-if TYPE_CHECKING:                         # ← type-only
-    from game3d.cache.manager import OptimizedCacheManager
-
-# DELETE this line
-# from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
+from game3d.common.enums import Color
+from game3d.cache.manager import get_cache_manager  # Added missing import
 
 from .gamestate import GameState, GameMode
 
-def start_game_state(cache: Optional[OptimizedCacheManager] = None) -> GameState:
-    """Create starting position with optimized cache."""
-    from game3d.cache.manager import get_cache_manager   # ← local import
-
-    board = Board.empty()
-    board.init_startpos()
-    cache = cache or get_cache_manager(board, Color.WHITE)
+def start_game_state(cache: 'OptimizedCacheManager' | None = None) -> GameState:
+    """
+    Build the initial position.
+    The caller *must* supply an external cache; we only wire it in.
+    """
+    if cache is None:
+        raise RuntimeError("start_game_state() requires an external OptimizedCacheManager")
+    # Board is already owned by the cache – do **not** create another one.
     return GameState(
-        board=board,
+        board=cache.board,
         color=Color.WHITE,
         cache=cache,
         history=(),
@@ -34,12 +30,21 @@ def start_game_state(cache: Optional[OptimizedCacheManager] = None) -> GameState
 def create_game_state_from_tensor(
     tensor: torch.Tensor,
     color: Color,
-    cache: Optional[OptimizedCacheManager] = None,
+    cache: Optional['OptimizedCacheManager'] = None,
 ) -> GameState:
-    from game3d.cache.manager import get_cache_manager   # ← local import
+    """
+    Build a state out of an arbitrary tensor.
+    If the caller already has a cache, reuse it; otherwise create *one*
+    and return it so that the caller can keep it for later.
+    """
 
     board = Board(tensor)
-    cache = cache or get_cache_manager(board, color)
+    if cache is None:                       # caller did not have one
+        cache = get_cache_manager(board, color)
+    else:                                   # caller gave us one – adopt the board
+        cache.board = board
+        cache._current = color
+        cache.refresh_all()                 # incremental update after tensor swap
     return GameState(
         board=board,
         color=color,
@@ -50,6 +55,12 @@ def create_game_state_from_tensor(
         turn_number=1,
     )
 
-def clone_game_state_for_search(state: GameState) -> GameState:
-    """Create a clone optimized for search operations."""
-    return state.clone_with_new_cache()
+def clone_game_state_for_search(original: GameState) -> GameState:
+    """Create a deep clone for search algorithms."""
+    return original.clone_with_new_cache()
+
+def new_board_with_manager(color: Color = Color.WHITE) -> Board:
+    """Create a start-position board and attach a cache-manager."""
+    board = Board.startpos()                     # low-level, no manager
+    _ = get_cache_manager(board, color)          # attaches itself to board
+    return board                                 # ready to use

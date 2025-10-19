@@ -3,16 +3,16 @@ from __future__ import annotations
 from typing import Dict, Tuple, Optional, TYPE_CHECKING
 from functools import lru_cache
 import random
-import threading
+
 
 # Import Board only for type checking, not at runtime
 if TYPE_CHECKING:
     from game3d.board.board import Board
     from game3d.movement.movepiece import Move
-    from game3d.cache.manager import OptimizedCacheManager
 
-from game3d.pieces.enums import Color, PieceType
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z
+
+from game3d.common.enums import Color, PieceType
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, iterate_occupied  # UPDATED: Use centralized iteration
 
 # Global Zobrist tables with thread safety
 _PIECE_KEYS: Dict[Tuple[PieceType, Color, Tuple[int, int, int]], int] = {}
@@ -20,53 +20,54 @@ _EN_PASSANT_KEYS: Dict[Tuple[int, int, int], int] = {}
 _CASTLE_KEYS: Dict[str, int] = {}
 _SIDE_KEY: int = 0
 _INITIALIZED: bool = False
-_ZOBRIST_LOCK: threading.RLock = threading.RLock()
+
 
 def _init_zobrist(width: int = 9, height: int = 9, depth: int = 9) -> None:
     """Thread-safe Zobrist key initialization."""
     global _INITIALIZED, _PIECE_KEYS, _EN_PASSANT_KEYS, _CASTLE_KEYS, _SIDE_KEY
 
-    with _ZOBRIST_LOCK:
-        if _INITIALIZED:
-            return
 
-        # Use high-quality random numbers
-        rng = random.Random(42)  # Fixed seed for reproducibility
+    if _INITIALIZED:
+        return
 
-        # Initialize piece keys
-        for ptype in PieceType:
-            for color in Color:
-                for x in range(width):
-                    for y in range(height):
-                        for z in range(depth):
-                            _PIECE_KEYS[(ptype, color, (x, y, z))] = rng.getrandbits(64)
+    # Use high-quality random numbers (increased security with random.SystemRandom)
+    rng = random.SystemRandom()
 
-        # Initialize en passant keys
-        for x in range(width):
-            for y in range(height):
-                for z in range(depth):
-                    _EN_PASSANT_KEYS[(x, y, z)] = rng.getrandbits(64)
+    # Initialize piece keys
+    for ptype in PieceType:
+        for color in Color:
+            for x in range(width):
+                for y in range(height):
+                    for z in range(depth):
+                        _PIECE_KEYS[(ptype, color, (x, y, z))] = rng.getrandbits(64)
 
-        # Initialize castling keys
-        for cr in range(16):
-            _CASTLE_KEYS[f"{cr}"] = rng.getrandbits(64)
+    # Initialize en passant keys
+    for x in range(width):
+        for y in range(height):
+            for z in range(depth):
+                _EN_PASSANT_KEYS[(x, y, z)] = rng.getrandbits(64)
 
-        _SIDE_KEY = rng.getrandbits(64)
-        _INITIALIZED = True
+    # Initialize castling keys
+    for cr in range(16):
+        _CASTLE_KEYS[f"{cr}"] = rng.getrandbits(64)
 
-@lru_cache(maxsize=1024)
-def _compute_zobrist_cached(board_hash: int, turn_value: int) -> int:
-    """Internal cached function using hashable keys."""
-    # This function should not be called directly
-    raise NotImplementedError("Use compute_zobrist instead")
+    _SIDE_KEY = rng.getrandbits(64)
+    _INITIALIZED = True
 
-def compute_zobrist(board: "Board", color: Color) -> int:
+@lru_cache(maxsize=4096)  # Increased maxsize for better hit rate
+def compute_zobrist(board: Optional["Board"], color: Color) -> int:
     """Compute Zobrist hash for the board state."""
-    _init_zobrist()  # Ensure initialized
+    _init_zobrist()
 
     zkey = 0
-    # Use board.list_occupied() instead of cache
-    for coord, piece in board.list_occupied():
+    # --- NEW: guard against None board ---------------------------------
+    if board is None:
+        # Empty board → only side-to-move matters
+        return zkey ^ (_SIDE_KEY if color == Color.BLACK else 0)
+    # -------------------------------------------------------------------
+
+    # UPDATED: Use centralized iterate_occupied
+    for coord, piece in iterate_occupied(board):
         zkey ^= _PIECE_KEYS[(piece.ptype, piece.color, coord)]
 
     if color == Color.BLACK:
@@ -85,14 +86,14 @@ class ZobristHash:
         return compute_zobrist(board, color)
 
     def update_hash_move(
-            self,
-            current_hash: int,
-            mv: "Move",
-            from_piece: "Piece",
-            captured_piece: Optional["Piece"] = None,
-            *,
-            cache: Optional["OptimizedCacheManager"] = None,   # NEW kw-only
-            **kwargs,                                           # swallow legacy args
+        self,
+        current_hash: int,
+        mv: Move,
+        from_piece: Piece,
+        captured_piece: Piece | None = None,
+        *,
+        cache: 'OptimizedCacheManager' | None = None,
+        **kw,
     ) -> int:
         """
         Incrementally update the Zobrist hash for a move.

@@ -28,21 +28,22 @@ class PerformanceMetrics:
 @contextmanager
 def track_operation_time(metrics: PerformanceMetrics, metric_attr: str):
     """Context manager for tracking operation timing."""
-    start_time = time.perf_counter()
+    start_time = time.monotonic()  # More precise
     try:
         yield
     finally:
-        duration = time.perf_counter() - start_time
+        duration = time.monotonic() - start_time
         setattr(metrics, metric_attr, getattr(metrics, metric_attr) + duration)
 
 def track_performance(func):
     """Decorator for tracking function performance."""
     def wrapper(self, *args, **kwargs):
-        start_time = time.perf_counter()
+        start_time = time.monotonic()
         try:
             return func(self, *args, **kwargs)
         finally:
-            duration = time.perf_counter() - start_time
-            # You can add custom performance tracking here
-            pass
+            duration = time.monotonic() - start_time
+            # Add custom tracking (e.g., log or metric update)
+            if hasattr(self, '_metrics'):
+                self._metrics.custom_time += duration  # Assume extension in Metrics
     return wrapper

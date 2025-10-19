@@ -4,7 +4,6 @@
 
 import time
 import gc
-import threading
 import os
 import numpy as np
 from typing import Dict, List, Any
@@ -31,13 +30,13 @@ class CacheEvent:
 class CachePerformanceMonitor:
     """Lightweight performance monitoring for the cache system."""
 
-    def __init__(self, enable_monitoring: bool = True, max_events: int = 1000):  # Reduced from 10000
+    def __init__(self, enable_monitoring: bool = True, max_events: int = 1000, time_buffer_size: int = 1000):  # Increased buffer
         self.enable_monitoring = enable_monitoring
         self.events: List[CacheEvent] = []
         self.max_events = max_events
         self.start_time = time.perf_counter()
 
-        # Performance counters - use simple counters instead of full event tracking
+        # Performance counters
         self.tt_hits = 0
         self.tt_misses = 0
         self.tt_collisions = 0
@@ -45,25 +44,27 @@ class CachePerformanceMonitor:
         self.move_undos = 0
         self.cache_clears = 0
 
-        # Timing statistics - keep smaller samples
-        self.move_apply_times = np.zeros(100, dtype=np.float32)  # Fixed size array
-        self.move_undo_times = np.zeros(100, dtype=np.float32)
-        self.legal_move_generation_times = np.zeros(100, dtype=np.float32)
+        # Timing statistics
+        self.move_apply_times = np.zeros(time_buffer_size, dtype=np.float32)
+        self.move_undo_times = np.zeros(time_buffer_size, dtype=np.float32)
+        self.legal_move_generation_times = np.zeros(time_buffer_size, dtype=np.float32)
         self._time_index = 0
+
+        # Configurable thresholds for suggestions
+        self.tt_hit_rate_threshold = 0.6
+        self.legal_gen_time_threshold_ms = 3.0
 
     def record_event(self, event_type: CacheEventType, data: Dict[str, Any] = None):
         if not self.enable_monitoring:
             return
 
-        # Only record critical events to reduce overhead
-        if event_type in [CacheEventType.TT_HIT, CacheEventType.TT_MISS,
-                         CacheEventType.CACHE_ERROR]:
+        critical_events = {CacheEventType.TT_HIT, CacheEventType.TT_MISS, CacheEventType.CACHE_ERROR}  # Set for faster lookup
+        if event_type in critical_events:
             event = CacheEvent(
                 event_type=event_type,
                 timestamp=time.perf_counter() - self.start_time,
                 data=data or {}
             )
-            # Use circular buffer for events
             if len(self.events) >= self.max_events:
                 self.events.pop(0)
             self.events.append(event)
@@ -83,20 +84,19 @@ class CachePerformanceMonitor:
             self.cache_clears += 1
 
     def record_move_apply_time(self, duration: float):
-        self.move_apply_times[self._time_index % 100] = duration
+        self.move_apply_times[self._time_index % len(self.move_apply_times)] = duration
         self._time_index += 1
 
     def record_move_undo_time(self, duration: float):
-        self.move_undo_times[self._time_index % 100] = duration
+        self.move_undo_times[self._time_index % len(self.move_undo_times)] = duration
 
     def record_legal_move_generation_time(self, duration: float):
-        self.legal_move_generation_times[self._time_index % 100] = duration
+        self.legal_move_generation_times[self._time_index % len(self.legal_move_generation_times)] = duration
 
     def get_performance_stats(self) -> Dict[str, Any]:
         total_tt_accesses = self.tt_hits + self.tt_misses
         tt_hit_rate = self.tt_hits / max(1, total_tt_accesses)
 
-        # Use numpy for faster mean calculation
         valid_apply_times = self.move_apply_times[self.move_apply_times != 0]
         valid_undo_times = self.move_undo_times[self.move_undo_times != 0]
         valid_legal_times = self.legal_move_generation_times[self.legal_move_generation_times != 0]
@@ -124,10 +124,10 @@ class CachePerformanceMonitor:
         stats = self.get_performance_stats()
 
         if stats['tt_hits'] + stats['tt_misses'] > 1000:
-            if stats['tt_hit_rate'] < 0.6:
+            if stats['tt_hit_rate'] < self.tt_hit_rate_threshold:
                 suggestions.append("Transposition table hit rate is low. Consider increasing size beyond 6GB.")
 
-        if stats['avg_legal_gen_time_ms'] > 3.0:
+        if stats['avg_legal_gen_time_ms'] > self.legal_gen_time_threshold_ms:
             suggestions.append("Legal move gen slow. Ensure parallelism and vectorization are active.")
 
         return suggestions
@@ -141,25 +141,16 @@ class MemoryManager:
         self.last_gc_time = 0
         self._gc_count = 0
 
-        # Disable background monitoring thread to reduce overhead
-        # Memory checks will be done on-demand
-
     def check_and_gc_if_needed(self) -> None:
         """Lightweight memory check without psutil overhead."""
         current_time = time.time()
 
-        # Only check every N operations to reduce overhead
         self._gc_count += 1
-        if self._gc_count < 100:  # Check every 100 operations
+        if self._gc_count < 100:
             return
 
         self._gc_count = 0
 
-        # Simple GC based on time since last GC
         if current_time - self.last_gc_time > self.config.gc_cooldown:
             gc.collect()
             self.last_gc_time = current_time
-
-    def compress_caches(self) -> None:
-        """Optional compression - disabled by default to reduce overhead."""
-        pass  # Disable compression for performance

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Tuple
-from game3d.pieces.enums import PieceType
+from game3d.common.enums import PieceType
 
 # ==============================================================================
 # COMPACT MOVE REPRESENTATION – 56 BITS TOTAL (FIXED COORDINATE ORDERING)

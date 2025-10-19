@@ -7,45 +7,42 @@ Game engine that manages game rules and provides high-level API.
 import time
 from typing import List, Tuple, Optional, Dict, Any
 
-from game3d.pieces.enums import Color, Result, PieceType
+from game3d.common.enums import Color, Result, PieceType
 from game3d.movement.movepiece import Move, MoveReceipt
 from game3d.cache.manager import get_cache_manager
 from game3d.board.board import Board
 from game3d.game.gamestate import GameState
 from game3d.game.gamestate import GameMode
-from game3d.movement.pieces.hive import (
+from game3d.pieces.pieces.hive import (
     get_movable_hives, apply_multi_hive_move
 )
 
+# game3d/game3d.py
 class OptimizedGame3D:
-    __slots__ = (
-        "_state",
-        "_game_mode",
-        "_debug_turn_info",
-        "_move_history",
-    )
+    __slots__ = ("_state", "_game_mode", "_debug_turn_info", "_move_history")
 
-    def __init__(self,
-                game_mode: GameMode = GameMode.STANDARD,
-                *, debug_turn_info: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        board: Board | None = None,
+        cache: OptimizedCacheManager | None = None,
+        game_mode: GameMode = GameMode.STANDARD,
+        debug_turn_info: bool = True,
+    ) -> None:
+        if board is None:
+            board = Board.startpos()  # still empty
+        if cache is None:
+            raise RuntimeError("OptimizedGame3D must be given an external cache")
 
-        # Initialize board and cache
-        board = Board.startpos()
-        current_color = Color.WHITE
-
-        # Initialize cache manager
-        cache = get_cache_manager(board, current_color)
-
-        # Initialize game state
         self._state = GameState(
             board=board,
-            color=current_color,
+            color=Color.WHITE,
             cache=cache,
-            game_mode=game_mode
+            game_mode=game_mode,
         )
         self._game_mode = game_mode
-        self._move_history: List[Tuple[Move, float]] = []  # Move and processing time
-        self._debug_turn_info: bool = debug_turn_info
+        self._move_history: list[tuple[Move, float]] = []
+        self._debug_turn_info = debug_turn_info
 
     # ---------- PUBLIC API ----------
     @property
@@ -87,7 +84,7 @@ class OptimizedGame3D:
                 f"{self.current_player.name} submits {move}")
 
         # ----- fast reject -------------------------------------------------
-        piece = self._state.cache.occupancy.get(move.from_coord)
+        piece = self._state.cache.piece_cache.get(move.from_coord)
         if piece is None or piece.color != self.current_player:
             return self._create_error_receipt("No own piece on from-square",
                                             start_time)
@@ -135,11 +132,19 @@ class OptimizedGame3D:
     # -----------------------------------------------------------
     # 3.  Extract the old single-move logic so we can reuse it
     # -----------------------------------------------------------
-    def _submit_single_move(self, move: Move, start_time: float) -> MoveReceipt:
+
+    def _submit_single_move(self, mv: Move, start_time: float) -> MoveReceipt:
         """The original submit_move body (colour flips automatically)."""
         try:
-            new_state = self._state.make_move(move)
-            self._move_history.append((move, time.perf_counter() - start_time))
+            # Validate move before applying
+            piece = self._state.cache.piece_cache.get(mv.from_coord)
+            if piece is None:
+                return self._create_error_receipt(f"No piece at {mv.from_coord}", start_time)
+            if piece.color != self._state.color:
+                return self._create_error_receipt(f"Cannot move opponent's piece", start_time)
+
+            new_state = self._state.make_move(mv)
+            self._move_history.append((mv, time.perf_counter() - start_time))
             self._state = new_state
             return MoveReceipt(
                 new_state=new_state,
@@ -152,6 +157,11 @@ class OptimizedGame3D:
             )
         except ValueError as e:
             return self._create_error_receipt(str(e), start_time)
+        except Exception as e:
+            print(f"[ERROR] Unexpected error in _submit_single_move: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._create_error_receipt(f"Internal error: {e}", start_time)
 
     # ---------- UTILITY METHODS ----------
     def _create_error_receipt(self, message: str, start_time: float) -> MoveReceipt:

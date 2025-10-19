@@ -1,33 +1,34 @@
-# game3d/cache/effectscache/attackscache.py
+# game3d/cache/caches/attackscache.py
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional, TYPE_CHECKING, List
 from dataclasses import dataclass, field
-from game3d.pieces.enums import Color, PieceType
+from game3d.common.enums import Color, PieceType
 from game3d.common.common import Coord
 
 if TYPE_CHECKING:
     from game3d.board.board import Board
     from game3d.movement.movepiece import Move
     from game3d.pieces.piece import Piece
+    from game3d.cache.manager import OptimizedCacheManager
 
 @dataclass(slots=True)
 class AttacksCache:
     """Incremental cache for attacked squares by each color."""
 
-    board: 'Board'
-    # Main cache: attacked squares for each color
+    board: "Board"
+
+    # weak ref to the board's cache manager
+    _manager: Optional["OptimizedCacheManager"] = field(init=False, repr=False)
+
     attacked_squares: Dict[Color, Set[Tuple[int, int, int]]] = field(default_factory=dict)
-
-    # Per-piece attack contributions for incremental updates
     piece_attacks: Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]] = field(default_factory=dict)
-
-    # Track last known positions of pieces for efficient updates
     last_positions: Dict[Color, Set[Tuple[int, int, int]]] = field(default_factory=dict)
-
-    # Invalidation tracking
     is_valid: Dict[Color, bool] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        # grab the manager that the board already holds
+        self._manager = getattr(self.board, "cache_manager", None)
+
         self.attacked_squares[Color.WHITE] = set()
         self.attacked_squares[Color.BLACK] = set()
         self.last_positions[Color.WHITE] = set()
@@ -45,8 +46,6 @@ class AttacksCache:
         """Store attacked squares for a color and mark as valid."""
         self.attacked_squares[color] = attacked.copy()
         self.is_valid[color] = True
-
-        # Rebuild piece_attacks mapping for this color
         self._rebuild_piece_attacks_for_color(color)
 
     def invalidate(self, color: Optional[Color] = None) -> None:
@@ -60,53 +59,76 @@ class AttacksCache:
             # Clear piece attacks for invalidated color
             coords_to_remove = []
             for coord in self.piece_attacks.keys():
-                piece = self.board.piece_at(coord)
-                if piece and piece.color == color:
-                    coords_to_remove.append(coord)
+                # CORRECTED: Access through manager
+                if self._manager:
+                    piece = self._manager.occupancy.get(coord)
+                    if piece and piece.color == color:
+                        coords_to_remove.append(coord)
             for coord in coords_to_remove:
                 del self.piece_attacks[coord]
 
     def apply_move(self, mv: 'Move', mover: Color, board: 'Board') -> None:
         """Incrementally update attacked squares on move."""
-        # Update both colors since move affects both
         self._incremental_update(mv, mover, board, is_undo=False)
 
     def undo_move(self, mv: 'Move', mover: Color, board: 'Board') -> None:
         """Incrementally update on undo."""
         self._incremental_update(mv, mover, board, is_undo=True)
 
-    def _incremental_update(self, mv: 'Move', mover: Color, board: 'Board', is_undo: bool) -> None:
-        """
-        Perform incremental update of attacked squares.
+    def _incremental_update(
+        self,
+        mv: "Move",
+        mover: Color,
+        board: "Board",
+        is_undo: bool,
+    ) -> None:
+        """Incrementally update attacked squares after move."""
+        if self._manager and self._manager.has_priest(mover):
+            # priests alive → no need to track attacks for this colour
+            self.is_valid[mover] = True
+            return
 
-        Strategy:
-        1. Remove attacks from piece's old position
-        2. Add attacks from piece's new position
-        3. Update attacks from pieces that might be affected (discovered attacks/blocks)
-        """
         from_coord = mv.from_coord
         to_coord = mv.to_coord
 
-        # Get the moving piece (from destination if undo, from source if apply)
+        # CORRECTED: Access through manager
         if is_undo:
-            moving_piece = board.piece_at(from_coord)
+            moving_piece = self._manager.occupancy.get(from_coord) if self._manager else None
         else:
-            moving_piece = board.piece_at(to_coord)
+            moving_piece = self._manager.occupancy.get(to_coord) if self._manager else None
 
         if moving_piece is None:
-            # Full rebuild if we can't determine piece
             self.invalidate()
             return
 
         # Update attacker's color
         self._update_piece_attacks(from_coord, to_coord, moving_piece, mover, board, is_undo)
 
-        # Update affected sliding pieces (discovered attacks/blocks)
+        # Update affected sliding pieces
         self._update_affected_sliders(from_coord, to_coord, mover, board)
 
-        # Mark both colors as valid after incremental update
+        # Mark both colors as valid
         self.is_valid[mover] = True
         self.is_valid[mover.opposite()] = True
+
+    def _full_rebuild(self, color: Color) -> None:
+        """Complete rebuild for *color*."""
+        if self._manager and self._manager.has_priest(color):
+            self.attacked_squares[color] = set()
+            self.is_valid[color] = True
+            return
+
+        attacked: Set[Tuple[int, int, int]] = set()
+
+        # CORRECTED: Iterate via manager's occupancy cache
+        if self._manager:
+            for coord, piece in self._manager.occupancy.iter_color(color):
+                attacks = self._calculate_piece_attacks(coord, piece, self.board)
+                self.piece_attacks[coord] = attacks
+                attacked |= attacks
+
+        self.attacked_squares[color] = attacked
+        self.is_valid[color] = True
 
     def _update_piece_attacks(self, from_coord: Coord, to_coord: Coord,
                             piece: 'Piece', color: Color, board: 'Board', is_undo: bool) -> None:
@@ -117,24 +139,27 @@ class AttacksCache:
             self.attacked_squares[color] -= old_attacks
             del self.piece_attacks[from_coord]
 
-        # Add new attacks (if not undo to empty square)
-        if not is_undo or board.piece_at(from_coord) is not None:
-            new_attacks = self._calculate_piece_attacks(to_coord if not is_undo else from_coord,
-                                                       piece, board)
+        # Add new attacks
+        if not is_undo or (self._manager and self._manager.occupancy.get(from_coord) is not None):
+            new_attacks = self._calculate_piece_attacks(
+                to_coord if not is_undo else from_coord,
+                piece,
+                board
+            )
             self.piece_attacks[to_coord if not is_undo else from_coord] = new_attacks
             self.attacked_squares[color] |= new_attacks
 
     def _update_affected_sliders(self, from_coord: Coord, to_coord: Coord,
                                 color: Color, board: 'Board') -> None:
-        """
-        Update sliding pieces that might be affected by the move.
-        This handles discovered attacks and blocked attacks.
-        """
-        # Get all sliding pieces that might be affected
+        """Update sliding pieces that might be affected by the move."""
         affected_coords = self._get_potentially_affected_sliders(from_coord, to_coord, board)
 
         for coord in affected_coords:
-            piece = board.piece_at(coord)
+            # CORRECTED: Access through manager
+            if not self._manager:
+                continue
+
+            piece = self._manager.occupancy.get(coord)
             if piece is None:
                 continue
 
@@ -149,13 +174,9 @@ class AttacksCache:
 
     def _get_potentially_affected_sliders(self, from_coord: Coord, to_coord: Coord,
                                          board: 'Board') -> Set[Coord]:
-        """
-        Get sliding pieces that might be affected by the move.
-        Returns pieces on the same rays as from_coord or to_coord.
-        """
+        """Get sliding pieces that might be affected by the move."""
         affected = set()
 
-        # Sliding piece types
         sliding_types = {
             PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP,
             PieceType.XYQUEEN, PieceType.XZQUEEN, PieceType.YZQUEEN,
@@ -163,6 +184,9 @@ class AttacksCache:
             PieceType.VECTORSLIDER, PieceType.CONESLIDER,
             PieceType.SPIRAL, PieceType.XZZIGZAG, PieceType.YZZIGZAG
         }
+
+        if not self._manager:
+            return affected
 
         # Check all 26 directions from both coordinates
         for coord in [from_coord, to_coord]:
@@ -172,7 +196,6 @@ class AttacksCache:
                         if dx == dy == dz == 0:
                             continue
 
-                        # Scan along this direction
                         curr_x, curr_y, curr_z = coord
                         for step in range(1, 9):
                             curr_x += dx
@@ -183,36 +206,32 @@ class AttacksCache:
                                 break
 
                             check_coord = (curr_x, curr_y, curr_z)
-                            piece = board.piece_at(check_coord)
+                            # CORRECTED: Access through manager
+                            piece = self._manager.occupancy.get(check_coord)
 
                             if piece is not None:
                                 if piece.ptype in sliding_types:
                                     affected.add(check_coord)
-                                break  # Stop at first piece in this direction
+                                break
 
         return affected
 
     def _calculate_piece_attacks(self, coord: Coord, piece: 'Piece', board: 'Board') -> Set[Coord]:
-        """
-        Calculate all squares attacked by a piece at a given coordinate.
-        This uses the move generation system but only for attack squares.
-        """
+        """Calculate all squares attacked by a piece at a given coordinate."""
         from game3d.movement.registry import get_dispatcher
 
         attacks = set()
 
-        # Get move dispatcher for this piece type
         dispatcher = get_dispatcher(piece.ptype)
         if dispatcher is None:
             return attacks
 
         try:
-            # Create minimal state for move generation
             from game3d.game.gamestate import GameState
             from game3d.cache.manager import get_cache_manager
 
-            # Use a minimal cache to avoid recursion
-            temp_cache = get_cache_manager(board, piece.color)
+            # CORRECTED: Use manager (get it from board or create temp)
+            temp_cache = self._manager if self._manager else get_cache_manager(board, piece.color)
             temp_state = GameState.__new__(GameState)
             temp_state.board = board
             temp_state.color = piece.color
@@ -226,29 +245,26 @@ class AttacksCache:
                 attacks.add(move.to_coord)
 
         except Exception:
-            # If move generation fails, fall back to empty set
             pass
 
         return attacks
 
     def _rebuild_piece_attacks_for_color(self, color: Color) -> None:
-        """Rebuild the piece_attacks mapping for a specific color."""
-        # Clear existing entries for this color
-        coords_to_remove = []
-        for coord in self.piece_attacks.keys():
-            piece = self.board.piece_at(coord)
-            if piece and piece.color == color:
-                coords_to_remove.append(coord)
-        for coord in coords_to_remove:
-            del self.piece_attacks[coord]
+        """Rebuild the piece_attacks mapping for a specific colour."""
+        if not self._manager:
+            return
 
-        # Rebuild from current attacked_squares
-        # This is approximate - we know the total but not per-piece breakdown
-        # For full accuracy, would need to recalculate from scratch
-        for coord, piece in self.board.list_occupied():
-            if piece.color == color:
-                attacks = self._calculate_piece_attacks(coord, piece, self.board)
-                self.piece_attacks[coord] = attacks
+        # Clear existing entries for this colour
+        for c in list(self.piece_attacks):
+            # CORRECTED: Access through manager
+            p = self._manager.occupancy.get(c)
+            if p and p.color == color:
+                del self.piece_attacks[c]
+
+        # Re-calculate via manager's occupancy cache
+        for coord, piece in self._manager.occupancy.iter_color(color):
+            attacks = self._calculate_piece_attacks(coord, piece, self.board)
+            self.piece_attacks[coord] = attacks
 
     def force_rebuild(self, color: Optional[Color] = None) -> None:
         """Force a complete rebuild of the cache."""
@@ -259,20 +275,6 @@ class AttacksCache:
         else:
             self.invalidate(color)
             self._full_rebuild(color)
-
-    def _full_rebuild(self, color: Color) -> None:
-        """Perform a full rebuild of attacked squares for a color."""
-        attacked = set()
-        self.piece_attacks.clear()
-
-        for coord, piece in self.board.list_occupied():
-            if piece.color == color:
-                attacks = self._calculate_piece_attacks(coord, piece, self.board)
-                self.piece_attacks[coord] = attacks
-                attacked |= attacks
-
-        self.attacked_squares[color] = attacked
-        self.is_valid[color] = True
 
     def get_stats(self) -> Dict[str, any]:
         """Get cache statistics for monitoring."""

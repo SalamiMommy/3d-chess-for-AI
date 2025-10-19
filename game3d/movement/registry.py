@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Callable, List, Dict, TYPE_CHECKING, Tuple
-from game3d.pieces.enums import PieceType, Color
-from game3d.movement.movepiece import Move  # ADDED: Missing import
+from game3d.common.enums import PieceType, Color
+from game3d.movement.movepiece import Move
 import numpy as np
 from numba import njit
 from numba.typed import List as NbList
@@ -11,8 +11,11 @@ if TYPE_CHECKING:
 
 _REGISTRY: Dict[PieceType, Callable[["GameState", int, int, int], List]] = {}
 
+_PIECE_DIRECTIONS = {  # Precompute directions
+    # Add directions for each PieceType
+}
+
 def register(pt: PieceType):
-    """Decorator that stores a move-generator for a piece-type."""
     def _decorator(fn):
         if pt in _REGISTRY:
             raise ValueError(f"Dispatcher for {pt} already registered.")
@@ -21,14 +24,12 @@ def register(pt: PieceType):
     return _decorator
 
 def get_dispatcher(pt: PieceType):
-    """Return the move-generator function registered for *pt*."""
     try:
         return _REGISTRY[pt]
     except KeyError:
         raise ValueError(f"No dispatcher registered for {pt}.") from None
 
 def get_all_dispatchers() -> Dict[PieceType, Callable]:
-    """Return a shallow copy of the whole registry."""
     return _REGISTRY.copy()
 
 def dispatch_batch(
@@ -37,8 +38,6 @@ def dispatch_batch(
     piece_types: List[PieceType],
     color: Color,
 ) -> List[Move]:
-    """Generate every pseudo-legal move for all pieces in the two input lists
-    in one go.  Returns a flat Python list[Move]."""
     if not piece_coords:
         return []
 
@@ -62,22 +61,23 @@ def dispatch_batch(
         for fr_x, fr_y, fr_z, to_x, to_y, to_z, ic in raw
     ]
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, parallel=False)
 def _batch_kernel(
     coords: NbList[Tuple[int, int, int]],
     types:  NbList[PieceType],
     occ:    np.ndarray,
     color:  int,
 ):
-    out_raw = []
+    out_raw = NbList()
     for i in range(len(coords)):
         cx, cy, cz = coords[i]
         pt         = types[i]
 
-        dirs   = _get_directions(pt)
+        dirs   = _PIECE_DIRECTIONS[pt]  # Use precomputed
+        local_out = NbList()
         for d in range(dirs.shape[0]):
             dx, dy, dz = dirs[d]
-            for step in range(1, 9):  # Board is 9x9x9
+            for step in range(1, 9):
                 nx = cx + dx * step
                 ny = cy + dy * step
                 nz = cz + dz * step
@@ -85,13 +85,14 @@ def _batch_kernel(
                     break
 
                 occ_code = occ[nz, ny, nx]
-                if occ_code == 0:  # Empty
-                    out_raw.append((cx, cy, cz, nx, ny, nz, 0))
-                elif occ_code != color:  # Enemy
-                    out_raw.append((cx, cy, cz, nx, ny, nz, 1))
+                if occ_code == 0:
+                    local_out.append((cx, cy, cz, nx, ny, nz, 0))
+                elif occ_code != color:
+                    local_out.append((cx, cy, cz, nx, ny, nz, 1))
                     break
-                else:  # Friendly piece
+                else:
                     break
+        out_raw.append(local_out)
     return out_raw
 
 __all__ = ["register", "get_dispatcher", "get_all_dispatchers", "dispatch_batch"]

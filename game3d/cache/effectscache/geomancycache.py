@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, TYPE_CHECKING
-from game3d.pieces.enums import Color
-from game3d.effects.geomancy import block_candidates
+from game3d.common.enums import Color
+from game3d.pieces.pieces.geomancer import block_candidates
 from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class GeomancyCache:
         """Manually block a square if empty and not already blocked."""
         # Use cache manager to check if square is occupied
         if self._cache_manager:
-            piece = self._cache_manager.piece_cache.get(sq)
+            piece = self._cache_manager.occupancy.get(sq)
         else:
             piece = None  # Conservative: assume occupied if no cache
 
@@ -40,13 +40,16 @@ class GeomancyCache:
         self._blocks[sq] = current_ply + 5
         return True
 
-    def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
+    def apply_move(self, mv: Move, mover: Color, current_ply: int, board: "Board") -> None:
         """Apply geomancy blocking for the player who just moved."""
-        # ← FIX: Use mover, not mover.opposite()
+        # 1.  Keep occupancy in sync *before* we touch geomancy caches
+        captured_sq = mv.to_coord if mv.is_capture else None
+        self._update_occupancy_incrementally(board, mv.from_coord, captured_sq)
+
+        # 2.  Classic geomancy-cache logic (unchanged)
         if self._cache_manager:
             candidates = block_candidates(board, mover, self._cache_manager)
         else:
-            # Fallback if cache manager not available
             candidates = block_candidates(board, mover, None)
 
         for sq in candidates:
@@ -54,8 +57,7 @@ class GeomancyCache:
                 self._blocks[sq] = current_ply + 5
 
         # Optional: Clean up some expired blocks to prevent memory growth
-        # (Only if performance allows - this is O(n))
-        if current_ply % 10 == 0:  # Every 10 plies
+        if current_ply % 10 == 0:
             self._cleanup_expired(current_ply)
 
     def undo_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
@@ -80,3 +82,26 @@ class GeomancyCache:
         return {
             'blocked_squares': len(self._blocks),
         }
+
+    def _update_occupancy_incrementally(
+        self,
+        board: "Board",
+        moved_sq: Coord,
+        captured_sq: Optional[Coord],
+    ) -> None:
+        """
+        Mirror the board state into the occupancy cache without a full
+        rebuild.  Only the squares that *really* changed are written.
+        """
+        occ = self._cache_manager.occupancy  # type: OccupancyCache
+
+        # 1.  Old piece left the from-square
+        occ.set_position(moved_sq, None)
+
+        # 2.  Captured piece disappeared (if any)
+        if captured_sq is not None:
+            occ.set_position(captured_sq, None)
+
+        # 3.  Moved piece arrived at the to-square
+        to_piece = board.get(moved_sq)  # board already reflects the move
+        occ.set_position(moved_sq, to_piece)

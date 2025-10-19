@@ -1,15 +1,18 @@
-from __future__ import annotations  # Enables forward references
-from typing import Dict, Set, Optional, TYPE_CHECKING
+# game3d/cache/effects_cache/trailblazecache.py  # Adjusted path
+
+from __future__ import annotations
+from typing import Dict, Set, TYPE_CHECKING
 from game3d.common.common import Coord
-from game3d.pieces.enums import Color, PieceType
+from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-from game3d.effects.trailblazing import TrailblazeRecorder
+from game3d.pieces.pieces.trailblazer import TrailblazeRecorder
+from game3d.cache.caches.occupancycache import OccupancyCache
 
 if TYPE_CHECKING:
     from game3d.board.board import Board
 
 class TrailblazeCache:
-    def __init__(self, cache_manager=None) -> None:
+    def __init__(self, cache_manager) -> None:  # Assume always present
         self._recorders: Dict[Coord, TrailblazeRecorder] = {}
         self._counters: Dict[Coord, int] = {}
         self._cache_manager = cache_manager
@@ -18,12 +21,7 @@ class TrailblazeCache:
         """Get all squares in trails of friendly trailblazers."""
         result: Set[Coord] = set()
         for coord, recorder in self._recorders.items():
-            # Use cache manager to get piece
-            if self._cache_manager:
-                piece = self._cache_manager.piece_cache.get(coord)
-            else:
-                piece = None  # Conservative: skip if no cache
-
+            piece = self._cache_manager.occupancy.get(coord)
             if piece and piece.color == controller and piece.ptype == PieceType.TRAILBLAZER:
                 result.update(recorder.current_trail())
         return result
@@ -36,25 +34,23 @@ class TrailblazeCache:
 
     def record_trail(self, trailblazer_pos: Coord, path: Set[Coord]) -> None:
         """Record a new trail for the trailblazer at trailblazer_pos."""
-        # Alias for mark_trail for backward compatibility
         self.mark_trail(trailblazer_pos, path)
 
     def increment_counter(self, sq: Coord, enemy_color: Color, board: Board) -> bool:
         """Check if square is in enemy trail and increment counter."""
-        if sq not in self.current_trail_squares(enemy_color.opposite(), board):
+        if sq not in self.current_trail_squares(enemy_color, board):  # Fixed: enemy_color for enemy trails
             return False
         self._counters[sq] = self._counters.get(sq, 0) + 1
         return self._counters[sq] >= 3
 
-    def apply_move(self, mv: Move, mover: Color, board: Board) -> None:
+    def apply_move(self, mv: Move, mover: Color, board: "Board") -> None:
         """Handle trailblazer creation/destruction (promotion, capture, etc.)."""
+        self._update_occupancy_incrementally(board, mv.from_coord, mv.to_coord)
         self._sync_recorders_with_board(board)
 
     def _sync_recorders_with_board(self, board: Board) -> None:
         """Remove recorders for trailblazers that no longer exist."""
         existing_coords = {coord for coord, piece in board.list_occupied() if piece.ptype == PieceType.TRAILBLAZER}
-
-        # Keep only recorders for trailblazers that still exist
         self._recorders = {
             coord: recorder
             for coord, recorder in self._recorders.items()
@@ -65,3 +61,16 @@ class TrailblazeCache:
         """Clear all cached trail data."""
         self._recorders.clear()
         self._counters.clear()
+
+    def _update_occupancy_incrementally(
+        self,
+        board: "Board",
+        from_sq: Coord,
+        to_sq: Coord,
+    ) -> None:
+        """
+        Mirror the board state into the occupancy cache without a full rebuild.
+        """
+        occ: OccupancyCache = self._cache_manager.occupancy
+        occ.set_position(from_sq, None)
+        occ.set_position(to_sq, board.get(to_sq))

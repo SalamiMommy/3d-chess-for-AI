@@ -3,39 +3,18 @@ import builtins, sys, traceback, inspect, linecache
 
 _real_get = builtins.__getattribute__
 
-def _trap(name):
-    if name == 'cache':
-        # 1. native Python stack
-        traceback.print_stack(file=sys.stdout)
-        # 2. deepest frame we can reach
-        frame = inspect.currentframe()
-        while frame.f_back: frame = frame.f_back
-        filename = frame.f_code.co_filename
-        lineno   = frame.f_lineno
-        line     = linecache.getline(filename, lineno).strip()
-        print('\n>>> DEEPEST FRAME <<<')
-        print('file :', filename)
-        print('line :', lineno)
-        print('text :', line)
-        print('locals-keys:', list(frame.f_locals.keys())[:20])
-        # 3. do NOT raise here – let the original NameError propagate
-        #    so the *real* exception is still shown afterwards
-    return _real_get(name)
-
-builtins.__getattribute__ = _trap
-
 import torch
 import numpy as np
 from typing import List, Optional
 from dataclasses import dataclass
 import random
 from game3d.game.gamestate import GameState
-from game3d.pieces.enums import Color, Result, PieceType
-from game3d.cache.manager import OptimizedCacheManager
+from game3d.common.enums import Color, Result, PieceType
 from game3d.movement.movepiece import Move
 from game3d.game3d import OptimizedGame3D  # Import the game controller
 from training.types import TrainingExample  # Shared dataclass
 from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
+from game3d.game.factory import new_board_with_manager
 
 # IMPORT OPPONENT MODULE
 from training.opponents import (
@@ -62,7 +41,7 @@ class SelfPlayGenerator:
     def __init__(
         self,
         model: torch.nn.Module,
-        device: str = "cuda",
+        device: str = "cpu",
         temperature: float = 1.0,
         opponent_types: Optional[List[str]] = None,
     ):
@@ -161,11 +140,11 @@ class SelfPlayGenerator:
             sq = game.state.board.active_king_coord   # fallback
             for idx in range(VOLUME):
                 c = idx_to_coord(idx)
-                pc = game.state.board.piece_at(c)
+                pc = game.state.cache.piece_cache.get(c)
                 if pc is not None:
                     sq = c
                     break
-            pc = game.state.board.piece_at(sq)
+            pc = game.state.cache.piece_cache.get(sq)
             pt = PieceType(pc.ptype).name if pc else "Unknown"
             new_msg = f"Piece {pt} on {sq} triggered: {exc}"
             print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
@@ -196,15 +175,23 @@ class SelfPlayGenerator:
             else:
                 # Handle other exceptions as before
                 sq = game.state.board.active_king_coord
-                pc = game.state.board.piece_at(sq)
+                pc = game.state.cache.piece_cache.get(sq)
                 pt = PieceType(pc.ptype).name if pc else "Unknown"
                 new_msg = f"Piece {pt} on {sq} triggered: {exc}"
                 print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
                 raise type(exc)(new_msg) from exc
 
-    def generate_game(self, max_moves: int = 200) -> List[TrainingExample]:
-        """Generate a single game with robust error handling using OptimizedGame3D and custom opponents."""
-        game = OptimizedGame3D()
+    def generate_game(self, max_moves: int = 1_000_000) -> List[TrainingExample]:
+
+        # --- self_play.py  (generate_game) ---
+        from game3d.board.board import Board
+        from game3d.game3d import OptimizedGame3D
+        from game3d.common.enums import Color
+
+        # 1. create ONE board and ONE cache
+        board = new_board_with_manager(Color.WHITE)
+        cache = board.cache_manager               # already attached
+        game = OptimizedGame3D(board=board, cache=cache)
         game.toggle_debug_turn_info(False)
         examples = []
         move_count = 0
@@ -287,7 +274,8 @@ class SelfPlayGenerator:
                         player_sign=player_sign  # Store per example
                     )
                 )
-
+                print(f"[SP] About to submit move on board-id={id(game.state.board)} "
+                    f"cache_manager={game.state.board.cache_manager}")
                 # Submit the move to the game
                 receipt = game.submit_move(chosen_move)
                 if not receipt.is_legal:
@@ -351,12 +339,12 @@ class SelfPlayGenerator:
 
         return examples
 
-def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cuda", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
     """Self-play a single game using custom opponents."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types)
     return generator.generate_game(max_moves)
 
-def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cuda", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
     """Generate examples from multiple self-play games using custom opponents."""
     all_examples = []
     for game_idx in range(num_games):

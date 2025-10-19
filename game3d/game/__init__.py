@@ -3,7 +3,7 @@
 game3d/game/__init__.py
 Central initialization that binds all game functionality to GameState.
 """
-
+from __future__ import annotations
 from typing import TYPE_CHECKING
 
 # Import core classes first
@@ -37,6 +37,8 @@ from .move_utils import (
 
 # Import moveeffects (now has archery and hive moves)
 from .moveeffects import apply_archery_attack, apply_hive_moves  # MODIFIED: Added apply_hive_moves
+
+# Removed redundant factory redefinitions - use from factory.py
 
 # ------------------------------------------------------------------
 # BIND ALL METHODS TO GAMESTATE CLASS
@@ -73,53 +75,9 @@ GameState.undo_move = undo_move
 GameState.apply_hive_moves = apply_hive_moves  # MODIFIED: Now using moveeffects import
 
 # Add missing PieceType import for validation methods
-from game3d.pieces.enums import PieceType
+from game3d.common.enums import PieceType
 
-# ------------------------------------------------------------------
-# FACTORY FUNCTIONS (Add these since they're referenced but not defined)
-# ------------------------------------------------------------------
-
-def start_game_state(board_size: int = 9) -> GameState:
-    """Create a new game state with initial position."""
-    from game3d.board.board import Board
-    from game3d.cache.manager import get_cache_manager
-    from game3d.pieces.enums import Color
-
-    # Create empty board
-    board = Board.create_initial_position()
-    cache = get_cache_manager(board, Color.WHITE)
-
-    return GameState(
-        board=board,
-        color=Color.WHITE,
-        cache=cache,
-        history=(),
-        halfmove_clock=0,
-        turn_number=1
-    )
-
-def create_game_state_from_tensor(tensor, color: Color) -> GameState:
-    """Create game state from tensor representation."""
-    from game3d.board.board import Board
-    from game3d.cache.manager import get_cache_manager
-
-    board = Board(tensor)
-    cache = get_cache_manager(board, color)
-
-    return GameState(
-        board=board,
-        color=color,
-        cache=cache,
-        history=(),
-        halfmove_clock=0,
-        turn_number=1
-    )
-
-def clone_game_state_for_search(original: GameState) -> GameState:
-    """Create a deep clone for search algorithms."""
-    return original.clone_with_new_cache()
-
-# Bind factory functions
+# Bind factory functions (from factory.py)
 GameState.start_game_state = staticmethod(start_game_state)
 GameState.create_game_state_from_tensor = staticmethod(create_game_state_from_tensor)
 GameState.clone_game_state_for_search = staticmethod(clone_game_state_for_search)
@@ -168,8 +126,7 @@ __all__ = [
     # Special game modes
     'apply_archery_attack',
     'apply_hive_moves',
-    'validate_archery_attack',
-    'validate_hive_moves',
+    # Removed undefined validate_archery_attack, validate_hive_moves - add if implemented
 
     # Performance
     'track_operation_time',

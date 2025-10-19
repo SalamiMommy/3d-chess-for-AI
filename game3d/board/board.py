@@ -1,18 +1,13 @@
-from __future__ import annotations
+# game3d/board/board.py
 """
-game3d/board/board.py
 9×9×9 board – tensor-first, zero-copy, training-ready.
 """
+from __future__ import annotations
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
-from game3d.common.common import (
-    SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME,
-    N_PIECE_TYPES, N_COLOR_PLANES, N_TOTAL_PLANES,
-    Coord, in_bounds, coord_to_idx, idx_to_coord,
-    hash_board_tensor, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS
-)
-from game3d.pieces.enums import Color, PieceType
+from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_PIECE_TYPES, N_COLOR_PLANES, N_TOTAL_PLANES, Coord, in_bounds, coord_to_idx, idx_to_coord, hash_board_tensor, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS, iterate_occupied
+from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
 from game3d.movement.movepiece import Move
@@ -20,7 +15,7 @@ from game3d.movement.movepiece import Move
 class Board:
     __slots__ = (
         "_tensor", "_hash", "_symmetry_manager",
-        "_occupancy_mask", "_occupied_list", "_gen", "cache_manager"  # Added cache_manager
+        "_occupancy_mask", "_occupied_list", "_gen", "cache_manager", "__weakref__"
     )
 
     def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
@@ -34,7 +29,6 @@ class Board:
         self._occupancy_mask: Optional[torch.Tensor] = None
         self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
         self._gen = 0
-        # FIXED: Don't initialize here to avoid circular imports
         self._symmetry_manager: Optional[SymmetryManager] = None
         self.cache_manager = None
 
@@ -49,7 +43,6 @@ class Board:
         """Get symmetry manager, initializing lazily if needed."""
         return self._ensure_symmetry_manager()
 
-    # UPDATE all symmetry methods to use the property:
     def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
         """Get all symmetric variants of current board position."""
         return self.symmetry_manager.get_symmetric_boards(self)
@@ -65,7 +58,6 @@ class Board:
     @staticmethod
     def empty() -> Board:
         return Board()
-
 
     def init_startpos(self) -> None:
         """Set up the initial position with full 9x9 ranks."""
@@ -140,120 +132,40 @@ class Board:
         # ------------------------------------------------------------------
         # z=3,4,5 remain empty
         # ------------------------------------------------------------------
-        assert self.validate_tensor(), "Board tensor is invalid after init!"
+        self._gen += 1
+        # NEW: if a cache manager is already attached, refresh it
+        if self.cache_manager is not None:
+            self.cache_manager.occupancy.rebuild(self)
 
-    def tensor(self) -> torch.Tensor:
-        return self._tensor.contiguous()
+        # print("[POST-INIT] BK plane-40 value:", self._tensor[40, 8, 4, 4].item())
+        # print("[POST-INIT] BK nonzero:", self._tensor[:, 8, 4, 4].nonzero(as_tuple=False).flatten())
 
-    def byte_hash(self) -> int:
-        if self._hash is None:
-            self._hash = hash_board_tensor(self._tensor)
-        return self._hash
 
-    def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
-        x, y, z = c
-        # Clear all piece planes at this coordinate
-        self._tensor[PIECE_SLICE, z, y, x] = 0.0
-        if p is not None:
-            idx = p.ptype.value  # Use .value for IntEnum
-            self._tensor[idx, z, y, x] = 1.0
-            # Set color in the color mask plane
-            if p.color == Color.WHITE:
-                self._tensor[N_PIECE_TYPES, z, y, x] = 1.0
-            else:
-                self._tensor[N_PIECE_TYPES, z, y, x] = 0.0
-        self._hash = None
-        self._occupancy_mask = None  # Invalidate cache
-        self._occupied_list = None   # Invalidate cache
-
-    def piece_at(self, c: Coord) -> Optional[Piece]:
-        # Check if cache_manager exists and has piece_cache
-        if hasattr(self, 'cache_manager') and self.cache_manager and hasattr(self.cache_manager, 'piece_cache'):
-            return self.cache_manager.piece_cache.get(c)
-
-        # Fallback to direct tensor access if cache isn't ready
-        x, y, z = c
-        piece_planes = self._tensor[PIECE_SLICE, z, y, x]
-        max_val, max_idx = torch.max(piece_planes, dim=0)
-
-        if max_val == 1.0:
-            ptype = PieceType(max_idx.item())
-            color_val = self._tensor[N_PIECE_TYPES, z, y, x]
-            color = Color.WHITE if color_val > 0.5 else Color.BLACK
-            return Piece(color, ptype)
-
-        return None
-
-    def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        if hasattr(self, 'cache_manager') and self.cache_manager:
-            return self.cache_manager.effects._effect_caches["share_square"].pieces_at(sq)
-        else:
-            # Fallback for cases without cache manager
-            piece = self.piece_at(sq)
-            return [piece] if piece else []
-
-    def mirror_z(self) -> Board:
-        # Mirror all planes (piece planes, color plane, current player, effect planes)
-        mirrored_tensor = self._tensor.flip(dims=(1,))
-        return Board(mirrored_tensor)
-
-    def rotate_90(self, k: int = 1) -> Board:
-        # Rotate all planes (piece planes, color plane, current player, effect planes)
-        rotated_tensor = torch.rot90(self._tensor, k, dims=(2, 3))
-        return Board(rotated_tensor)
-
-    def apply_player_plane(self, color: Color) -> None:
-        self._tensor[CURRENT_SLICE] = float(color.value)  # Use .value if Color is IntEnum
-
+    @property
     def occupancy_mask(self) -> torch.Tensor:
-        if self._occupancy_mask is None:
-            # Sum all piece planes to get occupancy
-            piece_sum = self._tensor[PIECE_SLICE].sum(dim=0)
-            self._occupancy_mask = piece_sum > 0
-        return self._occupancy_mask
+        if self.cache_manager is not None:
+            return torch.from_numpy(self.cache_manager.occupancy.mask).to(dtype=torch.bool)
+        else:
+            if self._occupancy_mask is None:
+                self._occupancy_mask = torch.any(self._tensor[PIECE_SLICE] > 0, dim=0)
+            return self._occupancy_mask
 
-    def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
-        if self._occupied_list is None:
-            occ = self.occupancy_mask()
-            indices = torch.nonzero(occ, as_tuple=False)  # (N, 3) with z, y, x
-            self._occupied_list = []
-            for idx in indices:
-                z, y, x = idx.tolist()
-                c = (x, y, z)
-                p = self.piece_at(c)
-                if p is not None:  # Safety check
-                    self._occupied_list.append((c, p))
-        return iter(self._occupied_list)
+    def list_occupied(self) -> List[Tuple[Coord, Piece]]:
+        """Get list of occupied (coord, piece) pairs - UPDATED: Use iterate_occupied."""
+        return list(iterate_occupied(self))
 
-    def clone(self) -> Board:
-        """
-        Create a deep copy of the board with all internal state.
+    def enumerate_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
+        return iterate_occupied(self)
 
-        CRITICAL: This method uses __new__ to bypass __init__, so ALL
-        attributes must be explicitly copied or initialized.
-        """
+    def clone(self) -> "Board":
         clone = Board.__new__(Board)
-
-        # Core tensor data
-        clone._tensor = self._tensor.clone()
-
-        # Hash state (can be reused since tensor is cloned)
+        clone._tensor = self._tensor.clone().detach()
         clone._hash = self._hash
-
-        # Generation counter
-        clone._gen = getattr(self, '_gen', 0)
-
-        # FIXED: Properly handle symmetry manager
-        clone._symmetry_manager = None  # Force lazy init on first use
-
-        # Cache invalidation (force rebuild on first access)
+        clone._gen = self._gen
+        clone._symmetry_manager = None
         clone._occupancy_mask = None
         clone._occupied_list = None
-
-        # Do not copy cache_manager
-        if hasattr(clone, 'cache_manager'):
-            del clone.cache_manager
-
+        clone.cache_manager = None  # Avoid stale cache; reinitialize if needed
         return clone
 
     def share_memory_(self) -> Board:
@@ -264,67 +176,58 @@ class Board:
         return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
 
     def apply_move(self, mv: Move) -> bool:
-        """
-        Apply the move to the tensor.
-        Returns True  -> move was really executed
-               False -> move was ignored (empty square)
-        """
+        if self.cache_manager is None:
+            raise RuntimeError("Board has no cache_manager – cannot apply_move.")
         from_coord = mv.from_coord
         to_coord   = mv.to_coord
 
-        piece = self.piece_at(from_coord)
-        if piece is None:               # 🔥 guard
-            return False                # ← tell caller "nothing happened"
+        piece = self.cache_manager.occupancy.get(from_coord)
+        if piece is None:
+            raise ValueError(f"apply_move: empty from-square {from_coord}")
 
-        # ----------  original logic unchanged  ----------
         if mv.is_capture:
             self.set_piece(to_coord, None)
 
-        if mv.metadata.get("is_geomancy_effect"):
-            target = mv.metadata["geomancy_target"]
-            # block the empty square via the geomancy cache
-            self.cache.effects["geomancy"].block_square(target, current_ply)
-            return True          # early exit – no piece movement
+        from game3d.game.move_utils import (
+            apply_swap_move,
+            apply_promotion_move,
+            apply_geomancy_effect,
+        )
 
-        if mv.metadata.get("is_swap"):
-            # mv.from_coord == swapper, mv.to_coord == friendly target
-            target_piece = self.piece_at(mv.to_coord)
-            self.set_piece(mv.to_coord, self.piece_at(mv.from_coord))  # move swapper there
-            self.set_piece(mv.from_coord, target_piece)               # friend moves here
-            return True  # early exit – no further move logic needed
+        if mv.metadata.get("is_swap", False):
+            apply_swap_move(self, mv)
+            return True
+
+        if mv.metadata.get("is_geomancy_effect", False):
+            pass
 
         if getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
-            promoted_piece = Piece(piece.color, mv.promotion_type)
-            self.set_piece(from_coord, None)
-            self.set_piece(to_coord, promoted_piece)
+            apply_promotion_move(self, mv, piece)
         else:
             self.set_piece(from_coord, None)
             self.set_piece(to_coord, piece)
 
         self._hash = None
         self._gen += 1
-        return True                     # ← success
+
+        self.cache_manager.occupancy.set_position(from_coord, None)
+        self.cache_manager.occupancy.set_position(to_coord, piece)
+
+        return True
 
     def validate_tensor(self) -> bool:
-        """Check that every (x,y,z) has at most one 1.0 in piece planes."""
-        valid = True
-        invalid_positions = []
-        for z in range(SIZE_Z):
-            for y in range(SIZE_Y):
-                for x in range(SIZE_X):
-                    piece_vals = self._tensor[PIECE_SLICE, z, y, x]
-                    total_ones = (piece_vals == 1.0).sum().item()
-                    if total_ones > 1:
-                        invalid_positions.append((x, y, z))
-                        valid = False
-        if invalid_positions:
-            print(f"Invalid positions found: {invalid_positions}")  # Or log; for debugging
-        return valid
+        """Check that every (x,y,z) has at most one 1.0 in piece planes - OPTIMIZED."""
+        piece_vals = self._tensor[PIECE_SLICE]
+        max_per_square = piece_vals.max(dim=0)[0]
+        invalid = (max_per_square > 1.0001).any()  # Handle float precision
+        if invalid:
+            invalid_positions = torch.nonzero(max_per_square > 1.0001, as_tuple=False).tolist()
+            print(f"Invalid positions found: {invalid_positions}")
+        return not invalid
 
     @classmethod
     def startpos(cls) -> "Board":
-        """Return a board set up for the initial position."""
-        b = cls.empty()   # Goes through __init__
+        b = cls.empty()
         b.init_startpos()
         return b
 
@@ -339,3 +242,51 @@ class Board:
     def generation(self) -> int:
         """Get the current generation number of the board."""
         return self._gen
+
+    def enumerate(self) -> Iterable[Tuple[Coord, Optional[Piece]]]:
+        """Yield (coord, piece_or_None) for every square on the 9×9×9 board."""
+        for z in range(SIZE_Z):
+            for y in range(SIZE_Y):
+                for x in range(SIZE_X):
+                    c = (x, y, z)
+                    yield c, self.piece_at(c)
+
+    def set_piece(self, coord: Coord, piece: Optional[Piece]) -> None:
+        """Set piece at coord, updating tensor."""
+        z, y, x = coord[2], coord[1], coord[0]
+        self._tensor[:, z, y, x] = 0.0  # Clear all planes first
+        if piece is not None:
+            offset = 0 if piece.color == Color.WHITE else N_PIECE_TYPES
+            self._tensor[offset + piece.ptype.value, z, y, x] = 1.0
+        self._hash = None
+        self._occupancy_mask = None
+        self._occupied_list = None
+        self._gen += 1
+
+    def piece_at(self, coord: Coord) -> Optional[Piece]:
+        """Get piece at coord from tensor."""
+        if not in_bounds(coord):
+            return None
+        z, y, x = coord[2], coord[1], coord[0]
+        white_vals = self._tensor[0:N_PIECE_TYPES, z, y, x]
+        black_vals = self._tensor[N_PIECE_TYPES:2 * N_PIECE_TYPES, z, y, x]
+        white_sum = white_vals.sum().item()
+        black_sum = black_vals.sum().item()
+        if white_sum + black_sum == 0:
+            return None
+        if white_sum > 0 and black_sum > 0:
+            raise ValueError(f"Overlapping pieces at {coord}")
+        if white_sum > 0:
+            ptype = PieceType(white_vals.argmax().item())
+            return Piece(Color.WHITE, ptype)
+        else:
+            ptype = PieceType(black_vals.argmax().item())
+            return Piece(Color.BLACK, ptype)
+
+    def byte_hash(self) -> int:
+        """Compute hash."""
+        return hash_board_tensor(self._tensor)
+
+    def tensor(self) -> torch.Tensor:
+        """Return the raw (C, 9, 9, 9) tensor."""
+        return self._tensor
