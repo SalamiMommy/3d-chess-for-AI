@@ -18,7 +18,7 @@ from game3d.game.zobrist import compute_zobrist, ZobristHash
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 from game3d.cache.caches.transposition import TranspositionTable
-from game3d.common.common import get_player_pieces
+from game3d.common.common import get_player_pieces, filter_none_moves
 
 # ------------------------------------------------------------------
 # Compact move representation for TT entries
@@ -197,11 +197,11 @@ class OptimizedMoveCache:
         self._cache_manager.board.apply_move(mv)
 
         # Update the occupancy cache to stay in sync
-        self._cache_manager.occupancy.set_position(mv.from_coord, None)
+        self._cache_manager.set_piece(mv.from_coord, None)
         promoted = (
             Piece(color, PieceType(mv.promotion_ptype)) if getattr(mv, "is_promotion", False) else piece
         )
-        self._cache_manager.occupancy.set_position(mv.to_coord, promoted)
+        self._cache_manager.set_piece(mv.to_coord, promoted)
 
         # Mark the changed squares (and attacked maps) as dirty
         self.invalidate_square(mv.from_coord)
@@ -236,8 +236,8 @@ class OptimizedMoveCache:
         mover_piece = (
             Piece(color, PieceType.PAWN) if getattr(mv, "is_promotion", False) else piece_now
         )
-        self._cache_manager.occupancy.set_position(mv.from_coord, mover_piece)
-        self._cache_manager.occupancy.set_position(mv.to_coord, captured_piece)
+        self._cache_manager.set_piece(mv.from_coord, mover_piece)
+        self._cache_manager.set_piece(mv.to_coord, captured_piece)
 
         # Mark squares (and attacked maps) as dirty
         self.invalidate_square(mv.from_coord)
@@ -331,18 +331,28 @@ class OptimizedMoveCache:
         return generate_legal_moves_for_piece(tmp_state, coord)
 
     def _rebuild_color_lists(self) -> None:
+        """Rebuild color-indexed move lists from per-piece cache."""
         white_moves = []
         black_moves = []
+
         for coord, moves in self._legal_per_piece.items():
             if not moves:
                 continue
+
+            # DEFENSIVE: Filter out None moves
+            moves = filter_none_moves(moves)
+            if not moves:
+                continue
+
             piece = self._cache_manager.occupancy.get(coord)
             if not piece:
                 continue
+
             if piece.color == Color.WHITE:
                 white_moves.extend(moves)
             else:
                 black_moves.extend(moves)
+
         self._legal_by_color[Color.WHITE] = white_moves
         self._legal_by_color[Color.BLACK] = black_moves
 
@@ -369,7 +379,11 @@ class OptimizedMoveCache:
                 return
 
             # Generate pseudo-legal moves
+            from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
             pseudo_moves = generate_pseudo_legal_moves(tmp_state)
+
+            # DEFENSIVE: Filter out None values immediately
+            pseudo_moves = filter_none_moves(pseudo_moves)
 
             # Filter out moves from empty squares (paranoid check)
             valid_moves = []
@@ -390,7 +404,7 @@ class OptimizedMoveCache:
             for move in valid_moves:
                 self._legal_per_piece.setdefault(move.from_coord, []).append(move)
 
-            # Rebuild color lists
+            # Rebuild color lists (which will also filter None)
             self._rebuild_color_lists()
 
         except AttributeError as e:

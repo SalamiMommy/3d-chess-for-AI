@@ -210,8 +210,8 @@ class Board:
         self._hash = None
         self._gen += 1
 
-        self.cache_manager.occupancy.set_position(from_coord, None)
-        self.cache_manager.occupancy.set_position(to_coord, piece)
+        self.cache_manager.set_piece(from_coord, None)
+        self.cache_manager.set_piece(to_coord, piece)
 
         return True
 
@@ -290,3 +290,7 @@ class Board:
     def tensor(self) -> torch.Tensor:
         """Return the raw (C, 9, 9, 9) tensor."""
         return self._tensor
+
+    def get(self, coord: Coord) -> Optional[Piece]:
+        """Fallback for old code that still calls board.get(coord)."""
+        return self.piece_at(coord)

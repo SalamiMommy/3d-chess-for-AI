@@ -89,19 +89,12 @@ class GeomancyCache:
         moved_sq: Coord,
         captured_sq: Optional[Coord],
     ) -> None:
-        """
-        Mirror the board state into the occupancy cache without a full
-        rebuild.  Only the squares that *really* changed are written.
-        """
-        occ = self._cache_manager.occupancy  # type: OccupancyCache
+        occ = self._cache_manager.occupancy
 
-        # 1.  Old piece left the from-square
-        occ.set_position(moved_sq, None)
-
-        # 2.  Captured piece disappeared (if any)
+        self._cache_manager.set_piece(moved_sq, None)
         if captured_sq is not None:
-            occ.set_position(captured_sq, None)
+            self._cache_manager.set_piece(captured_sq, None)
 
-        # 3.  Moved piece arrived at the to-square
-        to_piece = board.get(moved_sq)  # board already reflects the move
-        occ.set_position(moved_sq, to_piece)
+        # Cache-first read – avoids board.get
+        to_piece = self._cache_manager.occupancy.get(moved_sq)
+        self._cache_manager.set_piece(moved_sq, to_piece)

@@ -31,7 +31,7 @@ def apply_hole_effects(
     combined_map = {**pull_map, **push_map}
     for from_sq, to_sq in combined_map.items():
         # CORRECTED: Access through manager
-        piece = cache.piece_cache.get(from_sq)
+        piece = cache.occupancy.get(from_sq)
         if piece and piece.color == enemy_color:
             moved_pieces.append((from_sq, to_sq, piece))
             board.set_piece(to_sq, piece)
@@ -55,7 +55,7 @@ def apply_bomb_effects(
     if captured_piece and captured_piece.ptype == PieceType.BOMB and captured_piece.color == enemy_color:
         for sq in detonate(board, mv.to_coord, moving_piece.color):
             # CORRECTED: Access through manager
-            piece = cache.piece_cache.get(sq)
+            piece = cache.occupancy.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
             board.set_piece(sq, None)
@@ -65,7 +65,7 @@ def apply_bomb_effects(
         getattr(mv, 'is_self_detonate', False)):
         for sq in detonate(board, mv.to_coord, moving_piece.color):
             # CORRECTED: Access through manager
-            piece = cache.piece_cache.get(sq)
+            piece = cache.occupancy.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
             board.set_piece(sq, None)
@@ -76,7 +76,7 @@ def apply_bomb_effects(
 def apply_trailblaze_effect(
     board: 'Board',
     cache: 'OptimizedCacheManager',  # CORRECTED: Type hint shows it's the manager
-    mv: 'Move',
+    mv: 'Move',  # FIXED: was target, now mv
     color: 'Color',
     removed_pieces: List[Tuple[Tuple[int, int, int], Piece]]
 ) -> None:
@@ -84,7 +84,7 @@ def apply_trailblaze_effect(
     from game3d.common.enums import PieceType
 
     # CORRECTED: Access effect cache through manager
-    trail_cache = cache.effects._effect_caches["trailblaze"]
+    trail_cache = cache.trailblaze_cache
     enemy_color = color.opposite()
     enemy_slid = extract_enemy_slid_path(mv)
     squares_to_check = set(enemy_slid) | {mv.to_coord}
@@ -92,11 +92,11 @@ def apply_trailblaze_effect(
     for sq in squares_to_check:
         if trail_cache.increment_counter(sq, enemy_color, board):
             # CORRECTED: Access through manager
-            victim = cache.piece_cache.get(sq)
+            victim = cache.occupancy.get(sq)
             if victim:
                 # Kings only removed if no priest alive
                 if victim.ptype == PieceType.KING:
-                    if not _any_priest_alive(board, enemy_color):
+                    if not _any_priest_alive(board, victim.color):  # FIXED: Use victim.color
                         removed_pieces.append((sq, victim))
                         board.set_piece(sq, None)
                 else:
@@ -130,14 +130,14 @@ def apply_geomancy_effect(
     halfmove_clock: int
 ) -> None:
     """Block a square via the geomancy cache."""
-    # CORRECTED: Use manager method
-    cache.block_square(target, halfmove_clock)
+    # CORRECTED: Use manager method with board
+    cache.block_square(target, halfmove_clock, board)  # FIXED: Add board arg if required by method
 
 def apply_swap_move(board: 'Board', mv: 'Move') -> None:
     # CORRECT - cleaner through piece_cache
     cache = board.cache_manager
-    target_piece = cache.piece_cache.get(mv.to_coord)
-    board.set_piece(mv.to_coord, cache.piece_cache.get(mv.from_coord))
+    target_piece = cache.occupancy.get(mv.to_coord)
+    board.set_piece(mv.to_coord, cache.occupancy.get(mv.from_coord))
     board.set_piece(mv.from_coord, target_piece)
 
 def apply_promotion_move(board: 'Board', mv: 'Move', piece: 'Piece') -> None:

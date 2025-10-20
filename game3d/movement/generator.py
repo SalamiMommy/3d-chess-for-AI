@@ -8,7 +8,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from game3d.common.enums import PieceType, Color
-from game3d.common.common import get_player_pieces, GeneratorBase, MoveStatsTracker, track_time, prepare_batch_data, fallback_mode, validate_moves
+from game3d.common.common import get_player_pieces, GeneratorBase, MoveStatsTracker, track_time, prepare_batch_data, fallback_mode, validate_moves, filter_none_moves
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
@@ -57,6 +57,7 @@ class LegalMoveGenerator(GeneratorBase):
             mode_enum = self.mode_enum[mode.upper()]
         except KeyError:
             mode_enum = MoveGenMode.STANDARD
+
         if mode_enum == MoveGenMode.BATCH:
             moves = _generate_legal_moves_batch(state)
         elif mode_enum == MoveGenMode.PARALLEL:
@@ -66,6 +67,9 @@ class LegalMoveGenerator(GeneratorBase):
                 moves = _generate_legal_moves_parallel(state)
         else:
             moves = _generate_legal_moves_standard(state)
+
+        # DEFENSIVE: Filter out None moves before returning
+        moves = filter_none_moves(moves)
 
         _STATS.total_moves_filtered += len(moves)
 

@@ -7,7 +7,7 @@ Movement:
 
 Side-effect:
   - every square the piece **slides through** is **recorded** (last 3 moves)
-  - when an **enemy piece moves into** any recorded square → **+1 trail counter**
+  - when an **enemy piece moves into** any recorded square (Trailblazer owner's recorded) → **+1 trail counter**
   - counter reaches 3 → piece is **removed** (king spared if priests alive)
 """
 
@@ -99,22 +99,20 @@ def apply_trailblaze_step(
     removed: List[Tuple[Tuple[int, int, int], "Piece"]] = []
 
     # 1.  Get current trail squares (union of last 3 Trailblazer slides)
-    trail = cache.effects["trailblaze"].current_trail()
+    # FIXED: current_trail_squares takes controller (owner), but for enemy check, use owner's opposite
+    trail = cache.trailblaze_cache.current_trail_squares(enemy_color.opposite(), board)
     if enemy_sq not in trail:
         return removed
 
     # 2.  Increment counter
-    counter_cache = cache.effects["trailblaze_counters"]
-    counter = counter_cache.increment(enemy_sq, enemy_color)
-
-    # 3.  Remove if limit reached (king spared if priests alive)
-    if counter == 3:
+    if cache.trailblaze_cache.increment_counter(enemy_sq, enemy_color, board):
+        # 3.  Remove if limit reached (king spared if priests alive)
         victim = cache.occupancy.get(enemy_sq)
         if victim is not None:
-            if victim.ptype is PieceType.KING and _any_priest_alive(board, enemy_color):
+            if victim.ptype is PieceType.KING and _any_priest_alive(board, victim.color):
                 return removed  # king spared
             removed.append((enemy_sq, victim))
-            cache.occupancy.set(enemy_sq, None)
+            cache.occupancy.set_piece(enemy_sq, None)
 
     return removed
 

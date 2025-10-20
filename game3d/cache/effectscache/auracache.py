@@ -224,11 +224,15 @@ class UnifiedAuraCache:
         return square in self._affected_sets[AuraType.PULL][controller]
 
     # ---------- MOVE HANDLING ----------
-    def apply_move(self, mv: Move, mover: Color, board: "Board") -> None:
+    def apply_move(self, mv: Move, mover: Color, current_ply: int, board: "Board") -> None:
         """
         Incremental update for all auras after a move.
         Updates only when an aura-emitting piece moves or is captured.
         """
+        if mv is None:                       # ← NEW
+            self._dirty_flags['coverage'] = True
+            self._dirty_flags['maps']       = True
+            return
         updated = False
         from_piece = self._cache_manager.occupancy.get(mv.from_coord)
         captured_piece = mv.captured_piece if hasattr(mv, 'captured_piece') else None
@@ -515,6 +519,76 @@ class UnifiedAuraCache:
         """Increment coverage only if the coordinate is inside the array."""
         if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
             cov[z, y, x] += 1
+
+    # ------------------------------------------------------------------
+    #  PUBLIC FACADE – called by OptimizedCacheManager
+    # ------------------------------------------------------------------
+    def apply_freeze_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """
+        Emit freeze auras for <controller>.
+        Returns the squares that became frozen (enemy pieces inside the aura).
+        """
+        self._ensure_built()
+        victim = controller.opposite()
+        frozen_now = set()
+        for sq in self._affected_sets[AuraType.FREEZE][victim]:
+            piece = self._cache_manager.occupancy.get(sq)
+            if piece and piece.color == victim:
+                frozen_now.add(sq)
+        return frozen_now
+
+
+    def apply_push_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """Apply white-hole pushes and return squares whose occupancy changed."""
+        return self._apply_map_effects(AuraType.PUSH, controller, board)
+
+
+    def apply_pull_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """Apply black-hole pulls and return squares whose occupancy changed."""
+        return self._apply_map_effects(AuraType.PULL, controller, board)
+
+
+    # ------------------------------------------------------------------
+    #  Shared helper – actually moves the pieces on the board
+    # ------------------------------------------------------------------
+    def _apply_map_effects(self, aura: AuraType, controller: Color, board: "Board") -> Set[Coord]:
+        """
+        Execute push (WHITEHOLE) or pull (BLACKHOLE) and track every square
+        whose content changed.  The board *and* the occupancy cache are
+        updated in lock-step.
+        """
+        self._ensure_built()
+        changed: Set[Coord] = set()
+        cmap = self._maps[aura][controller]
+
+        for fr, to in cmap.items():
+            piece = self._cache_manager.occupancy.get(fr)
+            if piece is None:                       # nothing to move
+                continue
+            if piece.color == controller:           # never push/pull own pieces
+                continue
+            if not in_bounds(to):                   # safety belt
+                continue
+
+            # ---- perform the move ----
+            board.set(to, piece)
+            board.set(fr, None)
+            self._cache_manager.occupancy.set_position(fr, None)
+            self._cache_manager.occupancy.set_position(to, piece)
+            changed.update({fr, to})
+
+        # snapshot for undo (push/pull actually mutate the board)
+        if changed:
+            self._record_undo_snapshot(controller, board, aura)
+
+        return changed
+
+    # --------------------------------------------------
+    #  Tiny guard so we never read stale data
+    # --------------------------------------------------
+    def _ensure_built(self) -> None:
+        if any(self._dirty_flags.values()):
+            self._incremental_rebuild()
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================

@@ -73,7 +73,7 @@ def filter_valid_coords(coords: np.ndarray, log_oob: bool = True, clamp: bool = 
     # 3. logging
     if log_oob and not np.all(valid_mask):
         bad = coords[~valid_mask]
-        print(f"[WARNING] Filtered {len(bad)} OOB coords. Sample: {bad[:3]}")
+        # print(f"[WARNING] Filtered {len(bad)} OOB coords. Sample: {bad[:3]}")
 
     # 4. return only valid rows
     return coords[valid_mask]
@@ -555,6 +555,11 @@ def validate_moves(
     if not moves:
         return []
 
+    # DEFENSIVE: Filter out None moves immediately
+    moves = filter_none_moves(moves)
+    if not moves:
+        return []
+
     from_coords = np.array([m.from_coord for m in moves])
     to_coords = np.array([m.to_coord for m in moves])
 
@@ -604,7 +609,10 @@ def validate_moves(
     min_len = min(len(valid_from), len(valid_dest))
     valid_mask = valid_from[:min_len] & valid_dest[:min_len]
 
-    return [moves[i] for i in np.flatnonzero(valid_mask)]
+    validated = [moves[i] for i in np.flatnonzero(valid_mask)]
+
+    # DEFENSIVE: Final None filter before returning
+    return filter_none_moves(validated)
 
 def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType], List[int]]:
     """
@@ -805,3 +813,43 @@ def get_pieces_by_type(
          Piece(color if color is not None else Color.WHITE, ptype))
         for z, y, x in indices.tolist()
     ]
+
+def filter_none_moves(moves: List["Move"]) -> List["Move"]:
+    """
+    Defensive filter to remove None values from move lists.
+
+    This is a safety measure to prevent None values from propagating through
+    the move generation pipeline. If None moves are found, logs a warning.
+
+    Args:
+        moves: List of moves that may contain None values
+
+    Returns:
+        List of moves with all None values removed
+    """
+    if not moves:
+        return []
+
+    # Count None values for debugging
+    none_count = sum(1 for m in moves if m is None)
+
+    if none_count > 0:
+        print(f"[WARNING] filter_none_moves: Filtered {none_count} None values from {len(moves)} moves")
+        import traceback
+        traceback.print_stack(limit=5)  # Show where the None came from
+
+    # Filter out None values
+    filtered = [m for m in moves if m is not None]
+
+    # Extra validation: check that remaining moves have required attributes
+    valid = []
+    for m in filtered:
+        if not hasattr(m, 'from_coord') or not hasattr(m, 'to_coord'):
+            print(f"[WARNING] filter_none_moves: Move missing required attributes: {m}")
+            continue
+        valid.append(m)
+
+    if len(valid) < len(filtered):
+        print(f"[WARNING] filter_none_moves: Removed {len(filtered) - len(valid)} invalid move objects")
+
+    return valid

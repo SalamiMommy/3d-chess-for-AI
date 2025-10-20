@@ -36,8 +36,9 @@ class MovePool:
     # internal helpers
     # ----------------------------------------------------------
     def _new_move(self) -> 'Move':
-        """Create a raw Move instance *without* invoking __init__."""
         m = Move.__new__(Move)
+        m._data = 0                      # <-- add this
+        m._cached_hash = None
         m.metadata = {}
         return m
 

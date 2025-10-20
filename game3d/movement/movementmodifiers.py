@@ -208,11 +208,7 @@ def modify_raw_moves(
         return []
 
     # 3.  Geomancy block ----------------------------------------------------
-    if hasattr(cache_manager.effects, "_effect_caches") and "geomancy" in cache_manager.effects._effect_caches:
-        geo = cache_manager.effects._effect_caches["geomancy"]
-        blocked = [geo.is_blocked(c, current_ply) for c in to_coords]
-        to_coords = [c for c, b in zip(to_coords, blocked) if not b]
-        captures = [c for c, b in zip(captures, blocked) if not b]
+    blocked = [cache_manager.is_geomancy_blocked(c, current_ply) for c in to_coords]
 
     # 4.  Wall-capture restriction -----------------------------------------
     piece = cache_manager.occupancy.get(from_coord)
@@ -225,20 +221,6 @@ def modify_raw_moves(
                 filtered.append(c)
                 filt_cap.append(cap)
         to_coords, captures = filtered, filt_cap
-
-    # 5.  Archer LOS --------------------------------------------------------
-    if piece and piece.ptype == PieceType.ARCHER:
-        dist2 = [(tx - from_coord[0]) ** 2 +
-                 (ty - from_coord[1]) ** 2 +
-                 (tz - from_coord[2]) ** 2
-                 for tx, ty, tz in to_coords]
-        arch_mask = [d == 4 for d in dist2]
-        los_cache = cache_manager.effects._effect_caches.get("archery", {})
-        for i, (c, m) in enumerate(zip(to_coords, arch_mask)):
-            if m and not los_cache.get("archery", {}).has_clear_los(from_coord, c):
-                arch_mask[i] = False
-        to_coords = [c for c, m in zip(to_coords, arch_mask) if m]
-        captures = [c for c, m in zip(captures, arch_mask) if m]
 
     # 6.  Build Move objects -------------------------------------------------
     return Move.create_batch(from_coord,

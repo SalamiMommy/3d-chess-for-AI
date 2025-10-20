@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
 
 import numpy as np
 
-from game3d.common.common import N_TOTAL_PLANES
+from game3d.common.common import N_TOTAL_PLANES, SIZE
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 
@@ -33,7 +33,6 @@ from game3d.game.zobrist import ZobristHash, compute_zobrist
 # ---------- helpers ----------
 from .managerconfig import ManagerConfig
 from .managerperformance import CachePerformanceMonitor, CacheEventType, MemoryManager
-from .effects_cache import EffectsCache
 from .parallelmanager import ParallelManager
 from .export import (
     export_state_for_ai,
@@ -43,6 +42,12 @@ from .export import (
     validate_export_integrity,
 )
 from .diagnostics import record_cache_creation
+
+# ---------- direct effect caches ----------
+from game3d.cache.effectscache.auracache import UnifiedAuraCache
+from game3d.cache.effectscache.trailblazecache import TrailblazeCache
+from game3d.cache.effectscache.geomancycache import GeomancyCache
+from game3d.cache.caches.attackscache import AttacksCache
 
 
 class CacheDesyncError(Exception):
@@ -59,7 +64,7 @@ class OptimizedCacheManager:
     """
 
     __slots__ = (
-        "config", "board", "occupancy", "effects", "performance_monitor",
+        "config", "board", "occupancy", "performance_monitor",
         "_zobrist", "_current_zobrist_hash", "parallel", "_move_cache",
         "_move_counter", "_age_counter", "_current", "_needs_rebuild",
         "_skip_effect_updates", "_effect_update_counter",
@@ -69,7 +74,8 @@ class OptimizedCacheManager:
         "_swap_targets_dirty",
         "_network_teleport_targets",   # net-teleport cache
         "_network_teleport_dirty",     # net-teleport invalidation flag
-        "_reflecting_bishop_gen", "_board"      # reflecting-bishop generator
+        "_reflecting_bishop_gen", "_board",      # reflecting-bishop generator
+        "aura_cache", "trailblaze_cache", "geomancy_cache", "attacks_cache"    # direct effect caches
     )
 
     # ------------------------------------------------------------------ #
@@ -80,7 +86,6 @@ class OptimizedCacheManager:
         self.board = board
         self._current = current
         self.occupancy = OccupancyCache(board)
-        self.effects = EffectsCache(board, self)
         self.performance_monitor = CachePerformanceMonitor()
         self._memory_manager = MemoryManager(self.config, lambda: self._move_cache)
         self.parallel = ParallelManager(self.config)
@@ -107,12 +112,20 @@ class OptimizedCacheManager:
         self._board = board
         if board is not None:
             board.cache_manager = self
+
+        # Initialize direct effect caches
+        self.aura_cache = UnifiedAuraCache(board, self)
+        self.trailblaze_cache = TrailblazeCache(self)
+        self.geomancy_cache = GeomancyCache(self)
+        self.attacks_cache = AttacksCache(board)
+
     # ------------------------------------------------------------------ #
     #  Initialisation
     # ------------------------------------------------------------------ #
     def initialise(self, current: Color) -> None:
         self._current_zobrist_hash = compute_zobrist(self.board, current)  # Avoid redundant compute if same
         self._move_cache = create_optimized_move_cache(self.board, current, self)
+
     # ------------------------------------------------------------------ #
     #  Move application / undo
     # ------------------------------------------------------------------ #
@@ -141,383 +154,236 @@ class OptimizedCacheManager:
 
             # 2️⃣ === ATOMIC AURA PHASE ====================================
             # 2-a Freeze - ANY move triggers freeze re-emission
-            freeze_cache = self.effects._effect_caches["freeze"]
-            freeze_cache.apply_freeze_effects(mover, self.board)
-            frozen_squares = freeze_cache.get_frozen_squares(mover.opposite())
+            self.aura_cache.apply_freeze_effects(mover, self.board)
+            frozen_squares = self.aura_cache.get_frozen_squares(mover.opposite())
             affected.update(frozen_squares)
 
             # 2-b Black-hole suck
-            bh_cache = self.effects._effect_caches["black_hole_suck"]
-            for fr, to in bh_cache.pull_map(mover).items():
-                victim = self.occupancy.get(fr)
-                if victim and victim.color != mover:
-                    self.board.move_piece(fr, to)           # physical
-                    self.occupancy.set_position(fr, None)   # mirror
-                    self.occupancy.set_position(to, victim)
-                    affected.update((fr, to))
+            dirty_squares = self.aura_cache.apply_pull_effects(mover, self.board)
+            if dirty_squares:
+                self.occupancy.batch_set_positions(
+                    [(sq, self.board.get(sq)) for sq in dirty_squares]
+                )
+                affected.update(dirty_squares)
+            self.aura_cache.apply_move(None, controller, self.board)
 
             # 2-c White-hole push
-            wh_cache = self.effects._effect_caches["white_hole_push"]
-            for fr, to in wh_cache.push_map(mover).items():
-                victim = self.occupancy.get(fr)
-                if victim and victim.color != mover:
-                    self.board.move_piece(fr, to)
-                    self.occupancy.set_position(fr, None)
-                    self.occupancy.set_position(to, victim)
-                    affected.update((fr, to))
+            dirty_squares = self.aura_cache.apply_push_effects(mover, self.board)
+            if dirty_squares:
+                self.occupancy.batch_set_positions(
+                    [(sq, self.board.get(sq)) for sq in dirty_squares]
+                )
+                affected.update(dirty_squares)
+            self.aura_cache.apply_move(None, controller, self.board)
 
+            # 3️⃣ Geomancy blocking
+            current_ply = self.halfmove_clock
+            self.geomancy_cache.apply_move(mv, mover, current_ply, self.board)
 
-            self.performance_monitor.record_event(CacheEventType.MOVE_APPLIED)
-            self._move_counter += 1
-            self.effects.apply_freeze_effects(self._current, self.board)
-            # 3️⃣ Incremental cache invalidation ------------------------------
-            self._current = mover.opposite()
-            self._age_counter += 1
-            self._needs_rebuild = False
+            # 4️⃣ Trailblaze
+            if piece.ptype == PieceType.TRAILBLAZER and mv.slid_squares:
+                self.trailblaze_cache.mark_trail(from_coord, mv.slid_squares)
+            self.trailblaze_cache.apply_move(mv, mover, self.board)
 
-            if self._move_cache:
-                self._move_cache.invalidate_squares(affected)
-                self._move_cache.invalidate_attacked_squares(mover)
-                self._move_cache.invalidate_attacked_squares(mover.opposite())
+            # 5️⃣ Incremental cache updates
+            from_piece = piece
+            to_piece = self.board.get(to_coord)
+            captured_piece = captured
+            affected_caches = self.get_affected_caches(mv, mover, from_piece, to_piece, captured_piece)
+            self.update_effect_caches(mv, mover, affected_caches, current_ply)
 
-            self.performance_monitor.record_move_apply_time(
-                time.perf_counter() - start)
+            # 6️⃣ Attacks cache invalidation
+            self.attacks_cache.invalidate_for_color(mover)
+            self.attacks_cache.invalidate_for_color(mover.opposite())
+            self.move._lazy_revalidate()
+
             return True
 
         except Exception as e:
-            self.performance_monitor.record_event(CacheEventType.CACHE_ERROR,
-                                                {"error": str(e)})
-            raise
+            print(f"Error in apply_move: {e}")
+            return False
 
-    def undo_move(self, mv: Move, color: Color, halfmove_delta: int, undo_info: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Incremental undo for cache state, reversing the effects of a move.
-        Relies on stored undo_info from make_move for precise reversals.
-        If undo_info is None, falls back to full rebuild (less efficient).
+    def undo_move(self, mv: Move, *args, **kwargs) -> None:
+        mover = args[0] if args else self._current
+        current_ply = self.halfmove_clock
+        affected_caches = self.get_affected_caches_for_undo(mv, mover)
+        for cache_name in affected_caches:
+            cache = self._get_cache_by_name(cache_name)
+            if hasattr(cache, 'undo_move'):
+                cache.undo_move(mv, mover, current_ply, self.board)
 
-        Args:
-            mv: The Move being undone.
-            color: The color that made the move (pre-undo current player).
-            halfmove_delta: Change in halfmove clock (usually -1 or 0).
-            undo_info: Dict with reversal data (e.g., 'occupancy_updates', 'removed_pieces', etc.).
-        """
-        if undo_info is None:
-            # Fallback: Full rebuild (expensive, but safe)
-            self.rebuild(self.board, color)
-            self._current = color
-            self.sync_zobrist(compute_zobrist(self.board, color))
-            return
+        # Undo auras, etc.
+        self.aura_cache.undo_pull_effects(mover, self.board)  # Assuming undo methods exist
+        self.aura_cache.undo_push_effects(mover, self.board)
+        self.aura_cache.undo_freeze_effects(mover, self.board)
 
-        # 1. Reverse occupancy updates (batch reverse)
-        if 'occupancy_updates' in undo_info:
-            # Reverse the list to undo in opposite order
-            reverse_updates = list(reversed(undo_info['occupancy_updates']))
-            self.occupancy.batch_set_positions(reverse_updates)
-        else:
-            # Minimal reverse: Swap back from/to, restore captured
-            captured_piece = undo_info.get('captured_piece')
-            reverse_updates = [
-                (mv.to_coord, None),  # Clear to
-                (mv.from_coord, undo_info['moving_piece']),  # Restore from
-            ]
-            if captured_piece:
-                reverse_updates.append((mv.to_coord, captured_piece))  # Restore captured if any
-            self.occupancy.batch_set_positions(reverse_updates)
-
-        # 2. Reverse effects (decrement counters, clear flags)
-        # Assuming EffectsCache has a method to revert per-move effects
-        self.effects.clear_effects_for_move(mv, undo_info)
-        # Specific reversals:
-        # - Restore removed_pieces from bombs/trailblaze/holes
-        if 'removed_pieces' in undo_info:
-            restore_updates = [(sq, piece) for sq, piece in undo_info['removed_pieces']]
-            self.occupancy.batch_set_positions(restore_updates)
-        # - Reverse moved_pieces (holes)
-        if 'moved_pieces' in undo_info:
-            reverse_moves = [(to_sq, from_sq, piece) for from_sq, to_sq, piece in reversed(undo_info['moved_pieces'])]
-            move_updates = []
-            for from_sq, to_sq, piece in reverse_moves:
-                move_updates.append((to_sq, None))
-                move_updates.append((from_sq, piece))
-            self.occupancy.batch_set_positions(move_updates)
-
-        # 3. Undo move cache incrementally
-        self.move._optimized_incremental_undo(mv, color)
-
-        # 4. Sync Zobrist from stored or recompute
-        if 'original_zkey' in undo_info:
-            original_hash = undo_info['original_zkey']
-        else:
-            original_hash = compute_zobrist(self.board, color)
-        self._current_zobrist_hash = original_hash
-        self.sync_zobrist(original_hash)
-
-        # 5. Minimal invalidation (affected squares from undo_info)
-        affected = {mv.from_coord, mv.to_coord}
-        if 'affected_squares' in undo_info:
-            affected.update(undo_info['affected_squares'])
-        self.move.invalidate_squares(affected)
-        self.move.invalidate_attacked_squares(color)
-        self.move.invalidate_attacked_squares(color.opposite())
-
-        # 6. Update internal state
-        self._current = color
-        # Sync generation counters
-        if hasattr(self.board, 'generation'):
-            self.occupancy._gen = self.board.generation
-            self.move._gen = self.board.generation
-
-        # Diagnostics
-        self.performance_monitor.record_event(CacheEventType.UNDO_MOVE, len(affected) if 'affected_squares' in undo_info else 2)
-
-    def _undo_white_hole_push(self, mover: Color) -> None:
-        cache = self.effects._effect_caches["white_hole_push"]
-        if hasattr(cache, "_undo_stack"):
-            cache._restore_undo_snapshot(mover, self.board)
-
-    def _undo_black_hole_suck(self, mover: Color) -> None:
-        cache = self.effects._effect_caches["black_hole_suck"]
-        if hasattr(cache, "_undo_stack"):
-            cache._restore_undo_snapshot(mover, self.board)
-
-    def _undo_freeze(self, mover: Color) -> None:
-        # freeze is state-less; nothing to roll back
-        pass
-    # ------------------------------------------------------------------ #
-    #  Public query API
-    # ------------------------------------------------------------------ #
-    def legal_moves(self, color: Color) -> List[Move]:
-        """Lazy-rebuild + parallel generation."""
-        if self._move_cache is None:
-            raise RuntimeError("MoveCache not initialised. Call initialise() first.")
-        if self._needs_rebuild:
-            self._move_cache._full_rebuild()
-            self._needs_rebuild = False
-
-        start = time.perf_counter()
-        moves = self._move_cache.legal_moves(color,
-                                           parallel=self.config.enable_parallel,
-                                           max_workers=self.config.max_workers)
-        self.performance_monitor.record_legal_move_generation_time(
-            time.perf_counter() - start)
-        return moves
-
-    # ------------------------------------------------------------------ #
-    #  Transposition table façade
-    # ------------------------------------------------------------------ #
-    def probe_transposition_table(self, hash_value: int) -> Optional[TTEntry]:
-        if not self._move_cache:
-            return None
-        result = self._move_cache.get_cached_evaluation(hash_value)
-        if result:
-            score, depth, best_move = result
-            self.performance_monitor.record_event(CacheEventType.TT_HIT,
-                                                {"hash": hash_value,
-                                                 "depth": depth,
-                                                 "score": score})
-            return TTEntry(hash_value, depth, score, 0, best_move, 0)
-        self.performance_monitor.record_event(CacheEventType.TT_MISS,
-                                            {"hash": hash_value})
+    def _get_cache_by_name(self, name: str):
+        if name == "aura":
+            return self.aura_cache
+        elif name == "trailblaze":
+            return self.trailblaze_cache
+        elif name == "geomancy":
+            return self.geomancy_cache
+        elif name == "attacks":
+            return self.attacks_cache
         return None
 
-    def store_transposition_table(self, hash_value: int, depth: int, score: int,
-                                node_type: int,
-                                best_move: Optional[CompactMove] = None) -> None:
-        if self._move_cache:
-            self._move_cache.store_evaluation(hash_value, depth, score,
-                                            node_type, best_move)
+    def get_affected_caches(
+        self,
+        mv: 'Move',
+        mover: Color,
+        from_piece: Optional[Piece],
+        to_piece: Optional[Piece],
+        captured_piece: Optional[Piece],
+        is_undo: bool = False
+    ) -> Set[str]:
+        affected = set()
 
-    def get_current_zobrist_hash(self) -> int:
-        return self._current_zobrist_hash
-
-    # ------------------------------------------------------------------ #
-    #  Effect-cache delegation (one-liners)
-    # ------------------------------------------------------------------ #
-    def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
-        return self.effects.is_frozen(sq, victim)
-
-    def is_movement_buffed(self, sq: Tuple[int, int, int], friendly: Color) -> bool:
-        return self.effects.is_movement_buffed(sq, friendly)
-
-    def is_movement_debuffed(self, sq: Tuple[int, int, int], victim: Color) -> bool:
-        return self.effects.is_movement_debuffed(sq, victim)
-
-    def black_hole_pull_map(self, controller: Color) -> Dict[Tuple[int, int, int],
-                                                             Tuple[int, int, int]]:
-        return self.effects.black_hole_pull_map(controller)
-
-    def white_hole_push_map(self, controller: Color) -> Dict[Tuple[int, int, int],
-                                                            Tuple[int, int, int]]:
-        return self.effects.white_hole_push_map(controller)
-
-    def mark_trail(self, trailblazer_sq: Tuple[int, int, int],
-                 slid_squares: Set[Tuple[int, int, int]]) -> None:
-        self.effects.mark_trail(trailblazer_sq, slid_squares)
-
-    def current_trail_squares(self, controller: Color) -> Set[Tuple[int, int, int]]:
-        return self.effects.current_trail_squares(controller)
-
-    def is_geomancy_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        return self.effects.is_geomancy_blocked(sq, current_ply)
-
-    def block_square(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        return self.effects.block_square(sq, current_ply)
-
-    def archery_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
-        return self.effects.archery_targets(controller)
-
-    def is_valid_archery_attack(self, sq: Tuple[int, int, int],
-                               controller: Color) -> bool:
-        return self.effects.is_valid_archery_attack(sq, controller)
-
-    def pieces_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        return self.effects.pieces_at(sq)
-
-    def top_piece(self, sq: Tuple[int, int, int]) -> Optional[Piece]:
-        return self.effects.top_piece(sq)
-
-    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        return self._move_cache.get_attacked_squares(color) if self._move_cache else set()
-
-    def store_attacked_squares(self, color: Color,
-                             attacked: Set[Tuple[int, int, int]]) -> None:
-        self.effects.store_attacked_squares(color, attacked)
-
-    # ------------------------------------------------------------------ #
-    #  Configuration
-    # ------------------------------------------------------------------ #
-    def configure_transposition_table(self, size_mb: int) -> None:
-        import psutil
-        if psutil.virtual_memory().percent >= 85.0:
-            print("[CacheManager] Refused TT expansion: RAM ≥ 85 %")
-            return
-        self.config.main_tt_size_mb = size_mb
-        if self._move_cache:
-            cur = self._move_cache._current
-            self._move_cache = create_optimized_move_cache(
-                self.board, cur, self,
-                main_tt_size_mb=size_mb,
-                sym_tt_size_mb=self.config.sym_tt_size_mb)
-
-    def configure_symmetry_tt(self, size_mb: int) -> None:
-        self.config.sym_tt_size_mb = size_mb
-        if self._move_cache:
-            cur = self._move_cache._current
-            self._move_cache = create_optimized_move_cache(
-                self.board, cur, self,
-                main_tt_size_mb=self.config.main_tt_size_mb,
-                sym_tt_size_mb=size_mb)
-
-    def set_parallel_processing(self, enabled: bool) -> None:
-        self.config.enable_parallel = enabled
-
-    def set_vectorization(self, enabled: bool) -> None:
-        self.config.enable_vectorization = enabled
-
-    # ------------------------------------------------------------------ #
-    #  Utility
-    # ------------------------------------------------------------------ #
-    def clear_all_caches(self) -> None:
-        if self._move_cache:
-            self._move_cache.clear()
-        self.effects.clear_all_effects()
-        self.occupancy.rebuild(self.board)
-        self.performance_monitor = CachePerformanceMonitor()
-        self._move_counter = 0
-        gc.collect()
-        self.parallel.shutdown()
-
-    def export_cache_state(self) -> Dict[str, Any]:
-        return {
-            "zobrist_hash": self._current_zobrist_hash,
-            "performance_stats": self.get_cache_stats(),
-            "board_state": {
-                "occupied_squares": len(list(self.board.list_occupied())),
-                "current_player": self._move_cache._current.name if self._move_cache else None,
-            },
-            "effect_cache_status": {
-                name: {"type": type(cache).__name__}
-                for name, cache in self.effects._effect_caches.items()
-            },
-        }
-
-    def validate_cache_consistency(self) -> bool:
-        for coord, piece in self.board.list_occupied():
-            if self.occupancy.get(coord) != piece:
-                print(f"[INCONSISTENCY] Board has {piece} at {coord}, cache has {self.occupancy.get(coord)}")
-                return False
-        return True
-
-    # ------------------------------------------------------------------ #
-    #  Internal helpers
-    # ------------------------------------------------------------------ #
-    def _fast_occupancy_update(self, mv: Move, from_piece: Optional[Piece], mover: Color) -> None:
-        if from_piece is None:
-            return
-        promotion_type = getattr(mv, "promotion_ptype", None)
-        to_piece = (Piece(mover, PieceType(promotion_type)) if promotion_type else from_piece)
-        self.occupancy.set_position(mv.from_coord, None)
-        self.occupancy.set_position(mv.to_coord, to_piece)
-
-    def _update_effects(self, mv: Move, from_piece: Optional[Piece],
-                       captured_piece: Optional[Piece], mover: Color,
-                       current_ply: int) -> None:
-        relevant = {
-            PieceType.FREEZER: "freeze",
-            PieceType.SPEEDER: "movement_buff",
-            PieceType.SLOWER: "movement_debuff",
-            PieceType.BLACKHOLE: "black_hole_suck",
-            PieceType.WHITEHOLE: "white_hole_push",
+        # 1️⃣  Build the lookup table **once**
+        effect_map = {
+            PieceType.FREEZER:   "aura",
+            PieceType.SPEEDER:   "aura",
+            PieceType.SLOWER:    "aura",
+            PieceType.BLACKHOLE: "aura",
+            PieceType.WHITEHOLE: "aura",
             PieceType.TRAILBLAZER: "trailblaze",
-            PieceType.WALL: "behind",
-            PieceType.ARMOUR: "armour",
-            PieceType.GEOMANCER: "geomancy",
-            PieceType.ARCHER: "archery",
-            PieceType.KNIGHT: "share_square",
-        }.get(getattr(from_piece, "ptype", None))
-        if relevant:
-            try:
-                cache = self.effects._effect_caches[relevant]
-                if hasattr(cache, "apply_move"):
-                    cache.apply_move(mv, mover, self.board)
-            except Exception as e:
-                print(f"Effect {relevant} update failed: {e}")
-
-    def _mark_network_teleport_dirty(self) -> None:
-        self._network_teleport_dirty[Color.WHITE] = True
-        self._network_teleport_dirty[Color.BLACK] = True
-
-    def _mark_swap_dirty(self) -> None:
-        self._swap_targets_dirty[Color.WHITE] = True
-        self._swap_targets_dirty[Color.BLACK] = True
-
-    def get_check_summary(self) -> Dict[str, Any]:
-        if self._check_summary_age == self._age_counter:
-            return self._check_summary_cache
-        # Compute summary
-        summary = {
-            "white_priests_alive": self.has_priest(Color.WHITE),
-            "black_priests_alive": self.has_priest(Color.BLACK),
+            PieceType.GEOMANCER:   "geomancy",
         }
-        self._check_summary_cache = summary
-        self._check_summary_age = self._age_counter
-        return summary
 
-    def _recompute_check_summary(self) -> Dict[str, Any]:
-        def king_pos(color: Color) -> Optional[Tuple[int, int, int]]:
-            for sq, p in self.board.list_occupied():
-                if p.color == color and p.ptype is PieceType.KING:
-                    return sq
-            return None
+        # 2️⃣  Moving piece
+        if from_piece and from_piece.ptype in effect_map:
+            affected.add(effect_map[from_piece.ptype])
 
-        def has_priest(color: Color) -> bool:
-            return any(
-                p.ptype is PieceType.PRIEST
-                for _, p in self.board.list_occupied()
-                if p.color == color
+        # 3️⃣  Captured piece
+        if captured_piece and captured_piece.ptype in effect_map:
+            affected.add(effect_map[captured_piece.ptype])
+
+        # 4️⃣  Neighbour squares (unchanged)
+        self._add_affected_effects_from_pos(mv.from_coord, affected)
+        self._add_affected_effects_from_pos(mv.to_coord, affected)
+        if is_undo:
+            self._add_affected_effects_from_pos(mv.to_coord, affected)
+
+        return affected
+
+    def get_affected_caches_for_undo(self, mv: 'Move', mover: Color) -> Set[str]:
+        return self.get_affected_caches(mv, mover, None, None, None, is_undo=True)
+
+    def _add_affected_effects_from_pos(self, pos: Coord, affected: Set[str]) -> None:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    if dx == dy == dz == 0:
+                        continue
+                    check_pos = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
+                    if all(0 <= c < SIZE for c in check_pos):  # Use constant
+                        piece = self.occupancy.get(check_pos)
+                        if piece and piece.ptype in {PieceType.FREEZER, PieceType.BLACKHOLE,
+                                                     PieceType.WHITEHOLE, PieceType.GEOMANCER}:
+                            effect_map = {
+                                PieceType.FREEZER: "aura",
+                                PieceType.BLACKHOLE: "aura",
+                                PieceType.WHITEHOLE: "aura",
+                                PieceType.GEOMANCER: "geomancy"
+                            }
+                            affected.add(effect_map[piece.ptype])
+
+    def update_effect_caches(
+            self,
+            mv: "Move",
+            mover: Color,
+            affected_caches: set[str],
+            current_ply: int,
+    ) -> None:
+        """
+        Incremental update: tell the move-cache *precisely* which squares
+        need to be regenerated instead of rebuilding the whole thing
+        """
+        for cache_name in affected_caches:
+            cache = self._get_cache_by_name(cache_name)
+            if cache and hasattr(cache, 'apply_move'):
+                cache.apply_move(mv, mover, current_ply, self.board)
+
+    def is_movement_buffed(self, sq: Coord, color: Color) -> bool:
+        return self.aura_cache.is_buffed(sq, color)
+
+    def is_movement_debuffed(self, sq: Coord, color: Color) -> bool:
+        return self.aura_cache.is_debuffed(sq, color)
+
+    def is_frozen(self, sq: Coord, color: Color) -> bool:
+        return self.aura_cache.is_frozen(sq, color)
+
+    def black_hole_pull_map(self, controller: Color) -> Dict[Coord, Coord]:
+        return self.aura_cache.pull_map(controller)
+
+    def white_hole_push_map(self, controller: Color) -> Dict[Coord, Coord]:
+        return self.aura_cache.push_map(controller)
+
+    def mark_trail(self, trailblazer_sq: Coord, slid_squares: Set[Coord]) -> None:
+        self.trailblaze_cache.mark_trail(trailblazer_sq, slid_squares)
+
+    def current_trail_squares(self, controller: Color) -> Set[Coord]:
+        return self.trailblaze_cache.current_trail_squares(controller, self.board)
+
+    def is_geomancy_blocked(self, sq: Coord, current_ply: int) -> bool:
+        return self.geomancy_cache.is_blocked(sq, current_ply)
+
+    def block_square(self, sq: Coord, current_ply: int) -> bool:
+        return self.geomancy_cache.block_square(sq, current_ply, self.board)
+
+    def get_attacked_squares(self, color: Color) -> Set[Coord]:
+        cached = self.attacks_cache.get_for_color(color)
+        return cached if cached is not None else set()
+
+    def store_attacked_squares(self, color: Color, attacked: Set[Coord]) -> None:
+        self.attacks_cache.store_for_color(color, attacked)
+
+    def clear_all_effects(self) -> None:
+        for cache in [self.aura_cache, self.trailblaze_cache, self.geomancy_cache, self.attacks_cache]:
+            if hasattr(cache, 'clear'):
+                cache.clear()
+            elif hasattr(cache, 'invalidate'):
+                cache.invalidate()
+
+    def apply_blackhole_pulls(self, controller: Color) -> None:
+        dirty_squares = self.aura_cache.apply_pull_effects(controller, self.board)
+        if dirty_squares:
+            self.occupancy.batch_set_positions(
+                [(sq, self.board.get(sq)) for sq in dirty_squares]
             )
 
-        w_k, b_k = king_pos(Color.WHITE), king_pos(Color.BLACK)
+        self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
+
+        self.move.invalidate_attacked_squares(controller)
+        self.move.invalidate_attacked_squares(controller.opposite())
+        self.move._lazy_revalidate()
+
+    def apply_whitehole_pushes(self, controller: Color) -> None:
+        dirty_squares = self.aura_cache.apply_push_effects(controller, self.board)
+        if dirty_squares:
+            self.occupancy.batch_set_positions(
+                [(sq, self.board.get(sq)) for sq in dirty_squares]
+            )
+
+        self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
+
+        self.move.invalidate_attacked_squares(controller)
+        self.move.invalidate_attacked_squares(controller.opposite())
+        self.move._lazy_revalidate()
+
+    def apply_freeze_effects(self, controller: Color) -> None:
+        """Emit freeze auras for <controller> and update occupancy."""
+        frozen_squares = self.aura_cache.apply_freeze_effects(controller, self.board)
+        if frozen_squares:                       # should never be empty, but be safe
+            self.occupancy.batch_set_positions(
+                [(sq, self.board.get(sq)) for sq in frozen_squares]
+            )
+        # mark maps dirty so next query rebuilds
+        self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
+
+    def get_check_summary(self, has_priest: Callable[[Color], bool]) -> Dict[str, Any]:
+        w_k = self.find_king(Color.WHITE)
+        b_k = self.find_king(Color.BLACK)
         w_at = self.get_attacked_squares(Color.WHITE)
         b_at = self.get_attacked_squares(Color.BLACK)
 
@@ -533,7 +399,6 @@ class OptimizedCacheManager:
             "black_checkers": b_checkers,
             "attacked_squares_white": w_at,
             "attacked_squares_black": b_at,
-            # >>>>>>  ADD THESE TWO LINES  <<<<<<
             "white_priests_alive": self.has_priest(Color.WHITE),
             "black_priests_alive": self.has_priest(Color.BLACK),
         }
@@ -554,8 +419,10 @@ class OptimizedCacheManager:
                 "enable_vectorization": self.config.enable_vectorization,
             })
         base["effect_caches"] = {
-            name: {"type": type(cache).__name__}
-            for name, cache in self.effects._effect_caches.items()
+            "aura": {"type": type(self.aura_cache).__name__},
+            "trailblaze": {"type": type(self.trailblaze_cache).__name__},
+            "geomancy": {"type": type(self.geomancy_cache).__name__},
+            "attacks": {"type": type(self.attacks_cache).__name__},
         }
         return base
 
@@ -631,7 +498,7 @@ class OptimizedCacheManager:
         b.cache_manager = self
 
     def update_occupancy_incrementally(
-        occupancy: OccupancyCache,
+        self,
         board: "Board",
         moved_sq: Tuple[int, int, int],
         captured_sq: Optional[Tuple[int, int, int]] = None
@@ -639,16 +506,18 @@ class OptimizedCacheManager:
         """
         Mirror the board state into the occupancy cache without a full rebuild.
         """
-        # 1. Old piece left the from-square
-        occupancy.set_position(moved_sq, None)
-
-        # 2. Captured piece disappeared (if any)
+        self.occupancy.set_position(moved_sq, None)
         if captured_sq is not None:
-            occupancy.set_position(captured_sq, None)
+            self.occupancy.set_position(captured_sq, None)
+        to_piece = board.get(moved_sq)
+        self.occupancy.set_position(moved_sq, to_piece)
 
-        # 3. Moved piece arrived at the to-square
-        to_piece = board.get(moved_sq)  # board already reflects the move (fallback if needed, but prefer occupancy)
-        occupancy.set_position(moved_sq, to_piece)
+    def _fast_occupancy_update(self, mv: Move, piece: Piece, mover: Color) -> None:
+        captured_sq = mv.to_coord if mv.is_capture else None
+        self.occupancy.set_position(mv.from_coord, None)
+        if captured_sq:
+            self.occupancy.set_position(captured_sq, None)
+        self.occupancy.set_position(mv.to_coord, piece)
 
     def get_piece(self, coord: Coord) -> Optional[Piece]:
         """Get piece at coordinate."""

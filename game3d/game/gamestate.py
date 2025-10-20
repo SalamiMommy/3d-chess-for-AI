@@ -17,7 +17,6 @@ from game3d.movement.movepiece import Move
 from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
 from game3d.game.performance import PerformanceMetrics
 from game3d.pieces.piece import Piece
-from game3d.cache.effects_cache import EffectsCache  # Import EffectsCache
 
 from .zobrist import compute_zobrist
 
@@ -60,14 +59,10 @@ class GameState:
     # Move enrichment cache for undo
     _undo_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
-    # Effects cache
-    effects: EffectsCache = field(init=False, repr=False)
-
     def __post_init__(self):
         if self.cache is None:
             raise RuntimeError("GameState must be given an external cache")
         self.board.cache_manager = self.cache
-        self.effects = EffectsCache(self.board, self.cache)
         self._zkey = compute_zobrist(self.board, self.color)
         from game3d.game.performance import PerformanceMetrics
         self._metrics = PerformanceMetrics()
@@ -113,44 +108,16 @@ class GameState:
         return self.cache.is_movement_debuffed(sq, victim)
 
     def black_hole_pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Get black hole pull targets."""
         return self.cache.black_hole_pull_map(controller)
 
     def white_hole_push_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Get white hole push targets."""
         return self.cache.white_hole_push_map(controller)
 
     def current_trail_squares(self, controller: Color) -> Set[Tuple[int, int, int]]:
-        """Get current trailblaze trail squares."""
         return self.cache.current_trail_squares(controller)
 
-    def is_geomancy_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        """Check if a square is blocked by geomancy."""
-        return self.cache.is_geomancy_blocked(sq, current_ply)
-
-    def archery_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
-        """Get archery attack targets."""
-        return self.cache.archery_targets(controller)
-
-    def is_valid_archery_attack(self, sq: Tuple[int, int, int], controller: Color) -> bool:
-        """Validate archery attack."""
-        return self.cache.is_valid_archery_attack(sq, controller)
-
-    def can_capture_wall(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
-        """Check if a wall can be captured."""
-        return self.cache.can_capture_wall(attacker_sq, wall_sq, controller)
-
-    def pieces_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        """Get pieces at a square (for share square effect)."""
-        return self.cache.pieces_at(sq)
-
-    def top_piece(self, sq: Tuple[int, int, int]) -> Optional[Piece]:
-        """Get top piece at a square."""
-        return self.cache.top_piece(sq)
-
-    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        """Get squares attacked by a color."""
-        return self.cache.get_attacked_squares(color)
+    def is_geomancy_blocked(self, sq: Tuple[int, int, int]) -> bool:
+        return self.cache.is_geomancy_blocked(sq, self.ply)
 
     # ------------------------------------------------------------------
     # TENSOR REPRESENTATION WITH CACHING
@@ -232,20 +199,15 @@ class GameState:
         return tensor
 
     def _clear_caches(self) -> None:
-        """Enhanced cache clearing with validation."""
-        self._legal_moves_cache = None
-        self._legal_moves_cache_key = None
-        self._tensor_cache = None
-        self._tensor_cache_key = None
-        self._insufficient_material_cache = None
-        self._insufficient_material_cache_key = None
-        self._is_check_cache = None
-        self._is_check_cache_key = None
-        self._undo_info = None
-
-        # Use clear method instead of directly clearing internal structures
-        if hasattr(self.cache, 'move') and hasattr(self.cache.move, 'clear'):
-            self.cache.move.clear()
+            """Clear all internal caches."""
+            self._legal_moves_cache = None
+            self._legal_moves_cache_key = None
+            self._tensor_cache = None
+            self._tensor_cache_key = None
+            self._insufficient_material_cache = None
+            self._insufficient_material_cache_key = None
+            self._is_check_cache = None
+            self._is_check_cache_key = None
 
     # ------------------------------------------------------------------
     # UTILITIES AND SAMPLING
@@ -386,21 +348,6 @@ class GameState:
         """Get game result if game is over."""
         from game3d.game.terminal import result
         return result(self)
-
-    @property
-    def cache(self):
-        """Protected cache property"""
-        return self._cache
-
-    @cache.setter
-    def cache(self, value):
-        """Validate cache assignment"""
-        from game3d.cache.manager import OptimizedCacheManager
-        if not isinstance(value, OptimizedCacheManager):
-            raise TypeError(
-                f"cache must be OptimizedCacheManager, got {type(value).__name__}"
-            )
-        self._cache = value
 
     def pass_turn(self) -> "GameState":
         """

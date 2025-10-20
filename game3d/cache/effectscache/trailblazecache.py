@@ -43,7 +43,7 @@ class TrailblazeCache:
         self._counters[sq] = self._counters.get(sq, 0) + 1
         return self._counters[sq] >= 3
 
-    def apply_move(self, mv: Move, mover: Color, board: "Board") -> None:
+    def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
         """Handle trailblazer creation/destruction (promotion, capture, etc.)."""
         self._update_occupancy_incrementally(board, mv.from_coord, mv.to_coord)
         self._sync_recorders_with_board(board)
@@ -63,14 +63,10 @@ class TrailblazeCache:
         self._counters.clear()
 
     def _update_occupancy_incrementally(
-        self,
-        board: "Board",
-        from_sq: Coord,
-        to_sq: Coord,
+        self, board: "Board", from_sq: Coord, to_sq: Coord
     ) -> None:
-        """
-        Mirror the board state into the occupancy cache without a full rebuild.
-        """
         occ: OccupancyCache = self._cache_manager.occupancy
-        occ.set_position(from_sq, None)
-        occ.set_position(to_sq, board.get(to_sq))
+        self._cache_manager.set_piece(from_sq, None)
+        # Cache-first read
+        to_piece = self._cache_manager.occupancy.get(to_sq)
+        self._cache_manager.set_piece(to_sq, to_piece)

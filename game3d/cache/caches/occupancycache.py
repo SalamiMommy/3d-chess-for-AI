@@ -348,3 +348,18 @@ class OccupancyCache:
         return any(
             p == ptype
             for coord, p in self.iter_color(color))
+
+    def find_king(self, color: Color) -> Optional[Coord]:
+        """
+        Return the coordinate of the *single* king of the requested colour.
+        Returns None if no king is found (should never happen in a legal game).
+        """
+        code = 1 if color == Color.WHITE else 2
+        # np.where gives (z_idx, y_idx, x_idx) tuples
+        z_idx, y_idx, x_idx = np.where(
+            (self._occ == code) & (self._ptype == PieceType.KING.value)
+        )
+        if z_idx.size == 0:          # no king on board
+            return None
+        # assume exactly one king; take the first hit
+        return int(x_idx[0]), int(y_idx[0]), int(z_idx[0])

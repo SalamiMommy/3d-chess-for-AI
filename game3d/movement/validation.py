@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
 
 from game3d.movement.movepiece import Move
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import get_player_pieces, color_to_code, find_king, filter_valid_coords
+from game3d.common.common import get_player_pieces, color_to_code, find_king, filter_valid_coords, filter_none_moves
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -133,6 +133,12 @@ def validate_hive_moves(game_state: GameState, moves: List[Move]) -> Dict[str, A
     return {'valid': True, 'message': ""}
 
 def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
+    """Filter moves to only legal ones, removing frozen pieces and invalid moves."""
+    if not moves:
+        return []
+
+    # DEFENSIVE: Filter out None moves early
+    moves = filter_none_moves(moves)
     if not moves:
         return []
 
@@ -143,7 +149,8 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
 
     if friendly_priests_alive:
         # CORRECTED: Access frozen bitmap through manager's move cache
-        return [m for m in moves if not state.cache.is_frozen(m.from_coord, state.color)]
+        filtered = [m for m in moves if not state.cache.is_frozen(m.from_coord, state.color)]
+        return filter_none_moves(filtered)
 
     summary = _get_check_summary(state)
     attacked = summary[f"attacked_squares_{state.color.opposite().name.lower()}"]
@@ -163,4 +170,6 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
             continue
 
         legal.append(m)
-    return legal
+
+    # DEFENSIVE: Final None filter
+    return filter_none_moves(legal)
