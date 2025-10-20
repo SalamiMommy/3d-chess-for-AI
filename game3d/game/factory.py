@@ -1,22 +1,22 @@
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
-
 import torch
 
 from game3d.board.board import Board
 from game3d.common.enums import Color
-from game3d.cache.manager import get_cache_manager  # Added missing import
+from game3d.cache.manager import get_cache_manager  # already imported
+
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 
 from .gamestate import GameState, GameMode
 
+
+# ---------- public helpers --------------------------------------------------
+
 def start_game_state(cache: 'OptimizedCacheManager' | None = None) -> GameState:
-    """
-    Build the initial position.
-    The caller *must* supply an external cache; we only wire it in.
-    """
     if cache is None:
         raise RuntimeError("start_game_state() requires an external OptimizedCacheManager")
-    # Board is already owned by the cache – do **not** create another one.
     return GameState(
         board=cache.board,
         color=Color.WHITE,
@@ -27,24 +27,19 @@ def start_game_state(cache: 'OptimizedCacheManager' | None = None) -> GameState:
         turn_number=1,
     )
 
+
 def create_game_state_from_tensor(
     tensor: torch.Tensor,
     color: Color,
     cache: Optional['OptimizedCacheManager'] = None,
 ) -> GameState:
-    """
-    Build a state out of an arbitrary tensor.
-    If the caller already has a cache, reuse it; otherwise create *one*
-    and return it so that the caller can keep it for later.
-    """
-
     board = Board(tensor)
-    if cache is None:                       # caller did not have one
+    if cache is None:
         cache = get_cache_manager(board, color)
-    else:                                   # caller gave us one – adopt the board
+    else:
         cache.board = board
         cache._current = color
-        cache.refresh_all()                 # incremental update after tensor swap
+        cache.refresh_all()          # full incremental rebuild
     return GameState(
         board=board,
         color=color,
@@ -55,12 +50,23 @@ def create_game_state_from_tensor(
         turn_number=1,
     )
 
+
 def clone_game_state_for_search(original: GameState) -> GameState:
-    """Create a deep clone for search algorithms."""
     return original.clone_with_new_cache()
 
+
 def new_board_with_manager(color: Color = Color.WHITE) -> Board:
-    """Create a start-position board and attach a cache-manager."""
-    board = Board.startpos()                     # low-level, no manager
-    _ = get_cache_manager(board, color)          # attaches itself to board
-    return board                                 # ready to use
+    """
+    Create a start-position board and attach a **fresh** cache manager
+    that is guaranteed to be rebuilt *after* the pieces are on the board.
+    """
+    # 1. Build the position first – no cache attached yet
+    board = Board.empty()
+    board.init_startpos()            # fills the tensor
+
+    # 2. Destroy any half-initialised manager that might already be lurking
+    board.cache_manager = None
+
+    # 3. Now create the real manager – rebuild() will see the full tensor
+    cm = get_cache_manager(board, color)
+    return board

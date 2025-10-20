@@ -53,11 +53,15 @@ def get_player_pieces(state: GameState, color: Color) -> List[Tuple[Coord, Piece
         result.append((coord, piece_data))
     return result
 
-def iterate_occupied(board: "Board", color: Optional[Color] = None) -> Iterable[Tuple[Coord, Piece]]:
-    """
-    Iterate over occupied squares, optionally filtered by color. Uses cache if available.
-    FIXED: Handles case where iter_color returns Piece objects (which it should).
-    """
+def iterate_occupied(board: "Board", color: Optional[Color] = None):
+    # print(f"[ITER-ENTER] cache_manager exists: {board.cache_manager is not None}")
+    # if board.cache_manager:  # fast path
+    #     print("[ITER-ENTER] taking fast path")
+    #     if color is None:
+    #         for c in [Color.WHITE, Color.BLACK]:
+    #             print(f"[ITER] iter_color {c}:")
+    #             for coord, piece_data in board.cache_manager.occupancy.iter_color(c):
+    #                 print(f"[ITER]   got {coord} -> {piece_data} (type {type(piece_data)})")
     if board.cache_manager:  # fast path
         if color is None:
             for c in [Color.WHITE, Color.BLACK]:

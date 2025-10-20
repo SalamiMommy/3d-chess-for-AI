@@ -41,8 +41,18 @@ def _pieces_from_board(board):
                 # determine colour
                 white_plane = tensor[80, z, y, x]
                 color = Color.WHITE if white_plane > 0.5 else Color.BLACK
-                yield coord, Piece(color, PieceType(p))   # ← Piece object, not PieceType
+                yield coord, Piece(color, PieceType(p))
                 break
+
+
+def _pieces_from_cache(cache_manager):
+    """Fast-path helper: produce (coord, Piece) tuples."""
+    occ = cache_manager.occupancy          # OccupancyCache instance
+    for coord, piece_type in occ.iter_color(None):   # (coord, PieceType)
+        x, y, z = coord
+        colour_code = occ._occ[z, y, x]              # 1 = white, 2 = black
+        colour = Color.WHITE if colour_code == 1 else Color.BLACK
+        yield coord, Piece(colour, piece_type)
 # ------------------------------------------------------------------
 #  Public API
 # ------------------------------------------------------------------
@@ -54,7 +64,6 @@ def generate_whitehole_moves(
     """White-Hole moves exactly like a Speeder (king single steps)."""
     return generate_king_moves(cache_manager, color, x, y, z)
 
-
 def push_candidates(
     board: BoardProto,
     controller: Color,
@@ -65,7 +74,6 @@ def push_candidates(
     2-sphere of any friendly WHITE_HOLE.  Push target is 1 step away
     from the nearest hole (first hole found).
     """
-
     out: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
     holes: list[Tuple[int, int, int]] = [
         coord for coord, _ in get_pieces_by_type(board, PieceType.WHITEHOLE, controller)
@@ -74,7 +82,7 @@ def push_candidates(
         return out
 
     if board.cache_manager is not None:                      # fast path
-        iterable = board.cache_manager.occupancy.iter_color(None)
+        iterable = _pieces_from_cache(board.cache_manager)   # << changed
     else:                                                    # cold-start path
         iterable = _pieces_from_board(board)
 
@@ -88,7 +96,6 @@ def push_candidates(
                     out[coord] = push
                 break  # push away from first hole only
     return out
-
 # ------------------------------------------------------------------
 #  Dispatcher registration
 # ------------------------------------------------------------------

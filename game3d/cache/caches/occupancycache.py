@@ -154,19 +154,27 @@ class OccupancyCache:
         """Clamp coordinates to board bounds."""
         return np.clip(x, 0, SIZE_X - 1), np.clip(y, 0, SIZE_Y - 1), np.clip(z, 0, SIZE_Z - 1)
 
-    def iter_color(self, color: Color) -> List[Tuple[Coord, Piece]]:
-        code = 1 if color == Color.WHITE else 2
-        z_idx, y_idx, x_idx = np.where(self._occ == code)
-        return [
-            ((int(x), int(y), int(z)),
-            Piece(Color.WHITE if code == 1 else Color.BLACK,
-                PieceType(self._ptype[z, y, x])))
-            for x, y, z in zip(x_idx, y_idx, z_idx)
-        ]
+    def iter_color(self, color: Optional[Color]) -> Iterator[Tuple[Coord, Piece]]:
+        if color is None:                       # white-hole special case
+            for c, pt in self._white_pieces.items():
+                yield c, Piece(Color.WHITE, pt)
+            for c, pt in self._black_pieces.items():
+                yield c, Piece(Color.BLACK, pt)
+            return
+
+        occ = self._white_pieces if color == Color.WHITE else self._black_pieces
+        for coord, ptype in occ.items():
+            yield coord, Piece(color, ptype)
+
+    def find_king(self, color: Color) -> Optional[Coord]:
+        occ = self._white_pieces if color == Color.WHITE else self._black_pieces
+        for coord, ptype in occ.items():          # ← ptype is a PieceType enum
+            if ptype == PieceType.KING:
+                return coord
+        return None
 
     def rebuild(self, board: "Board") -> None:
         """Full rebuild of the occupancy cache."""
-
         self._occ.fill(0)
         self._ptype.fill(0)
         self._white_pieces.clear()
@@ -177,7 +185,14 @@ class OccupancyCache:
         self._gen = getattr(board, 'generation', 0)
 
         for coord, piece in board.list_occupied():
-            self.set_position(coord, piece)
+            self.set_position(coord, piece)   # <<< this already updates _occ, _ptype
+            # >>>  MISSING: keep the dicts in sync  <<<
+            if piece.color == Color.WHITE:
+                self._white_pieces[coord] = piece.ptype
+            else:
+                self._black_pieces[coord] = piece.ptype
+            if piece.ptype == PieceType.PRIEST:
+                self._priest_count[piece.color] += 1
 
     def set_position(self, coord: Coord, piece: Optional[Piece]) -> None:
 
@@ -344,23 +359,10 @@ class OccupancyCache:
         # Vectorized occupancy check
         return (self._occ[z_coords, y_coords, x_coords] != 0).tolist()
 
-    def has_piece_type(self, ptype: PieceType, color: Color) -> bool:
-        """True if at least one piece of the given type/color is on the board."""
-        return any(
-            p == ptype
-            for coord, p in self.iter_color(color))
+    def get_positions_by_type(self, color: Color, ptype: PieceType) -> List[Coord]:
+        pieces = self._white_pieces if color == Color.WHITE else self._black_pieces
+        return [coord for coord, piece in pieces.items() if piece.ptype == ptype]
 
-    def find_king(self, color: Color) -> Optional[Coord]:
-        """
-        Return the coordinate of the *single* king of the requested colour.
-        Returns None if no king is found (should never happen in a legal game).
-        """
-        code = 1 if color == Color.WHITE else 2
-        # np.where gives (z_idx, y_idx, x_idx) tuples
-        z_idx, y_idx, x_idx = np.where(
-            (self._occ == code) & (self._ptype == PieceType.KING.value)
-        )
-        if z_idx.size == 0:          # no king on board
-            return None
-        # assume exactly one king; take the first hit
-        return int(x_idx[0]), int(y_idx[0]), int(z_idx[0])
+    def has_piece_type(self, ptype: PieceType, color: Color) -> bool:
+        pieces = self._white_pieces if color == Color.WHITE else self._black_pieces
+        return any(piece.ptype == ptype for piece in pieces.values())

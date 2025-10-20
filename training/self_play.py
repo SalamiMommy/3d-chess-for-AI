@@ -197,6 +197,12 @@ class SelfPlayGenerator:
         from game3d.board.board import Board
         from game3d.game3d import OptimizedGame3D
         from game3d.common.enums import Color
+        from game3d.game.terminal import (
+            is_check,
+            is_stalemate,
+            is_insufficient_material,
+            is_fifty_move_draw,
+        )
 
         # 1. create ONE board and ONE cache
         board = new_board_with_manager(Color.WHITE)
@@ -215,6 +221,55 @@ class SelfPlayGenerator:
 
         game = OptimizedGame3D(board=board, cache=cache)
         game.toggle_debug_turn_info(False)
+
+        print("[DEBUG] Terminal-rule breakdown:")
+        print(f"  is_checkmate             : {is_check(game.state) and len(game.state.legal_moves()) == 0}")
+        print(f"  is_stalemate             : {is_stalemate(game.state)}")
+        print(f"  is_insufficient_material : {is_insufficient_material(game.state)}")
+        print(f"  is_fifty_move_draw       : {is_fifty_move_draw(game.state)}")
+        print(f"  current player in check  : {is_check(game.state)}")
+        print(f"  legal_moves() len        : {len(game.state.legal_moves())}")
+        print(f"  half-move clock          : {game.state.halfmove_clock}")
+        occ = game.state.cache.occupancy
+        print("[DEBUG] Move-generator internals:")
+        print(f"  occupancy squares (cache): {occ.count}")          # ← fast np.count_nonzero
+        print(f"  occupancy squares (board): {len(list(game.state.board.list_occupied()))}")
+        # === NEW:  pseudo-legal count without touching movecache internals =====
+        from game3d.game.gamestate import GameState
+        from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+        from game3d.common.move_utils import filter_none_moves
+
+        tmp = GameState(
+            board=game.state.board,
+            color=Color.WHITE,
+            cache=game.state.cache
+        )
+        raw = generate_pseudo_legal_moves(tmp)
+        raw = filter_none_moves(raw)
+        print(f"[REBUILD] raw pseudo-legal count : {len(raw)}")
+        print(f"[REBUILD] board piece count      : {game.state.cache.occupancy.count}")
+        print(f"[REBUILD] tmp state color        : {tmp.color}")
+        # ========================================================================
+        # === NEW:  scan pawns & knights ========================================
+        from game3d.common.enums import Color, PieceType
+        from game3d.movement.pseudo_legal import generate_pseudo_legal_moves_for_piece
+        pawn_coords = [c for c, pt in game.state.cache.occupancy.iter_color(Color.WHITE)
+                    if pt == PieceType.PAWN]
+        knight_coords = [c for c, pt in game.state.cache.occupancy.iter_color(Color.WHITE)
+                        if pt == PieceType.KNIGHT]
+
+        print(f"[REBUILD] white pawns   : {len(pawn_coords)}")
+        print(f"[REBUILD] white knights : {len(knight_coords)}")
+
+        # pick the first pawn and first knight
+        if pawn_coords:
+            pawn_mv = generate_pseudo_legal_moves_for_piece(tmp, pawn_coords[0])
+            print(f"[REBUILD] 1st pawn moves: {len(pawn_mv)}")
+        if knight_coords:
+            knight_mv = generate_pseudo_legal_moves_for_piece(tmp, knight_coords[0])
+            print(f"[REBUILD] 1st knight moves: {len(knight_mv)}")
+        # =======================================================================
+
         examples = []
         move_count = 0
         consecutive_errors = 0
@@ -250,9 +305,15 @@ class SelfPlayGenerator:
                 # Get legal moves from the game (these should be cached)
                 legal_moves = self._try_one_move(game)
                 if not legal_moves:
-                    print(f"[DEBUG] No legal moves found at move {move_count}")
-                    print(f"[DEBUG] Game state: in_check={game.state.is_check()}, game_over={game.is_game_over()}")
-                    break
+                    if is_checkmate(game.state):
+                        print("[FATAL] Start position is check-mate (no legal moves)")
+                    elif is_stalemate(game.state):
+                        print("[FATAL] Start position is stale-mate")
+                    elif is_insufficient_material(game.state):
+                        print("[FATAL] Start position has insufficient material")
+                    else:
+                        print("[FATAL] 0 moves returned but no terminal condition recognised")
+                    raise RuntimeError("Game terminated at move 0")
 
                 # Verify moves are valid before processing
                 if any(mv is None for mv in legal_moves):
@@ -332,6 +393,7 @@ class SelfPlayGenerator:
                 print(f"[ERROR] Move {move_count} failed: {e}")
                 if consecutive_errors >= max_consecutive_errors:
                     print(f"[ERROR] Too many consecutive errors ({consecutive_errors}), ending game")
+
                     break
 
         # Print cache statistics

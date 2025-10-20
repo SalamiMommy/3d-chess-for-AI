@@ -59,14 +59,14 @@ def generate_archer_moves(
         victim = cache.occupancy.get(sq)
         if victim is not None and victim.color != color:
             # Ensure clear line-of-sight (cache provides fast LOS)
-            if cache.has_clear_los(start, sq):
-                mv = convert_legacy_move_args(
-                    start, start,                 # archer never moves
-                    is_capture=True,
-                    flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
-                )
-                mv.metadata["target_square"] = sq   # victim square
-                moves.append(mv)
+
+            mv = convert_legacy_move_args(
+                start, start,                 # archer never moves
+                is_capture=True,
+                flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
+            )
+            mv.metadata["target_square"] = sq   # victim square
+            moves.append(mv)
 
     return moves
 

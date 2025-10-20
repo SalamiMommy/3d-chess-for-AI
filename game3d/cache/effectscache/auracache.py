@@ -230,10 +230,11 @@ class UnifiedAuraCache:
         Incremental update for all auras after a move.
         Updates only when an aura-emitting piece moves or is captured.
         """
-        if mv is None:                       # ← NEW
+        if mv is None:
             self._dirty_flags['coverage'] = True
-            self._dirty_flags['maps']       = True
+            self._dirty_flags['maps'] = True
             return
+
         updated = False
         from_piece = self._cache_manager.occupancy.get(mv.from_coord)
         captured_piece = mv.captured_piece if hasattr(mv, 'captured_piece') else None
@@ -248,18 +249,18 @@ class UnifiedAuraCache:
                     # For PUSH/PULL, check if affects
                     if self._move_affects_aura(aura, mv, board):
                         self._record_undo_snapshot(mover, board, aura)
-                        self._apply_aura_effects(aura, mover, board)
-                        self._incremental_update_map(aura, mv, mover, board)
+                        # Apply effects (this mutates board/occupancy)
+                        dirty_squares = self._apply_map_effects(aura, mover, board)
+                        self._incremental_update_map(aura, mv, mover, board, dirty_squares)
                         updated = True
                 else:
-                    # Simple coverage update
+                    # Incremental coverage update for BUFF/DEBUFF/FREEZE
                     victim = mover if affect == "friendly" else mover.opposite()
-                    self._update_coverage(aura, victim, old_sq=mv.from_coord, new_sq=mv.to_coord)
-                    self._update_affected_set(aura, victim, old_aura=get_aura_squares(mv.from_coord),
-                                              new_aura=get_aura_squares(mv.to_coord))
+                    self._incremental_update_coverage(aura, victim, old_sq=mv.from_coord, new_sq=mv.to_coord)
+                    updated = True
+                    # Update sources
                     self._sources[aura][mover].discard(mv.from_coord)
                     self._sources[aura][mover].add(mv.to_coord)
-                    updated = True
 
             # Case 2: Captured is aura piece
             if captured_piece and captured_piece.ptype == ptype:
@@ -267,31 +268,36 @@ class UnifiedAuraCache:
                 if affect == "map":
                     if self._move_affects_aura(aura, mv, board):
                         self._record_undo_snapshot(mover, board, aura)
-                        self._apply_aura_effects(aura, mover, board)
-                        self._incremental_update_map(aura, mv, mover, board)
+                        dirty_squares = self._apply_map_effects(aura, mover, board)
+                        self._incremental_update_map(aura, mv, mover, board, dirty_squares)
                         updated = True
                 else:
                     victim = captured_color if affect == "friendly" else captured_color.opposite()
-                    self._update_coverage(aura, victim, old_sq=mv.to_coord)
-                    self._update_affected_set(aura, victim, old_aura=get_aura_squares(mv.to_coord))
-                    self._sources[aura][captured_color].discard(mv.to_coord)
+                    self._incremental_update_coverage(aura, victim, old_sq=mv.to_coord)
                     updated = True
+                    # Update sources
+                    self._sources[aura][captured_color].discard(mv.to_coord)
 
-        # Special for FREEZE: handle moved piece (victim for enemy freezers)
-        victim = mover
-        freeze_victim_coverage = self._coverage[AuraType.FREEZE][victim]
+        # Special handling for FREEZE: adjust affected sets for moved piece (as victim)
         if from_piece and from_piece.color == mover:
+            victim = mover
+            coverage = self._coverage[AuraType.FREEZE][victim]
+            affected = self._affected_sets[AuraType.FREEZE][victim]
+            # Check old position
             x, y, z = mv.from_coord
-            if freeze_victim_coverage[z, y, x] > 0:
-                self._affected_sets[AuraType.FREEZE][victim].discard(mv.from_coord)
+            if coverage[z, y, x] > 0:
+                affected.discard(mv.from_coord)
+            # Check new position
             x, y, z = mv.to_coord
-            if freeze_victim_coverage[z, y, x] > 0:
-                self._affected_sets[AuraType.FREEZE][victim].add(mv.to_coord)
+            if coverage[z, y, x] > 0 and self._cache_manager.occupancy.get(mv.to_coord) and self._cache_manager.occupancy.get(mv.to_coord).color == victim:
+                affected.add(mv.to_coord)
 
         if updated:
             self._dirty_flags['coverage'] = True
             self._dirty_flags['maps'] = True
             self._update_frozen_bitmap()
+
+        # Note: For full incremental, avoid setting dirty if no change; here we set conservatively
 
     def undo_move(self, mv: Move, mover: Color, board: "Board") -> None:
         """Undo updates for all auras."""
@@ -466,18 +472,30 @@ class UnifiedAuraCache:
         self._coverage[aura][victim].fill(0)
         self._affected_sets[aura][victim].clear()
         ptype = AURA_PIECE_MAP[aura]
-        sources = get_pieces_by_type(board, ptype, controller)
-        for sq, _ in sources:
-            sq = self._sanitize(sq)                   #  ⬅  NEW
-            for ax, ay, az in get_aura_squares(sq):
-                self._coverage[aura][victim][az, ay, ax] += 1
-                if self._coverage[aura][victim][az, ay, ax] > 0:
-                    if aura == AuraType.FREEZE:
-                        target = self._cache_manager.occupancy.get((ax, ay, az))
-                        if target and target.color == victim:
-                            self._affected_sets[aura][victim].add((ax, ay, az))
-                    else:
-                        self._affected_sets[aura][victim].add((ax, ay, az))
+        sources = [sq for sq, _ in get_pieces_by_type(board, ptype, controller)]  # List of coords only
+
+        # Collect all aura coords across sources
+        all_aura = []
+        for sq in sources:
+            all_aura.extend(get_aura_squares(sq))  # ~100 per source; list is fine
+
+        if all_aura:
+            aura_array = np.array(all_aura, dtype=int)  # Shape (M, 3), M ~1,000
+            ax, ay, az = aura_array.T
+            np.add.at(self._coverage[aura][victim], (az, ay, ax), 1)  # Batched increment
+
+        # Compute affected sets after all updates
+        positive_indices = np.argwhere(self._coverage[aura][victim] > 0)
+        if len(positive_indices):
+            az, ay, ax = positive_indices.T
+            if aura == AuraType.FREEZE:
+                victim_code = 1 if victim == Color.WHITE else 2
+                occ = self._cache_manager.occupancy._occ  # Direct array access (faster, no get())
+                mask = occ[az, ay, ax] == victim_code
+                valid_az, valid_ay, valid_ax = az[mask], ay[mask], ax[mask]
+                self._affected_sets[aura][victim].update(zip(valid_ax, valid_ay, valid_az))
+            else:
+                self._affected_sets[aura][victim].update(zip(ax, ay, az))
 
     # ---------- UTILITY METHODS ----------
     def _get_board(self) -> Optional["Board"]:
@@ -592,19 +610,45 @@ class UnifiedAuraCache:
             self._incremental_rebuild()
 
     def _sanitize(self, coord: Any) -> Coord:
-        """
-        Convert anything that looks like a coordinate into a guaranteed
-        in-bounds (int, int, int).  If the coordinate is completely
-        out of range we clamp it; if it is a numpy scalar we cast it.
-        """
-        # 1.  homogeneous numeric → numpy array (cheap)
-        arr = np.asarray(coord, dtype=np.int16).ravel()
-        if arr.shape != (3,):
-            raise ValueError(f"Illegal coordinate {coord!r}")
+        if not isinstance(coord, tuple):
+            coord = tuple(map(int, coord))
+        x, y, z = coord
+        return (max(0, min(8, x)), max(0, min(8, y)), max(0, min(8, z)))
 
-        # 2.  clamp to board limits
-        clamped = filter_valid_coords(arr[None, :], log_oob=False, clamp=True)[0]
-        return tuple(map(int, clamped))
+    def _incremental_update_coverage(self, aura: AuraType, victim: Color, old_sq: Optional[Coord], new_sq: Optional[Coord]):
+        coverage = self._coverage[aura][victim]
+        affected = self._affected_sets[aura][victim]
+
+        def adjust_aura(sq: Coord, delta: int):
+            aura_coords = list(get_aura_squares(sq))
+            if not aura_coords:
+                return set()
+            aura_array = np.array(aura_coords, dtype=int)
+            ax, ay, az = aura_array.T
+            old_values = coverage[az, ay, ax].copy()  # Snapshot for affected updates
+            np.add.at(coverage, (az, ay, ax), delta)
+            changed = set(zip(ax[old_values != coverage[az, ay, ax]], ay[old_values != coverage[az, ay, ax]], az[old_values != coverage[az, ay, ax]]))
+            return changed
+
+        changed = set()
+        if old_sq:  # Subtract old aura (move away or capture)
+            changed.update(adjust_aura(old_sq, -1))
+        if new_sq:  # Add new aura (move to)
+            changed.update(adjust_aura(new_sq, 1))
+
+        # Update affected sets incrementally for changed squares
+        for sq in changed:
+            ax, ay, az = sq
+            count = coverage[az, ay, ax]
+            if count > 0:
+                if aura == AuraType.FREEZE:
+                    target = self._cache_manager.occupancy.get(sq)
+                    if target and target.color == victim:
+                        affected.add(sq)
+                else:
+                    affected.add(sq)
+            else:
+                affected.discard(sq)
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================
