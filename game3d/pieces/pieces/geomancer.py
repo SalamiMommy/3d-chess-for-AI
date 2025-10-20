@@ -31,6 +31,8 @@ def block_candidates(
     Return empty squares that <mover_color> may block via geomancy this turn.
     The cache-manager is used when available; the board is only a fallback.
     """
+    if cache_manager is None:
+            cache_manager = board.cache_manager
     candidates: List[Tuple[int, int, int]] = []
 
     # 1.  Iterate friendly Geomancers – prefer cache-manager

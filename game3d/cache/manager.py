@@ -90,7 +90,6 @@ class OptimizedCacheManager:
         self._memory_manager = MemoryManager(self.config, lambda: self._move_cache)
         self.parallel = ParallelManager(self.config)
         self._zobrist = ZobristHash()
-        self._current_zobrist_hash = compute_zobrist(board, current)  # Fixed: use current
         self._move_cache: Optional[OptimizedMoveCache] = None
         self._move_counter = 0
         self._age_counter = 0
@@ -139,6 +138,8 @@ class OptimizedCacheManager:
         if piece is None:
             raise CacheDesyncError(f"apply_move: empty from-square {from_coord}")
 
+        captured = self.occupancy.get(to_coord) if mv.is_capture else None
+
         start = time.perf_counter()
         affected: set[Tuple[int, int, int]] = {from_coord, to_coord}
 
@@ -147,7 +148,6 @@ class OptimizedCacheManager:
             self._fast_occupancy_update(mv, piece, mover)
             self.board.apply_move(mv)
 
-            captured = self.occupancy.get(to_coord) if mv.is_capture else None
             self._current_zobrist_hash = self._zobrist.update_hash_move(
                 self._current_zobrist_hash, mv, piece, captured, cache=self
             )
@@ -162,19 +162,19 @@ class OptimizedCacheManager:
             dirty_squares = self.aura_cache.apply_pull_effects(mover, self.board)
             if dirty_squares:
                 self.occupancy.batch_set_positions(
-                    [(sq, self.board.get(sq)) for sq in dirty_squares]
+                    [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
                 )
                 affected.update(dirty_squares)
-            self.aura_cache.apply_move(None, controller, self.board)
+            self.aura_cache.apply_move(None, mover, self.board)
 
             # 2-c White-hole push
             dirty_squares = self.aura_cache.apply_push_effects(mover, self.board)
             if dirty_squares:
                 self.occupancy.batch_set_positions(
-                    [(sq, self.board.get(sq)) for sq in dirty_squares]
+                    [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
                 )
                 affected.update(dirty_squares)
-            self.aura_cache.apply_move(None, controller, self.board)
+            self.aura_cache.apply_move(None, mover, self.board)
 
             # 3️⃣ Geomancy blocking
             current_ply = self.halfmove_clock
@@ -187,7 +187,7 @@ class OptimizedCacheManager:
 
             # 5️⃣ Incremental cache updates
             from_piece = piece
-            to_piece = self.board.get(to_coord)
+            to_piece = self.occupancy.get(to_coord)
             captured_piece = captured
             affected_caches = self.get_affected_caches(mv, mover, from_piece, to_piece, captured_piece)
             self.update_effect_caches(mv, mover, affected_caches, current_ply)
@@ -349,7 +349,7 @@ class OptimizedCacheManager:
         dirty_squares = self.aura_cache.apply_pull_effects(controller, self.board)
         if dirty_squares:
             self.occupancy.batch_set_positions(
-                [(sq, self.board.get(sq)) for sq in dirty_squares]
+                [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
             )
 
         self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
@@ -362,7 +362,7 @@ class OptimizedCacheManager:
         dirty_squares = self.aura_cache.apply_push_effects(controller, self.board)
         if dirty_squares:
             self.occupancy.batch_set_positions(
-                [(sq, self.board.get(sq)) for sq in dirty_squares]
+                [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
             )
 
         self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
@@ -376,7 +376,7 @@ class OptimizedCacheManager:
         frozen_squares = self.aura_cache.apply_freeze_effects(controller, self.board)
         if frozen_squares:                       # should never be empty, but be safe
             self.occupancy.batch_set_positions(
-                [(sq, self.board.get(sq)) for sq in frozen_squares]
+                [(sq, self.occupancy.get(sq)) for sq in frozen_squares]
             )
         # mark maps dirty so next query rebuilds
         self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
@@ -509,7 +509,7 @@ class OptimizedCacheManager:
         self.occupancy.set_position(moved_sq, None)
         if captured_sq is not None:
             self.occupancy.set_position(captured_sq, None)
-        to_piece = board.get(moved_sq)
+        to_piece = self.occupancy.get(moved_sq)
         self.occupancy.set_position(moved_sq, to_piece)
 
     def _fast_occupancy_update(self, mv: Move, piece: Piece, mover: Color) -> None:
@@ -546,12 +546,12 @@ class OptimizedCacheManager:
 #  Factory
 # =============================================================================
 def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
-    """Factory that guarantees the board carries the returned manager."""
     if board is None:
         raise ValueError("get_cache_manager requires a real Board instance")
     cm = OptimizedCacheManager(board, current)
     cm.initialise(current)
     board.cache_manager = cm
+    cm._current_zobrist_hash = compute_zobrist(board, current)  # ← Move here, after attachment
     return cm
 # =============================================================================
 #  Legacy aliases (zero-cost)

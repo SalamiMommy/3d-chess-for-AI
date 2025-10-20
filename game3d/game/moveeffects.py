@@ -1,3 +1,4 @@
+# moveeffects.py
 from __future__ import annotations
 from typing import List, Tuple, Optional, Set, TYPE_CHECKING
 import time
@@ -33,8 +34,10 @@ def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int
         new_board = game_state.board.clone()
 
         # Remove piece at target square if exists (optimized: check first)
-        if new_board.get_piece(target_sq) is not None:  # Use board method for consistency
+        piece = game_state.cache.occupancy.get(target_sq)
+        if piece is not None:
             new_board.set_piece(target_sq, None)
+            game_state.cache.occupancy.set_position(target_sq, None)
 
         # Create archery move
         archery_move = Move(
@@ -88,9 +91,13 @@ def apply_hive_moves(game_state: 'GameState', moves: List[Move]) -> 'GameState':
 
         for move in moves:
             # Apply incrementally (assuming board.apply_move is efficient)
-            new_board.apply_move(move)  # Apply to cloned board
-            # Update cache incrementally if possible (add call if method exists)
-            new_cache.update_after_move(move)  # Assuming such a method; implement if needed
+            moving_piece = new_cache.occupancy.get(move.from_coord)
+            captured_piece = new_cache.occupancy.get(move.to_coord) if move.is_capture else None
+            new_board.apply_move(move)
+            new_cache.occupancy.set_position(move.from_coord, None)
+            if move.is_capture:
+                new_cache.occupancy.set_position(move.to_coord, None)
+            new_cache.occupancy.set_position(move.to_coord, moving_piece)
 
         # Create final state once
         new_state = current_state.__class__(  # Use class for instantiation

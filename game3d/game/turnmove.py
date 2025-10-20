@@ -131,24 +131,43 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
             new_state.halfmove_clock = 0
 
         # --- incremental occupancy sync ------------------------------------
-        new_state.cache.update_occupancy_incrementally(new_board, mv.from_coord, mv.to_coord if mv.is_capture else None)
+        new_state.cache.occupancy.set_position(mv.from_coord, None)
+        if mv.is_capture:
+            new_state.cache.occupancy.set_position(mv.to_coord, None)
+        new_state.cache.occupancy.set_position(mv.to_coord, moving_piece)
 
         # --- side effects --------------------------------------------------
         removed_pieces: List[Tuple[Tuple[int, int, int], Piece]] = []
         moved_pieces: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]] = []
 
-        is_self_detonate = apply_bomb_effects(new_board, new_state.cache, mv, moving_piece, captured_piece, removed_pieces, mv.flags & MOVE_FLAGS['SELF_DETONATE'])
+        # Fix: Pass new_state.board first, then new_state.cache
+        is_self_detonate = apply_bomb_effects(new_state.board, new_state.cache, mv, moving_piece, captured_piece, removed_pieces, mv.flags & MOVE_FLAGS['SELF_DETONATE'])
 
         if moving_piece.ptype == PieceType.TRAILBLAZER:
             slid_squares = reconstruct_trailblazer_path(mv.from_coord, mv.to_coord, include_start=False, include_end=False)
             new_state.cache.mark_trail(mv.from_coord, slid_squares)
 
-        apply_trailblaze_effect(new_board, new_state.cache, mv, game_state.color, removed_pieces)
+        # Fix: Pass new_state.board first, then new_state.cache
+        apply_trailblaze_effect(new_state.board, new_state.cache, mv, game_state.color, removed_pieces)
 
         if moving_piece.ptype == PieceType.GEOMANCER:
-            apply_geomancy_effect(new_board, new_state.cache, mv.to_coord, new_state.halfmove_clock)
+            # Fix: Insert new_state.board as the first argument
+            apply_geomancy_effect(new_state.board, new_state.cache, mv.to_coord, new_state.halfmove_clock)
 
-        apply_hole_effects(new_board, new_state.cache, game_state.color.opposite(), moved_pieces, is_self_detonate)
+        apply_hole_effects(
+            new_state.board,                       # 1st → board (already correct)
+            new_state.cache,                       # 2nd → cache (already correct)
+            game_state.color.opposite(),           # 3rd → color
+            moved_pieces,                          # 4th → moved_pieces
+            is_self_detonate                       # 5th → _is_self_detonate
+        )
+
+        # --- sync occupancy for side effects -------------------------------
+        for sq, _ in removed_pieces:
+            new_state.cache.occupancy.set_position(sq, None)
+        for from_sq, to_sq, piece in moved_pieces:
+            new_state.cache.occupancy.set_position(from_sq, None)
+            new_state.cache.occupancy.set_position(to_sq, piece)
 
         # --- apply hole effects --------------------------------------------
         new_state.cache.apply_blackhole_pulls(new_state.color.opposite())
@@ -159,7 +178,7 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
 
         # --- incremental cache updates -------------------------------------
         affected_caches = new_state.cache.get_affected_caches(
-            mv, game_state.color, moving_piece, new_board.get(mv.to_coord), captured_piece
+            mv, game_state.color, moving_piece, new_state.cache.occupancy.get(mv.to_coord), captured_piece
         )
         new_state.cache.update_effect_caches(mv, game_state.color, affected_caches, new_state.halfmove_clock)
 
@@ -180,7 +199,6 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         new_state.cache.sync_zobrist(new_zkey)
 
         return new_state
-
 # ------------------------------------------------------------------
 # UNDO MOVE IMPLEMENTATION
 # ------------------------------------------------------------------
@@ -208,6 +226,7 @@ def _fast_undo(game_state: 'GameState') -> 'GameState':
     # --- ask the cache manager to undo *its* part -----------------------
     game_state.cache.board = new_board
     game_state.cache.undo_move(last_mv, game_state.color.opposite(), 0, game_state._undo_info)
+    game_state.cache.occupancy.rebuild(new_board)
 
     # --- rebuild previous state ----------------------------------------
     prev_state = GameState(
