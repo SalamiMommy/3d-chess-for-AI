@@ -125,13 +125,12 @@ def extract_enemy_slid_path(mv: 'Move') -> List[Tuple[int, int, int]]:
 
 def apply_geomancy_effect(
     board: 'Board',
-    cache: 'OptimizedCacheManager',  # CORRECTED: Type hint shows it's the manager
+    cache: 'OptimizedCacheManager',
     target: Tuple[int, int, int],
     halfmove_clock: int
 ) -> None:
     """Block a square via the geomancy cache."""
-    # CORRECTED: Use manager method with board
-    cache.block_square(target, halfmove_clock, board)  # FIXED: Add board arg if required by method
+    cache.block_square(target, halfmove_clock)
 
 def apply_swap_move(board: 'Board', mv: 'Move') -> None:
     # CORRECT - cleaner through piece_cache

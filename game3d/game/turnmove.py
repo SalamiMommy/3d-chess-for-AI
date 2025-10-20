@@ -21,6 +21,7 @@ from .move_utils import (
     apply_hole_effects,
     apply_bomb_effects,
     apply_trailblaze_effect,
+    apply_geomancy_effect,
     reconstruct_trailblazer_path,
     extract_enemy_slid_path,
 )

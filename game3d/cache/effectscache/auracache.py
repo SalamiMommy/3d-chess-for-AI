@@ -16,7 +16,7 @@ from game3d.pieces.pieces.whitehole import push_candidates
 from game3d.pieces.pieces.blackhole import suck_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
-from game3d.common.coord_utils import filter_valid_coords, in_bounds_vectorised
+from game3d.common.coord_utils import filter_valid_coords, in_bounds_vectorised, in_bounds
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -572,8 +572,8 @@ class UnifiedAuraCache:
                 continue
 
             # ---- perform the move ----
-            board.set(to, piece)
-            board.set(fr, None)
+            board.set_piece(to, piece)
+            board.set_piece(fr, None)
             self._cache_manager.occupancy.set_position(fr, None)
             self._cache_manager.occupancy.set_position(to, piece)
             changed.update({fr, to})

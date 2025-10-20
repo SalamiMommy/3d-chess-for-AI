@@ -36,11 +36,11 @@ def block_candidates(
     candidates: List[Tuple[int, int, int]] = []
 
     # 1.  Iterate friendly Geomancers – prefer cache-manager
-    if cache_manager is not None:
-        occ_iter = cache_manager.occupancy.iter_color(mover_color)
-    else:
-        occ_iter = ((c, board.piece_at(c)) for c, _ in board.enumerate_occupied()
-                    if board.piece_at(c).color == mover_color)
+    # if cache_manager is not None:
+    occ_iter = cache_manager.occupancy.iter_color(mover_color)
+    # else:
+    #     occ_iter = ((c, board.piece_at(c)) for c, _ in board.enumerate_occupied()
+    #                 if board.piece_at(c).color == mover_color)
 
     for sq, piece in occ_iter:
         if piece.ptype is not PieceType.GEOMANCER:
@@ -53,8 +53,7 @@ def block_candidates(
             if not in_bounds((tx, ty, tz)):
                 continue
 
-            occ = (cache_manager.occupancy.get((tx, ty, tz)) if cache_manager
-                   else board.piece_at((tx, ty, tz)))
+            occ = cache_manager.occupancy.get((tx, ty, tz))
             if occ is None:          # empty → blockable
                 candidates.append((tx, ty, tz))
 

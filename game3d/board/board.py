@@ -246,13 +246,13 @@ class Board:
         """Get the current generation number of the board."""
         return self._gen
 
-    def enumerate(self) -> Iterable[Tuple[Coord, Optional[Piece]]]:
-        """Yield (coord, piece_or_None) for every square on the 9×9×9 board."""
-        for z in range(SIZE_Z):
-            for y in range(SIZE_Y):
-                for x in range(SIZE_X):
-                    c = (x, y, z)
-                    yield c, self.piece_at(c)
+    # def enumerate(self) -> Iterable[Tuple[Coord, Optional[Piece]]]:
+    #     """Yield (coord, piece_or_None) for every square on the 9×9×9 board."""
+    #     for z in range(SIZE_Z):
+    #         for y in range(SIZE_Y):
+    #             for x in range(SIZE_X):
+    #                 c = (x, y, z)
+    #                 yield c, self.piece_at(c)
 
     def set_piece(self, coord: Coord, piece: Optional[Piece]) -> None:
         """Set piece at coord, updating tensor."""

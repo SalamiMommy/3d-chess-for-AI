@@ -321,6 +321,9 @@ class SelfPlayGenerator:
                 if not receipt.is_legal:
                     raise ValueError(receipt.message)
 
+                if move_count % 100 == 0:
+                    print(f"[MOVE {move_count}] {chosen_move}   ({game.state.color.name} to move)")
+
                 move_count += 1
                 consecutive_errors = 0
 
