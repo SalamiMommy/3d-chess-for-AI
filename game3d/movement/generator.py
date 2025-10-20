@@ -8,11 +8,14 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from game3d.common.enums import PieceType, Color
-from game3d.common.common import get_player_pieces, GeneratorBase, MoveStatsTracker, track_time, prepare_batch_data, fallback_mode, validate_moves, filter_none_moves
+from game3d.common.piece_utils import get_player_pieces
+from game3d.common.move_utils import prepare_batch_data, validate_moves, filter_none_moves
+from game3d.common.debug_utils import fallback_mode, track_time, MoveStatsTracker, GeneratorBase
+
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
-from game3d.common.common import Coord, in_bounds, SIZE
+from game3d.common.coord_utils import Coord, in_bounds, SIZE
 from game3d.movement.registry import register, get_dispatcher, get_all_dispatchers
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves, generate_pseudo_legal_moves_for_piece
 from game3d.attacks.check import king_in_check, get_check_summary

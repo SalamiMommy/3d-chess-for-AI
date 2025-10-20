@@ -5,7 +5,9 @@ from typing import List, Dict, Any, Tuple, Optional, TYPE_CHECKING
 
 from game3d.movement.movepiece import Move
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import get_player_pieces, color_to_code, find_king, filter_valid_coords, filter_none_moves
+from game3d.common.piece_utils import get_player_pieces, color_to_code, find_king
+from game3d.common.coord_utils import filter_valid_coords
+from game3d.common.move_utils import filter_none_moves
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState

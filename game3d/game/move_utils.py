@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from game3d.pieces.pieces.bomb import detonate
 from game3d.attacks.check import _any_priest_alive
-from game3d.common.common import reconstruct_path
+from game3d.common.coord_utils import reconstruct_path
 
 def apply_hole_effects(
     board: Board,

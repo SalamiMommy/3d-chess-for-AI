@@ -10,22 +10,11 @@ import time
 import numpy as np
 
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import (
-    add_coords,
-    euclidean_distance,
-    manhattan,
-    get_path_squares,
-    in_bounds_vectorised,
-    SIZE,
-    extend_move_range,
-    extract_directions_and_steps_vectorized,
-    StatsTracker,
-    measure_time_ms,
-    get_player_pieces,
-    rebuild_moves_from_directions,
-    fallback_mode,
-    filter_valid_coords,
-)
+from game3d.common.coord_utils import add_coords, euclidean_distance, manhattan, get_path_squares, in_bounds_vectorised, filter_valid_coords
+from game3d.common.constants import SIZE
+from game3d.common.move_utils import extend_move_range, rebuild_moves_from_directions, extract_directions_and_steps_vectorized
+from game3d.common.debug_utils import StatsTracker, measure_time_ms, fallback_mode
+from game3d.common.piece_utils import get_player_pieces
 from game3d.movement.movepiece import Move
 
 BOARD_SIZE = SIZE

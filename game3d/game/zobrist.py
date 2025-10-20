@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 
 
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, iterate_occupied  # UPDATED: Use centralized iteration
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z
+from game3d.common.piece_utils import iterate_occupied
 
 # Global Zobrist tables with thread safety
 _PIECE_KEYS: Dict[Tuple[PieceType, Color, Tuple[int, int, int]], int] = {}

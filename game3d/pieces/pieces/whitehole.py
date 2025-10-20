@@ -8,8 +8,10 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move
-from game3d.common.common import add_coords, in_bounds
+from game3d.common.coord_utils import add_coords, in_bounds, chebyshev_distance
+from game3d.common.piece_utils import get_pieces_by_type
 from game3d.pieces.piece import Piece
+
 if TYPE_CHECKING:
     from game3d.pieces.pieces.auras.aura import BoardProto
     from game3d.movement.cache import OptimizedCacheManager
@@ -63,7 +65,6 @@ def push_candidates(
     2-sphere of any friendly WHITE_HOLE.  Push target is 1 step away
     from the nearest hole (first hole found).
     """
-    from game3d.common.common import get_pieces_by_type, chebyshev_distance
 
     out: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
     holes: list[Tuple[int, int, int]] = [

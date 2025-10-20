@@ -14,7 +14,8 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.common import in_bounds, RADIUS_3_OFFSETS  # ← already pre-computed
+from game3d.common.coord_utils import in_bounds
+from game3d.common.constants import RADIUS_3_OFFSETS
 
 
 if TYPE_CHECKING:

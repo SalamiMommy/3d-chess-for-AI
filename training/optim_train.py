@@ -19,7 +19,7 @@ from models.resnet3d import OptimizedResNet3D, LightweightResNet3D
 from training.self_play import generate_training_data
 from training.checkpoint import save_checkpoint, load_latest_checkpoint
 from training.types import TrainingExample
-from game3d.common.common import N_CHANNELS, SIZE
+from game3d.common.constants import N_CHANNELS, SIZE
 
 BATCH_SIZE = 32
 NUM_WORKERS = 0  # Changed to 0 to avoid CUDA multiprocessing issues

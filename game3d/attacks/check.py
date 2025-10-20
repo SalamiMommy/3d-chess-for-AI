@@ -9,7 +9,7 @@ from typing import Protocol, Optional, Dict, Set, Tuple, List, Any
 from dataclasses import dataclass
 from enum import Enum
 
-from game3d.common.common import Coord
+from game3d.common.coord_utils import Coord
 from game3d.pieces.piece import Piece
 from game3d.common.enums import PieceType, Color
 

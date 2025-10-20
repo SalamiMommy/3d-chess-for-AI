@@ -13,12 +13,14 @@ if TYPE_CHECKING:
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
-from game3d.common.common import in_bounds, infer_piece_from_cache, fallback_mode # Updated imports
+from game3d.common.coord_utils import in_bounds
+from game3d.common.piece_utils import get_player_pieces, infer_piece_from_cache
+from game3d.common.debug_utils import fallback_mode
 from game3d.game.zobrist import compute_zobrist, ZobristHash
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 from game3d.cache.caches.transposition import TranspositionTable
-from game3d.common.common import get_player_pieces, filter_none_moves
+from game3d.common.move_utils import  filter_none_moves
 
 # ------------------------------------------------------------------
 # Compact move representation for TT entries

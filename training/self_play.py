@@ -13,7 +13,8 @@ from game3d.common.enums import Color, Result, PieceType
 from game3d.movement.movepiece import Move
 from game3d.game3d import OptimizedGame3D  # Import the game controller
 from training.types import TrainingExample  # Shared dataclass
-from game3d.common.common import SIZE, VOLUME, coord_to_idx, idx_to_coord, Coord
+from game3d.common.coord_utils import coord_to_idx, idx_to_coord, Coord
+from game3d.common.constants import SIZE, VOLUME
 from game3d.game.factory import new_board_with_manager
 
 # IMPORT OPPONENT MODULE

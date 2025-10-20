@@ -6,7 +6,10 @@ from __future__ import annotations
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_PIECE_TYPES, N_COLOR_PLANES, N_TOTAL_PLANES, Coord, in_bounds, coord_to_idx, idx_to_coord, hash_board_tensor, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS, iterate_occupied
+from game3d.common.coord_utils import  Coord, in_bounds, coord_to_idx, idx_to_coord
+from game3d.common.tensor_utils import hash_board_tensor
+from game3d.common.piece_utils import iterate_occupied
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_PIECE_TYPES, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS, N_COLOR_PLANES, N_TOTAL_PLANES
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager

@@ -21,7 +21,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import generate_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.common import reconstruct_path
+from game3d.common.coord_utils import reconstruct_path
 from game3d.attacks.check import _any_priest_alive  # king spared if priests
 
 if TYPE_CHECKING:

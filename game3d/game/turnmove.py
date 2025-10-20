@@ -14,7 +14,8 @@ from game3d.attacks.check import _any_priest_alive
 from .performance import track_operation_time
 from .zobrist import compute_zobrist
 from game3d.movement.movepiece import MOVE_FLAGS
-from game3d.common.common import validate_moves, UndoSnapshot
+from game3d.common.move_utils import validate_moves
+from game3d.common.debug_utils import UndoSnapshot
 
 from .move_utils import (
     apply_hole_effects,

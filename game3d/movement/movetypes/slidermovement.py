@@ -7,7 +7,7 @@ from typing import List
 
 from game3d.common.enums import Color
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.common import in_bounds, in_bounds_scalar  # UPDATED: Add scalar for njit
+from game3d.common.coord_utils import in_bounds, in_bounds_scalar  # UPDATED: Add scalar for njit
 # ------------------------------------------------------------------
 # 1.  Public generator (single entry-point)
 # ------------------------------------------------------------------

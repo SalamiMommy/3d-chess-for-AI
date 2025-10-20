@@ -8,14 +8,15 @@ import weakref
 import numpy as np
 
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import get_aura_squares, get_pieces_by_type, Coord
-from game3d.pieces.pieces.speeder import buffed_squares  # Assuming this exists; replace if needed
-from game3d.pieces.pieces.slower import debuffed_squares  # Assuming this exists
+from game3d.common.coord_utils import get_aura_squares, Coord
+from game3d.common.piece_utils import get_pieces_by_type
+from game3d.pieces.pieces.speeder import buffed_squares
+from game3d.pieces.pieces.slower import debuffed_squares
 from game3d.pieces.pieces.whitehole import push_candidates
 from game3d.pieces.pieces.blackhole import suck_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
-from game3d.common.coord_utils import sanitize_coord
+from game3d.common.coord_utils import filter_valid_coords, in_bounds_vectorised
 # ==============================================================================
 # OPTIMIZATION CONSTANTS
 # ==============================================================================
@@ -384,8 +385,8 @@ class UnifiedAuraCache:
         ptype = AURA_PIECE_MAP[aura]
         for color in (Color.WHITE, Color.BLACK):
             self._sources[aura][color].clear()
-            for sq, p in get_pieces_by_type(board, ptype, color):
-                sq = sanitize_coord(sq)
+            for sq, _ in get_pieces_by_type(board, ptype, color):
+                sq = self._sanitize(sq)                #  ⬅  NEW
                 self._sources[aura][color].add(sq)
 
     def _rebuild_map_for_color(self, aura: AuraType, board: "Board", color: Color) -> None:
@@ -420,9 +421,9 @@ class UnifiedAuraCache:
                     controller = victim if affect == "friendly" else victim.opposite()
                     sources = get_pieces_by_type(board, AURA_PIECE_MAP[aura], controller)
                     for sq, _ in sources:
-                        sq = sanitize_coord(sq)               # ← NEW: never trust the source
+                        sq = self._sanitize(sq)                   #  ⬅  NEW
                         for raw in get_aura_squares(sq):
-                            ax, ay, az = sanitize_coord(raw, clamp=True)   # ← ensures 0-8
+                            ax, ay, az = self._sanitize(raw)      #  ⬅  NEW
                             self._coverage[aura][victim][az, ay, ax] += 1
                             if self._coverage[aura][victim][az, ay, ax] > 0:
                                 if aura == AuraType.FREEZE:
@@ -467,7 +468,7 @@ class UnifiedAuraCache:
         ptype = AURA_PIECE_MAP[aura]
         sources = get_pieces_by_type(board, ptype, controller)
         for sq, _ in sources:
-            sq = sanitize_coord(sq)
+            sq = self._sanitize(sq)                   #  ⬅  NEW
             for ax, ay, az in get_aura_squares(sq):
                 self._coverage[aura][victim][az, ay, ax] += 1
                 if self._coverage[aura][victim][az, ay, ax] > 0:
@@ -589,6 +590,21 @@ class UnifiedAuraCache:
     def _ensure_built(self) -> None:
         if any(self._dirty_flags.values()):
             self._incremental_rebuild()
+
+    def _sanitize(self, coord: Any) -> Coord:
+        """
+        Convert anything that looks like a coordinate into a guaranteed
+        in-bounds (int, int, int).  If the coordinate is completely
+        out of range we clamp it; if it is a numpy scalar we cast it.
+        """
+        # 1.  homogeneous numeric → numpy array (cheap)
+        arr = np.asarray(coord, dtype=np.int16).ravel()
+        if arr.shape != (3,):
+            raise ValueError(f"Illegal coordinate {coord!r}")
+
+        # 2.  clamp to board limits
+        clamped = filter_valid_coords(arr[None, :], log_oob=False, clamp=True)[0]
+        return tuple(map(int, clamped))
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================

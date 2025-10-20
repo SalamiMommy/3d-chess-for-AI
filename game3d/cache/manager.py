@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
 
 import numpy as np
 
-from game3d.common.common import N_TOTAL_PLANES, SIZE
+from game3d.common.constants import N_TOTAL_PLANES, SIZE
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 

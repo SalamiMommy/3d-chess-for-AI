@@ -4,7 +4,7 @@
 import struct
 from typing import Optional, Tuple, List, Any, Dict
 import numpy as np
-from game3d.common.common import _COORD_TO_IDX, filter_valid_coords
+from game3d.common.coord_utils import _COORD_TO_IDX, filter_valid_coords
 
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,

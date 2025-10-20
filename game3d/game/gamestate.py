@@ -14,7 +14,7 @@ import numpy as np
 from game3d.board.board import Board
 from game3d.common.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
 from game3d.game.performance import PerformanceMetrics
 from game3d.pieces.piece import Piece
 

@@ -17,13 +17,12 @@ from game3d.movement.registry import (
     register, get_dispatcher, get_all_dispatchers, dispatch_batch
 )
 from game3d.movement.movementmodifiers import modify_raw_moves
-from game3d.common.common import (
-    SIZE, get_player_pieces, extend_move_range, filter_valid_coords,
-    color_to_code, extract_directions_and_steps_vectorized, MoveStatsTracker,
-    track_time, fallback_mode, validate_moves, prepare_batch_data, GeneratorBase, filter_none_moves
-)
 
-BOARD_SIZE = SIZE
+from game3d.common.constants import SIZE
+from game3d.common.move_utils import extend_move_range, rebuild_moves_from_directions, extract_directions_and_steps_vectorized, validate_moves, prepare_batch_data, filter_none_moves
+from game3d.common.debug_utils import StatsTracker, measure_time_ms, fallback_mode, MoveStatsTracker, GeneratorBase, track_time
+from game3d.common.piece_utils import get_player_pieces, color_to_code
+from game3d.common.coord_utils import add_coords, euclidean_distance, manhattan, get_path_squares, in_bounds_vectorised, filter_valid_coords
 
 _STATS = MoveStatsTracker()
 

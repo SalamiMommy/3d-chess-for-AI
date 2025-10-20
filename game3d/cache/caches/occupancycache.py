@@ -6,11 +6,12 @@ import torch
 
 from game3d.pieces.piece import Piece
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import (
+from game3d.common.constants import (
     Coord, PIECE_SLICE, COLOR_SLICE,
     N_PIECE_TYPES, SIZE_X, SIZE_Y, SIZE_Z,
-    N_TOTAL_PLANES, clip_coords, filter_valid_coords, in_bounds, in_bounds_vectorised
+    N_TOTAL_PLANES
 )
+from game3d.common.coord_utils import clip_coords, filter_valid_coords, in_bounds, in_bounds_vectorised
 
 class OccupancyCache:
     """Optimized occupancy cache with minimal locking overhead."""

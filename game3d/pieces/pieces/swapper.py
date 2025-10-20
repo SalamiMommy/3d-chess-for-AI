@@ -8,7 +8,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move, MOVE_FLAGS
-from game3d.common.common import in_bounds_vectorised
+from game3d.common.coord_utils import in_bounds_vectorised
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState

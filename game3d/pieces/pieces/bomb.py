@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import (
+from game3d.common.coord_utils import (
     get_aura_squares,      # 2-radius aura from common
     in_bounds,             # fast bounds check
     subtract_coords,

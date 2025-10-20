@@ -11,7 +11,7 @@ from typing import List, Tuple, TYPE_CHECKING
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.common import in_bounds, get_aura_squares
+from game3d.common.coord_utils import in_bounds, get_aura_squares
 from game3d.movement.registry import register
 
 # 1-step engine re-used from kingmovement

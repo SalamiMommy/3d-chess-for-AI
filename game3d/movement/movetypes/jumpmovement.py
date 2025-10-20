@@ -6,7 +6,8 @@ from numba import njit
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS
-from game3d.common.common import in_bounds_scalar, filter_valid_coords, color_to_code
+from game3d.common.coord_utils import in_bounds_scalar, filter_valid_coords
+from game3d.common.piece_utils import color_to_code
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Dict, Set, TYPE_CHECKING
-from game3d.common.common import Coord
+from game3d.common.coord_utils import Coord
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.pieces.pieces.trailblazer import TrailblazeRecorder

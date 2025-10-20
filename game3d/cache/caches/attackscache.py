@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional, TYPE_CHECKING, List
 from dataclasses import dataclass, field
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import Coord
+from game3d.common.coord_utils import Coord
 
 if TYPE_CHECKING:
     from game3d.board.board import Board

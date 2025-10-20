@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from typing import Dict, Any, List, Tuple, Optional
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import N_TOTAL_PLANES
+from game3d.common.constants import N_TOTAL_PLANES
 
 # Updated function in export.py
 def export_state_for_ai(board, piece_cache, move_cache, zobrist_hash, current_player: Color, move_number: int = 0) -> Dict[str, Any]:
