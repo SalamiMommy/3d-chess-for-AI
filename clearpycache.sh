@@ -1,3 +1,5 @@
-cd /home/salamimommy/Documents/code/3d
-find . -type d -name __pycache__ -exec rm -rf {} +
-find . -name "*.pyc" -delete
+#!/bin/bash
+
+
+find . -type d -name '__pycache__' -exec rm -rf {} +
+echo "All __pycache__ directories have been deleted."

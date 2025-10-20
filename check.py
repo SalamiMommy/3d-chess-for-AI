@@ -1,4 +1,4 @@
-from game3d.pieces.enums import PieceType
+from game3d.common.enums import PieceType
 
 max_ptype = max(p.value for p in PieceType)          # 39
 max_offset = (max_ptype + 1) // 2                    # 20  (or 21 if you keep the current split)

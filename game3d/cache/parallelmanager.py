@@ -2,6 +2,7 @@
 
 """Parallel processing management for the cache system."""
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 class ParallelManager:
@@ -9,7 +10,8 @@ class ParallelManager:
 
     def __init__(self, config):
         self.config = config
-        self.executor = ThreadPoolExecutor(max_workers=config.max_workers)
+        max_workers = config.max_workers or max(1, (os.cpu_count() or 6) - 1)  # Optimized fallback
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
-    def shutdown(self):
-        self.executor.shutdown(wait=False)
+    def shutdown(self, wait: bool = False):
+        self.executor.shutdown(wait=wait)

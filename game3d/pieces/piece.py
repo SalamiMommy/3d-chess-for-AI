@@ -1,13 +1,16 @@
 import torch
-from .enums import Color, PieceType
+from game3d.common.enums import Color, PieceType
 
 class Piece:
-    """Immutable piece descriptor."""
-    __slots__ = ("color", "ptype")
+    __slots__ = ("color", "ptype", "armoured")
 
-    def __init__(self, color: Color, ptype: PieceType):
+    def __init__(self, color: Color, ptype: PieceType, armoured: bool = False):
+        # >>>  optional but recommended  <<<
+        if color not in (Color.WHITE, Color.BLACK):
+            raise ValueError(f"color must be Color.WHITE or Color.BLACK, got {color!r}")
         self.color = color
         self.ptype = ptype
+        self.armoured = armoured
 
     def to_tensor(self) -> torch.Tensor:
         """Returns shape (2,) int8 tensor: [color_value, ptype_value]."""

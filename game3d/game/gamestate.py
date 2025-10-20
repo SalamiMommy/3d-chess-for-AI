@@ -5,22 +5,20 @@ game3d/game/gamestate.py
 Optimized 9×9×9 game state with incremental updates, caching, and performance monitoring.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING
 from enum import Enum
 
 import torch
 import numpy as np
 from game3d.board.board import Board
-from game3d.pieces.enums import Color, PieceType, Result
+from game3d.common.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
 from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PIECE_TYPES
-from game3d.cache.manager import OptimizedCacheManager, get_cache_manager
+from game3d.game.performance import PerformanceMetrics
 from game3d.pieces.piece import Piece
-from game3d.cache.effects_cache import EffectsCache  # Import EffectsCache
 
 from .zobrist import compute_zobrist
-from .performance import PerformanceMetrics
 
 # Add this GameMode enum definition
 class GameMode(Enum):
@@ -32,12 +30,12 @@ if TYPE_CHECKING:
     from typing import Callable
 
 
-@dataclass(slots=True)
+@dataclass(slots=True)  # Added slots for memory
 class GameState:
     """Optimized game state with caching and incremental updates."""
     board: Board
     color: Color
-    cache: OptimizedCacheManager
+    cache: 'OptimizedCacheManager'
     history: Tuple[Move, ...] = field(default_factory=tuple)
     halfmove_clock: int = 0
     game_mode: GameMode = GameMode.STANDARD
@@ -55,19 +53,18 @@ class GameState:
     _is_check_cache: Optional[bool] = field(default=None, repr=False)
     _is_check_cache_key: Optional[int] = field(default=None, repr=False)
 
-    # Performance metrics
+    # Performance metrics - UPDATED: Use MoveStatsTracker
     _metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics, repr=False)
 
     # Move enrichment cache for undo
     _undo_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
-    # Effects cache
-    effects: EffectsCache = field(init=False, repr=False)
-
     def __post_init__(self):
-        # Initialize effects cache with this game state
-        self.effects = EffectsCache(self.board, self.cache)
+        if self.cache is None:
+            raise RuntimeError("GameState must be given an external cache")
+        self.board.cache_manager = self.cache
         self._zkey = compute_zobrist(self.board, self.color)
+        from game3d.game.performance import PerformanceMetrics
         self._metrics = PerformanceMetrics()
         self._clear_caches()
 
@@ -92,6 +89,9 @@ class GameState:
         """Access to the occupancy cache through the cache manager."""
         return self.cache.occupancy
 
+    def _with_metrics(self, **kw) -> "GameState":
+        """Return a new GameState whose _metrics field is updated."""
+        return replace(self, _metrics=replace(self._metrics, **kw))
     # ------------------------------------------------------------------
     # EFFECT ACCESS METHODS
     # ------------------------------------------------------------------
@@ -108,44 +108,16 @@ class GameState:
         return self.cache.is_movement_debuffed(sq, victim)
 
     def black_hole_pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Get black hole pull targets."""
         return self.cache.black_hole_pull_map(controller)
 
     def white_hole_push_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Get white hole push targets."""
         return self.cache.white_hole_push_map(controller)
 
     def current_trail_squares(self, controller: Color) -> Set[Tuple[int, int, int]]:
-        """Get current trailblaze trail squares."""
         return self.cache.current_trail_squares(controller)
 
-    def is_geomancy_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        """Check if a square is blocked by geomancy."""
-        return self.cache.is_geomancy_blocked(sq, current_ply)
-
-    def archery_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
-        """Get archery attack targets."""
-        return self.cache.archery_targets(controller)
-
-    def is_valid_archery_attack(self, sq: Tuple[int, int, int], controller: Color) -> bool:
-        """Validate archery attack."""
-        return self.cache.is_valid_archery_attack(sq, controller)
-
-    def can_capture_wall(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
-        """Check if a wall can be captured."""
-        return self.cache.can_capture_wall(attacker_sq, wall_sq, controller)
-
-    def pieces_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        """Get pieces at a square (for share square effect)."""
-        return self.cache.pieces_at(sq)
-
-    def top_piece(self, sq: Tuple[int, int, int]) -> Optional[Piece]:
-        """Get top piece at a square."""
-        return self.cache.top_piece(sq)
-
-    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        """Get squares attacked by a color."""
-        return self.cache.get_attacked_squares(color)
+    def is_geomancy_blocked(self, sq: Tuple[int, int, int]) -> bool:
+        return self.cache.is_geomancy_blocked(sq, self.ply)
 
     # ------------------------------------------------------------------
     # TENSOR REPRESENTATION WITH CACHING
@@ -227,20 +199,15 @@ class GameState:
         return tensor
 
     def _clear_caches(self) -> None:
-        """Enhanced cache clearing with validation."""
-        self._legal_moves_cache = None
-        self._legal_moves_cache_key = None
-        self._tensor_cache = None
-        self._tensor_cache_key = None
-        self._insufficient_material_cache = None
-        self._insufficient_material_cache_key = None
-        self._is_check_cache = None
-        self._is_check_cache_key = None
-        self._undo_info = None
-
-        # Use clear method instead of directly clearing internal structures
-        if hasattr(self.cache, 'move') and hasattr(self.cache.move, 'clear'):
-            self.cache.move.clear()
+            """Clear all internal caches."""
+            self._legal_moves_cache = None
+            self._legal_moves_cache_key = None
+            self._tensor_cache = None
+            self._tensor_cache_key = None
+            self._insufficient_material_cache = None
+            self._insufficient_material_cache_key = None
+            self._is_check_cache = None
+            self._is_check_cache_key = None
 
     # ------------------------------------------------------------------
     # UTILITIES AND SAMPLING
@@ -250,11 +217,24 @@ class GameState:
         moves = self.legal_moves()
         return moves[0] if moves else None
 
-    def clone(self) -> 'GameState':
-        new_board = Board(self.board.tensor().clone())
-        new_cache = get_cache_manager(new_board, self.color)
+    def clone(self, deep_cache: bool = False) -> GameState:
+        """
+        deep_cache=False  → share the existing cache (fast, default)
+        deep_cache=True   → create a private cache (thread-safe, used by SMP search)
+        """
+        if deep_cache:
+            new_cache = get_cache_manager(self.board.clone(), self.color)
+        else:
+            # share the same cache object – just update its board pointer
+            new_cache = self.cache
+            new_cache._attach_board(self.board.clone())
+            new_cache.board = self.board.clone()
+            new_cache.board.cache_manager = new_cache
+            new_cache._current = self.color
+            new_cache.refresh_all()
+
         return GameState(
-            board=new_board,
+            board=new_cache.board,
             color=self.color,
             cache=new_cache,
             history=self.history,
@@ -266,7 +246,7 @@ class GameState:
     def clone_with_new_cache(self) -> 'GameState':
         """Clone with new cache manager for thread safety."""
         new_board = Board(self.board.tensor().clone())
-        new_cache = get_cache_manager(new_board, self.color)
+        new_cache = get_cache_manager(new_board, self.color)  # Added import if needed
 
         return GameState(
             board=new_board,
@@ -278,35 +258,13 @@ class GameState:
             turn_number=self.turn_number,
         )
 
-    # ------------------------------------------------------------------
-    # PERFORMANCE ANALYTICS
-    # ------------------------------------------------------------------
     def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics."""
-        return {
-            'metrics': {
-                'make_move_calls': self._metrics.make_move_calls,
-                'undo_move_calls': self._metrics.undo_move_calls,
-                'legal_moves_calls': self._metrics.legal_moves_calls,
-                'zobrist_computations': self._metrics.zobrist_computations,
-                'avg_make_move_time_ms': self._metrics.average_make_move_time() * 1000,
-                'avg_undo_move_time_ms': self._metrics.average_undo_move_time() * 1000,
-                'avg_legal_moves_time_ms': self._metrics.average_legal_moves_time() * 1000,
-            },
-            'caching': {
-                'legal_moves_cache_hits': self._metrics.legal_moves_calls - (1 if self._legal_moves_cache is None else 0),
-                'tensor_cache_hits': 1 if self._tensor_cache is not None else 0,
-                'insufficient_material_cache_hits': 1 if self._insufficient_material_cache is not None else 0,
-            },
-            'memory': {
-                'history_length': len(self.history),
-                'board_tensor_size': self.board.tensor().numel(),
-            }
-        }
+        """Get performance statistics - UPDATED to use get_stats."""
+        return self._metrics.get_stats()
 
     def reset_performance_stats(self) -> None:
-        """Reset performance metrics."""
-        self._metrics = PerformanceMetrics()
+        """Reset performance metrics - UPDATED."""
+        self._metrics.reset()
 
     # ------------------------------------------------------------------
     # STRING REPRESENTATION
@@ -390,3 +348,24 @@ class GameState:
         """Get game result if game is over."""
         from game3d.game.terminal import result
         return result(self)
+
+    def pass_turn(self) -> "GameState":
+        """
+        Return a new state with the *same* board and cache, but
+        the turn colour flipped and turn-number incremented.
+        Used by Hive multi-move turns when the player finally passes.
+        """
+        return GameState(
+            board=self.board,
+            color=self.color.opposite(),
+            cache=self.cache,
+            history=self.history,
+            halfmove_clock=self.halfmove_clock,
+            game_mode=self.game_mode,
+            turn_number=self.turn_number + 1,
+        )
+
+    @property
+    def ply(self) -> int:
+        """Return the full-move number (1-based) for cache expiry logic."""
+        return self.turn_number

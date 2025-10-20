@@ -6,15 +6,16 @@ Use this to verify cache usage is correct.
 
 import weakref
 import gc
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
-import threading
+import traceback
+import time
+from collections import defaultdict  # Optimized for grouping
 
 @dataclass
 class CacheCreationEvent:
     """Record of a cache creation event."""
     instance_id: int
-    thread_name: str
     stack_trace: List[str]
     timestamp: float
     board_id: int
@@ -25,66 +26,54 @@ class CacheDiagnostics:
     def __init__(self):
         self.creation_events: List[CacheCreationEvent] = []
         self.active_caches: Dict[int, weakref.ref] = {}
-        self.lock = threading.Lock()
+        self._active_count_cache: int = 0  # Cached count for optimization
+        self._active_count_dirty: bool = True
 
     def record_creation(self, cache_instance, board, stack_depth=5):
         """Record a cache creation event."""
-        import time
-        import traceback
-
-        with self.lock:
-            event = CacheCreationEvent(
-                instance_id=id(cache_instance),
-                thread_name=threading.current_thread().name,
-                stack_trace=traceback.format_stack()[-stack_depth:],
-                timestamp=time.time(),
-                board_id=id(board)
-            )
-
-            self.creation_events.append(event)
-            self.active_caches[id(cache_instance)] = weakref.ref(cache_instance)
+        # --- build the event object first ---
+        event = CacheCreationEvent(
+            instance_id=id(cache_instance),
+            stack_trace=traceback.format_stack(limit=stack_depth),
+            timestamp=time.time(),
+            board_id=id(board),
+        )
+        # --- now use it ---
+        self.creation_events.append(event)
+        self.active_caches[id(cache_instance)] = weakref.ref(cache_instance)
+        self._active_count_dirty = True
 
     def get_active_count(self) -> int:
         """Get number of currently active caches."""
-        # Clean up dead references
-        dead_refs = []
-        for cache_id, ref in self.active_caches.items():
-            if ref() is None:
-                dead_refs.append(cache_id)
+        if not self._active_count_dirty:
+            return self._active_count_cache
 
+        dead_refs = [cache_id for cache_id, ref in self.active_caches.items() if ref() is None]
         for cache_id in dead_refs:
             del self.active_caches[cache_id]
-
-        return len(self.active_caches)
+        self._active_count_cache = len(self.active_caches)
+        self._active_count_dirty = False
+        return self._active_count_cache
 
     def get_creation_count(self) -> int:
         """Get total number of caches created."""
         return len(self.creation_events)
 
-    def analyze_patterns(self) -> Dict[str, any]:
+    def analyze_patterns(self) -> Dict[str, Any]:
         """Analyze cache creation patterns."""
-        # Group by board
-        by_board = {}
+        by_board = defaultdict(list)
         for event in self.creation_events:
-            board_id = event.board_id
-            if board_id not in by_board:
-                by_board[board_id] = []
-            by_board[board_id].append(event)
+            by_board[event.board_id].append(event)
 
-        # Find boards with multiple caches (BAD)
         problematic_boards = {
             board_id: events
             for board_id, events in by_board.items()
             if len(events) > 1
         }
 
-        # Group by call stack (find common creation paths)
-        by_stack = {}
+        by_stack = defaultdict(list)
         for event in self.creation_events:
-            # Use last 2 frames as key
             key = tuple(event.stack_trace[-2:])
-            if key not in by_stack:
-                by_stack[key] = []
             by_stack[key].append(event)
 
         return {
@@ -117,10 +106,9 @@ class CacheDiagnostics:
                 print(f"\nBoard {board_id} has {len(events)} caches:")
                 for i, event in enumerate(events, 1):
                     print(f"\n  Cache #{i}:")
-                    print(f"    Thread: {event.thread_name}")
                     print(f"    Created at:")
                     for line in event.stack_trace:
-                        print(f"      {line.strip()}")
+                        print(f"      {line}")
         else:
             print("\n✅ All boards have single cache instances (GOOD!)")
 
@@ -128,9 +116,10 @@ class CacheDiagnostics:
 
     def reset(self):
         """Reset all tracking."""
-        with self.lock:
-            self.creation_events.clear()
-            self.active_caches.clear()
+
+        self.creation_events.clear()
+        self.active_caches.clear()
+        self._active_count_dirty = True
 
 # Global diagnostics instance
 _diagnostics = CacheDiagnostics()
@@ -154,11 +143,7 @@ def get_cache_stats() -> Dict[str, int]:
         'currently_active': _diagnostics.get_active_count(),
     }
 
-
-# ============================================================================
 # INTEGRATION: Add to manager.py __init__
-# ============================================================================
-
 """
 Add to OptimizedCacheManager.__init__():
 
@@ -170,11 +155,7 @@ Add to OptimizedCacheManager.__init__():
         record_cache_creation(self, board)
 """
 
-
-# ============================================================================
 # USAGE IN TRAINING
-# ============================================================================
-
 """
 Usage in your training script:
 
@@ -202,11 +183,7 @@ print_cache_report()
 # Boards with multiple caches: 10 ⚠️
 """
 
-
-# ============================================================================
 # AUTOMATED TEST
-# ============================================================================
-
 def test_cache_usage():
     """
     Automated test to verify cache usage is correct.
@@ -214,11 +191,11 @@ def test_cache_usage():
     Returns:
         bool: True if cache usage is correct
     """
-    from game3d.cache.diagnostics import get_diagnostics, _diagnostics
+    from game3d.cache.diagnostics import get_diagnostics
     from game3d.game3d import OptimizedGame3D
 
     # Reset diagnostics
-    _diagnostics.reset()
+    get_diagnostics().reset()
 
     # Create games
     num_games = 5
@@ -235,7 +212,7 @@ def test_cache_usage():
                 game.state = game.state.make_move(moves[0])
 
     # Analyze
-    analysis = _diagnostics.analyze_patterns()
+    analysis = get_diagnostics().analyze_patterns()
 
     # Verify
     success = True
@@ -258,10 +235,9 @@ def test_cache_usage():
         print("\n🎉 Cache usage is CORRECT!")
     else:
         print("\n⚠️  Cache usage has PROBLEMS!")
-        _diagnostics.print_report()
+        get_diagnostics().print_report()
 
     return success
-
 
 if __name__ == "__main__":
     # Run test
