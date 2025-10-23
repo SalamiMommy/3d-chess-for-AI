@@ -123,7 +123,7 @@ class SelfPlayGenerator:
             logit = from_logits[0, f_idx] + to_logits[0, t_idx]
             move_probs.append(logit)
 
-        move_probs_tensor = torch.stack(move_probs)
+        move_probs_tensor = torch.tensor(move_probs)
         move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
 
         # Compute reward for each move (use current state)
@@ -152,11 +152,11 @@ class SelfPlayGenerator:
             sq = game.state.board.active_king_coord   # fallback
             for idx in range(VOLUME):
                 c = idx_to_coord(idx)
-                pc = game.state.cache.piece_cache.get(c)
+                pc = game.state.cache_manager.occupancy.get(c)
                 if pc is not None:
                     sq = c
                     break
-            pc = game.state.cache.piece_cache.get(sq)
+            pc = game.state.cache_manager.occupancy.get(sq)
             pt = PieceType(pc.ptype).name if pc else "Unknown"
             new_msg = f"Piece {pt} on {sq} triggered: {exc}"
             print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
@@ -166,20 +166,16 @@ class SelfPlayGenerator:
             if "EffectsCache' object has no attribute 'piece_cache'" in str(exc):
                 print(f"[ERROR] EffectsCache error detected at move {game.state.fullmove_number}")
                 print(f"[ERROR] Game state cache type: {type(game.state.cache)}")
-                print(f"[ERROR] Game state effects type: {type(game.state.effects)}")
 
-                # Try to recover by using the main cache manager instead of EffectsCache
+                # Use the cache manager directly instead of looking for effects
                 try:
-                    # Save the original cache
-                    original_cache = game.state.cache
-
-                    # Try to get the main cache manager from the effects cache
-                    if hasattr(game.state.effects, 'cache'):
-                        game.state.cache = game.state.effects.cache
-                        print("[ERROR] Attempting to recover by using effects.cache")
+                    # The cache manager already has all effect caches
+                    if hasattr(game.state.cache, 'aura_cache'):
+                        print("[ERROR] Using cache manager's effect caches directly")
+                        # Continue with normal operation - cache manager should handle it
                         return game.state.legal_moves()
                     else:
-                        print("[ERROR] Cannot recover - no backup cache available")
+                        print("[ERROR] Cannot recover - no aura cache available")
                         return []
                 except Exception as recovery_exc:
                     print(f"[ERROR] Recovery failed: {recovery_exc}")
@@ -187,7 +183,7 @@ class SelfPlayGenerator:
             else:
                 # Handle other exceptions as before
                 sq = game.state.board.active_king_coord
-                pc = game.state.cache.piece_cache.get(sq)
+                pc = game.state.cache_manager.occupancy.get(sq)
                 pt = PieceType(pc.ptype).name if pc else "Unknown"
                 new_msg = f"Piece {pt} on {sq} triggered: {exc}"
                 print(f"[ERROR] Move {game.state.fullmove_number} failed: {new_msg}")
@@ -230,7 +226,7 @@ class SelfPlayGenerator:
         print(f"  current player in check  : {is_check(game.state)}")
         print(f"  legal_moves() len        : {len(game.state.legal_moves())}")
         print(f"  half-move clock          : {game.state.halfmove_clock}")
-        occ = game.state.cache.occupancy
+        occ = game.state.cache_manager.occupancy
         print("[DEBUG] Move-generator internals:")
         print(f"  occupancy squares (cache): {occ.count}")          # ← fast np.count_nonzero
         print(f"  occupancy squares (board): {len(list(game.state.board.list_occupied()))}")
@@ -247,15 +243,15 @@ class SelfPlayGenerator:
         raw = generate_pseudo_legal_moves(tmp)
         raw = filter_none_moves(raw)
         print(f"[REBUILD] raw pseudo-legal count : {len(raw)}")
-        print(f"[REBUILD] board piece count      : {game.state.cache.occupancy.count}")
+        print(f"[REBUILD] board piece count      : {game.state.cache_manager.occupancy.count}")
         print(f"[REBUILD] tmp state color        : {tmp.color}")
         # ========================================================================
         # === NEW:  scan pawns & knights ========================================
         from game3d.common.enums import Color, PieceType
         from game3d.movement.pseudo_legal import generate_pseudo_legal_moves_for_piece
-        pawn_coords = [c for c, pt in game.state.cache.occupancy.iter_color(Color.WHITE)
+        pawn_coords = [c for c, pt in game.state.cache_manager.occupancy.iter_color(Color.WHITE)
                     if pt == PieceType.PAWN]
-        knight_coords = [c for c, pt in game.state.cache.occupancy.iter_color(Color.WHITE)
+        knight_coords = [c for c, pt in game.state.cache_manager.occupancy.iter_color(Color.WHITE)
                         if pt == PieceType.KNIGHT]
 
         print(f"[REBUILD] white pawns   : {len(pawn_coords)}")

@@ -4,79 +4,93 @@ Unified Archer dispatcher
 - 1-radius sphere  → walk (normal king-like move)
 - 2-radius surface → shoot (archery capture, no movement)
 """
+
 from __future__ import annotations
-
-import math
-from typing import List, Tuple, TYPE_CHECKING
-
+import numpy as np
+from typing import List, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
-from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.coord_utils import in_bounds, get_aura_squares
 from game3d.movement.registry import register
-
-# 1-step engine re-used from kingmovement
-from game3d.movement.movetypes.kingmovement import generate_king_moves
+from game3d.movement.movepiece import Move, convert_legacy_move_args, MOVE_FLAGS
+from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
+from game3d.movement.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
+# --------------------------------------------------------------------------- #
+#  King directions (1-step moves)                                             #
+# --------------------------------------------------------------------------- #
+_KING_DIRECTIONS = np.array([
+    (dx, dy, dz)
+    for dx in (-1, 0, 1)
+    for dy in (-1, 0, 1)
+    for dz in (-1, 0, 1)
+    if (dx, dy, dz) != (0, 0, 0)
+], dtype=np.int8)
 
-# ------------------------------------------------------------------
-# 1.  Internal helper: classify square
-# ------------------------------------------------------------------
-def _archer_intent(start: Tuple[int, int, int], target: Tuple[int, int, int]) -> str:
-    """Return 'move', 'shoot', or 'invalid'."""
-    dx = target[0] - start[0]
-    dy = target[1] - start[1]
-    dz = target[2] - start[2]
-    dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if abs(dist - 1.0) < 0.1:
-        return "move"
-    if abs(dist - 2.0) < 0.1:
-        return "shoot"
-    return "invalid"
+# --------------------------------------------------------------------------- #
+#  Archery directions (2-radius surface only)                                #
+# --------------------------------------------------------------------------- #
+_ARCHERY_DIRECTIONS = np.array([
+    (dx, dy, dz)
+    for dx in range(-2, 3)
+    for dy in range(-2, 3)
+    for dz in range(-2, 3)
+    if dx*dx + dy*dy + dz*dz == 4  # Only surface of sphere radius 2
+], dtype=np.int8)
 
-
-# ------------------------------------------------------------------
-# 2.  Core move generator
-# ------------------------------------------------------------------
 def generate_archer_moves(
-    cache,          # OptimizedCacheManager
+    cache: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    start = (x, y, z)
-    moves: List[Move] = []
+    """Generate all archer moves: king walks + archery shots."""
+    x, y, z = ensure_int_coords(x, y, z)
 
-    if cache.is_frozen(start, color):          # no moves while frozen
+    if cache.is_frozen((x, y, z), color):
         return []
 
-    # ---------- 1-radius king walk ----------
-    moves.extend(generate_king_moves(cache, color, x, y, z))
+    moves = []
 
-    # ---------- 2-radius archery ----------
-    for sq in get_aura_squares(start, radius=2):   # surface only
-        victim = cache.occupancy.get(sq)
+    # 1. King walks using jump movement
+    jump_gen = get_integrated_jump_movement_generator(cache)
+    king_moves = jump_gen.generate_jump_moves(
+        color=color,
+        pos=(x, y, z),
+        directions=_KING_DIRECTIONS,
+        allow_capture=True,
+    )
+    moves.extend(king_moves)
+
+    # 2. Archery shots (2-radius surface capture only)
+    for dx, dy, dz in _ARCHERY_DIRECTIONS:
+        tx, ty, tz = x + dx, y + dy, z + dz
+
+        # Check bounds
+        if not (0 <= tx < 9 and 0 <= ty < 9 and 0 <= tz < 9):
+            continue
+
+        # Check for enemy piece at target
+        victim = cache.occupancy.get((tx, ty, tz))
         if victim is not None and victim.color != color:
-            # Ensure clear line-of-sight (cache provides fast LOS)
-
-            mv = convert_legacy_move_args(
-                start, start,                 # archer never moves
+            # Create archery move (archer doesn't move, just captures)
+            archery_move = convert_legacy_move_args(
+                from_coord=(x, y, z),
+                to_coord=(x, y, z),  # Archer stays in place
                 is_capture=True,
                 flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
             )
-            mv.metadata["target_square"] = sq   # victim square
-            moves.append(mv)
+            archery_move.metadata["target_square"] = (tx, ty, tz)
+            archery_move.metadata["archery_shot"] = True
+
+            moves.append(archery_move)
 
     return moves
 
-
-# ------------------------------------------------------------------
-# 3.  Dispatcher registration
-# ------------------------------------------------------------------
 @register(PieceType.ARCHER)
-def archer_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def archer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_archer_moves(state.cache, state.color, x, y, z)
-
 
 __all__ = ["generate_archer_moves"]

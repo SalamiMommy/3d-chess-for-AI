@@ -8,6 +8,8 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import get_aura_squares
+from game3d.common.piece_utils import get_pieces_by_type
+from game3d.common.coord_utils import in_bounds
 # --------------------------------------------------
 #  Public API
 # --------------------------------------------------

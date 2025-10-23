@@ -102,7 +102,7 @@ class TrainingConfig:
     model_type: str = "optimized"
     blocks: int = 15
     channels: int = 256
-    n_moves: int = 531441  # Not used directly
+    n_moves: int = 1_000_000
     batch_size: int = BATCH_SIZE
     learning_rate: float = 2e-4
     weight_decay: float = 1e-5

@@ -33,7 +33,7 @@ def generate_rook_moves(cache: CacheManager,
         color=color.value,
         max_distance=8,
         directions=_ROOK_DIRS,
-        occupancy=cache.occupancy._occ,    # ← pass the 3-D mask instead of the cache
+        cache_manager=cache,    # ← pass the 3-D mask instead of the cache
     )
 
 # ----------------------------------------------------------

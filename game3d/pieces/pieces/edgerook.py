@@ -1,19 +1,21 @@
 # edgerookmoves.py
 """Edge-Rook – slides along the 9×9×9 edge graph, stops at first blocker,
-armour-aware, single jump-batch."""
-
+ single jump-batch."""
 from __future__ import annotations
-
 import numpy as np
 from typing import List, TYPE_CHECKING, Dict
 from collections import deque
+
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds
+from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
 
-
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
+    from game3d.cache.manager import OptimizedCacheManager
 # ----------------------------------------------------------
 # 1.  Build once: edge adjacency graph (6 axial directions)
 # ----------------------------------------------------------
@@ -44,8 +46,9 @@ _build_edge_graph()
 # ----------------------------------------------------------
 # 3.  Generator – BFS on edge graph, then single jump batch
 # ----------------------------------------------------------
-def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, y: int, z: int) -> List[Move]:
-    start = (int(x), int(y), int(z))  # FIX: Force int to prevent np.int64 promotion issues
+def generate_edgerook_moves(cache: 'OptimizedCacheManager', color: Color, x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
+    start = (x, y, z)
     if start not in _EDGE_GRAPH:
         return []
 
@@ -58,29 +61,28 @@ def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, 
         for nxt in _EDGE_GRAPH[cur]:
             if nxt in visited:
                 continue
-            # FIX: Safety check (redundant but prevents anomalous OOB from graph)
             nx, ny, nz = nxt
-            if not (0 <= nx < 9 and 0 <= ny < 9 and 0 <= nz < 9):
+            if not in_bounds((nx, ny, nz)):
                 continue
             visited.add(nxt)
-            # FIXED: Use cache_manager's occupancy with is_occupied
-            if not cache.occupancy.is_occupied(nx, ny, nz):
+            # Use standardized occupancy check
+            if not get_occupancy_safe(cache, (nx, ny, nz)):
                 queue.append(nxt)
 
     targets = []
-    for tx_, ty_, tz_ in visited:
-        # FIX: Safety check (prevents OOB indexing if graph corrupted)
-        if not (0 <= tx_ < 9 and 0 <= ty_ < 9 and 0 <= tz_ < 9):
+    for tx, ty, tz in visited:
+        if not in_bounds((tx, ty, tz)):
             continue
-        if (tx_, ty_, tz_) == start:
+        if (tx, ty, tz) == start:
             continue
-        # FIXED: Use is_occupied instead of mask
-        if cache.occupancy.is_occupied(tx_, ty_, tz_):
-            victim = cache.occupancy.get((tx_, ty_, tz_))
-            if victim and victim.color != color:
-                targets.append((tx_, ty_, tz_))
+
+        # Use standardized occupancy check
+        victim = get_occupancy_safe(cache, (tx, ty, tz))
+        if victim is not None:
+            if victim.color != color:
+                targets.append((tx, ty, tz))
         else:
-            targets.append((tx_, ty_, tz_))
+            targets.append((tx, ty, tz))
 
     if not targets:
         return []
@@ -100,7 +102,7 @@ def generate_edgerook_moves(cache: OptimizedCacheManager, color: Color, x: int, 
 # ----------------------------------------------------------
 @register(PieceType.EDGEROOK)
 def edgerook_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    # FIX: Force int to ensure consistent typing across callers (e.g., batch gen with np.int64)
-    return generate_edgerook_moves(state.cache, state.color, int(x), int(y), int(z))
+    x, y, z = ensure_int_coords(x, y, z)
+    return generate_edgerook_moves(state.cache, state.color, x, y, z)
 
 __all__ = ["generate_edgerook_moves"]

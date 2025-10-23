@@ -37,7 +37,7 @@ def generate_vector_slider_moves(cache, color, x, y, z) -> List[Move]:
         color=color.value,          # color: Color → int
         max_distance=8,
         directions=VECTOR_DIRECTIONS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
 @register(PieceType.VECTORSLIDER)

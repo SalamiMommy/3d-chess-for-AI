@@ -64,7 +64,7 @@ class AdversarialOpponent(OpponentBase):
         reward = 0.0
 
         # Reward for capturing any piece
-        captured = state.cache.piece_cache.get(move.to_coord)
+        captured = state.cache_manager_manager.occupancy.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.2
             if is_priest(captured):
@@ -76,16 +76,16 @@ class AdversarialOpponent(OpponentBase):
 
         # Small reward for putting king in check (after move)
         next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
+        opp_king_pos = next_state.cache_manager.find_king(self.color.opposite())
         if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
+        my_king_pos = next_state.cache_manager.find_king(self.color)
         if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
@@ -102,7 +102,7 @@ class CenterControlOpponent(OpponentBase):
             reward += 0.3
 
         # Small reward for capturing any piece
-        captured = state.cache.piece_cache.get(move.to_coord)
+        captured = state.cache_manager.occupancy.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.2
             if is_priest(captured):
@@ -114,16 +114,16 @@ class CenterControlOpponent(OpponentBase):
 
         # Small reward for putting king in check
         next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
+        opp_king_pos = next_state.cache_manager.find_king(self.color.opposite())
         if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
+        my_king_pos = next_state.cache_manager.find_king(self.color)
         if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
@@ -135,7 +135,7 @@ class PieceCaptureOpponent(OpponentBase):
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
 
-        captured = state.cache.piece_cache.get(move.to_coord)
+        captured = state.cache_manager.occupancy.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.5  # Small reward for any capture
             if is_priest(captured):
@@ -147,16 +147,16 @@ class PieceCaptureOpponent(OpponentBase):
 
         # Small reward for putting king in check
         next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
+        opp_king_pos = next_state.cache_manager.find_king(self.color.opposite())
         if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
+        my_king_pos = next_state.cache_manager.find_king(self.color)
         if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 
@@ -168,7 +168,7 @@ class PriestHunterOpponent(OpponentBase):
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
 
-        captured = state.cache.piece_cache.get(move.to_coord)
+        captured = state.cache_manager.occupancy.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             if is_priest(captured):
                 reward += 3.0  # Big reward for priests
@@ -181,16 +181,16 @@ class PriestHunterOpponent(OpponentBase):
 
         # Small reward for putting king in check
         next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
+        opp_king_pos = next_state.cache_manager.find_king(self.color.opposite())
         if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color)
             if opp_king_pos in attacked:
                 reward += 0.2
 
         # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
+        my_king_pos = next_state.cache_manager.find_king(self.color)
         if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
+            attacked = next_state.cache_manager.move.get_attacked_squares(self.color.opposite())
             if my_king_pos in attacked:
                 reward -= 0.2
 

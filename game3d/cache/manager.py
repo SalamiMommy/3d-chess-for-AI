@@ -1,4 +1,4 @@
-# manager.py
+# manager.py (updated with consolidated incremental update logic and incremental Zobrist hashing)
 # game3d/cache/manager.py
 # ---------------------------------------------------------------------------
 #  OptimisedCacheManager – one source of truth for the whole cache stack
@@ -9,7 +9,7 @@ import gc
 import time
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
+from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING, Iterator, Callable, Iterable
 
 import numpy as np
 
@@ -28,8 +28,8 @@ from game3d.cache.caches.movecache import (
     create_optimized_move_cache,
 )
 from game3d.cache.caches.occupancycache import OccupancyCache
-from game3d.cache.caches.transposition import TTEntry          # ← was missing
-from game3d.game.zobrist import ZobristHash, compute_zobrist
+from game3d.cache.caches.transposition import TTEntry
+from game3d.cache.caches.zobrist import ZobristHash, compute_zobrist, _PIECE_KEYS, _SIDE_KEY
 # ---------- helpers ----------
 from .managerconfig import ManagerConfig
 from .managerperformance import CachePerformanceMonitor, CacheEventType, MemoryManager
@@ -48,6 +48,8 @@ from game3d.cache.effectscache.auracache import UnifiedAuraCache
 from game3d.cache.effectscache.trailblazecache import TrailblazeCache
 from game3d.cache.effectscache.geomancycache import GeomancyCache
 from game3d.cache.caches.attackscache import AttacksCache
+from game3d.common.coord_utils import Coord
+from game3d.cache.cache_protocols import CacheManagerProtocol, MovementCacheProtocol, EffectCacheProtocol
 
 
 class CacheDesyncError(Exception):
@@ -57,10 +59,11 @@ class CacheDesyncError(Exception):
 # ===========================================================================
 #  OptimisedCacheManager
 # ===========================================================================
-class OptimizedCacheManager:
+class OptimizedCacheManager(CacheManagerProtocol):
     """
     Central cache manager – thin façade that owns every sub-cache.
     All heavy lifting is delegated to specialised classes.
+    Now consolidates incremental update logic for all caches on piece moves.
     """
 
     __slots__ = (
@@ -90,6 +93,10 @@ class OptimizedCacheManager:
         self._memory_manager = MemoryManager(self.config, lambda: self._move_cache)
         self.parallel = ParallelManager(self.config)
         self._zobrist = ZobristHash()
+
+        # ✅ Initialize Zobrist to 0 - will be set properly in initialise()
+        self._current_zobrist_hash = 0
+
         self._move_cache: Optional[OptimizedMoveCache] = None
         self._move_counter = 0
         self._age_counter = 0
@@ -101,14 +108,13 @@ class OptimizedCacheManager:
         self._check_summary_age = -1
         self._network_teleport_dirty = {Color.WHITE: False, Color.BLACK: False}
         self._swap_targets_dirty = {Color.WHITE: False, Color.BLACK: False}
-        self._integrated_jump_gen: Optional[Any] = None  # Assume type from context
+        self._integrated_jump_gen: Optional[Any] = None
         self._swap_targets = {Color.WHITE: set(), Color.BLACK: set()}
         self._swap_targets_dirty = {Color.WHITE: True, Color.BLACK: True}
         self._network_teleport_targets = {Color.WHITE: set(), Color.BLACK: set()}
         self._network_teleport_dirty = {Color.WHITE: True, Color.BLACK: True}
         self._reflecting_bishop_gen: Optional[Any] = None
         record_cache_creation(self, board)
-        self._board = board
         if board is not None:
             board.cache_manager = self
 
@@ -118,104 +124,123 @@ class OptimizedCacheManager:
         self.geomancy_cache = GeomancyCache(self)
         self.attacks_cache = AttacksCache(board)
 
-    # ------------------------------------------------------------------ #
-    #  Initialisation
-    # ------------------------------------------------------------------ #
     def initialise(self, current: Color) -> None:
-        self._current_zobrist_hash = compute_zobrist(self.board, current)  # Avoid redundant compute if same
+        """
+        Initialize cache manager - Zobrist computed ONCE here.
+        """
+        # ✅ Compute Zobrist ONCE during initialization
+        self._current_zobrist_hash = compute_zobrist(self.board, current)
+
+        # Create move cache (which will use the already-computed hash)
         self._move_cache = create_optimized_move_cache(self.board, current, self)
 
     # ------------------------------------------------------------------ #
-    #  Move application / undo
+    #  Consolidated Move application / undo (centralized incremental updates)
     # ------------------------------------------------------------------ #
-    def apply_move(self, mv: Move, *args, **kwargs) -> bool:
-        """Apply the move *and* resolve friendly auras atomically."""
-        from_coord = mv.from_coord
-        to_coord = mv.to_coord
+    def apply_move(self, mv: Move, mover: Color) -> bool:
+        """Apply move with proper cache synchronization."""
+        # Add generation check at start
+        board_gen = getattr(self.board, 'generation', 0)
+        if (hasattr(self._move_cache, '_gen') and
+            self._move_cache._gen != board_gen):
+            self._move_cache._needs_rebuild = True
+        from_piece = self.occupancy.get(mv.from_coord)
+        captured_piece = self.occupancy.get(mv.to_coord) if getattr(mv, 'is_capture', False) else None
 
-        mover = args[0] if args else self._current
-        piece = self.occupancy.get(from_coord)
-        if piece is None:
-            raise CacheDesyncError(f"apply_move: empty from-square {from_coord}")
+        if from_piece is None:
+            return False
 
-        captured = self.occupancy.get(to_coord) if mv.is_capture else None
+        # 1. Apply the move to the board
+        success = self.board.apply_move(mv)
+        if not success:
+            return False
 
-        start = time.perf_counter()
-        affected: set[Tuple[int, int, int]] = {from_coord, to_coord}
+        # 2. Incremental Zobrist update
+        new_hash = self._current_zobrist_hash
+        # Remove from from_coord
+        new_hash ^= _PIECE_KEYS[(from_piece.ptype, from_piece.color, mv.from_coord)]
+        # Remove captured if any
+        if captured_piece is not None:
+            new_hash ^= _PIECE_KEYS[(captured_piece.ptype, captured_piece.color, mv.to_coord)]
+        # Add at to_coord, handling promotion
+        add_ptype = getattr(mv, 'promotion_type', from_piece.ptype) if getattr(mv, 'is_promotion', False) else from_piece.ptype
+        new_hash ^= _PIECE_KEYS[(add_ptype, from_piece.color, mv.to_coord)]
+        # Flip side-to-move
+        new_hash ^= _SIDE_KEY
+        self.sync_zobrist(new_hash)
+
+        # 3. Incremental updates for all caches (occupancy already handled in board.apply_move)
+        # Aura update (buff/debuff/freeze/push/pull)
+        self.aura_cache.apply_move(mv, mover, self.board)
+
+        # Trailblaze update
+        self.trailblaze_cache.apply_move(mv, mover, self.halfmove_clock, self.board)
+
+        # Geomancy update
+        self.geomancy_cache.apply_move(mv, mover, self.halfmove_clock, self.board)
+
+        # Attacks update
+        self.attacks_cache.apply_move(mv, mover, self.board)
+
+        # Move cache update
+        self._move_cache.apply_move(mv, mover)
+
+        # 4. Other post-move logic (e.g., effect resolutions, counters)
+        self._move_counter += 1
+        self._effect_update_counter += 1
+        if self._effect_update_counter >= self._effect_update_interval:
+            # Trigger periodic effect updates if needed
+            self._effect_update_counter = 0
+
+        # 5. Invalidate/rebuild flags if necessary
+        self._needs_rebuild = False
+
+        if hasattr(self._move_cache, '_gen'):
+            self._move_cache._gen = getattr(self.board, 'generation', board_gen + 1)
+
+        return True
+
+    def undo_move(self, mv: Move, mover: Color) -> bool:
+        """Undo the move on the board and incrementally update all caches atomically."""
+        # Instead of calling non-existent unmake_move, use board tensor restoration
+        # Store current state before making changes
+        original_tensor = self.board.tensor().clone()
 
         try:
-            # 1️⃣ Standard move ------------------------------------------------
-            self._fast_occupancy_update(mv, piece, mover)
-            self.board.apply_move(mv)
+            # 1. Restore pieces to original positions
+            moving_piece = self.occupancy.get(mv.to_coord)
+            if moving_piece is None:
+                return False
 
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, piece, captured, cache=self
-            )
+            # Move piece back to from_coord
+            self.board.set_piece(mv.from_coord, moving_piece)
+            self.board.set_piece(mv.to_coord, None)
 
-            # 2️⃣ === ATOMIC AURA PHASE ====================================
-            # 2-a Freeze - ANY move triggers freeze re-emission
-            self.aura_cache.apply_freeze_effects(mover, self.board)
-            frozen_squares = self.aura_cache.get_frozen_squares(mover.opposite())
-            affected.update(frozen_squares)
+            # 2. Restore captured piece if any
+            if getattr(mv, 'is_capture', False) and hasattr(mv, 'captured_piece'):
+                self.board.set_piece(mv.to_coord, mv.captured_piece)
 
-            # 2-b Black-hole suck
-            dirty_squares = self.aura_cache.apply_pull_effects(mover, self.board)
-            if dirty_squares:
-                self.occupancy.batch_set_positions(
-                    [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
-                )
-                affected.update(dirty_squares)
-            self.aura_cache.apply_move(None, mover, self.board)
+            # 3. Incremental undos for all caches (reverse order)
+            self._move_cache.undo_move(mv, mover)
+            self.attacks_cache.undo_move(mv, mover, self.board)
+            self.geomancy_cache.undo_move(mv, mover, self.halfmove_clock - 1, self.board)
+            self.trailblaze_cache.undo_move(mv, mover, self.halfmove_clock - 1, self.board)
+            self.aura_cache.undo_move(mv, mover, self.board)
 
-            # 2-c White-hole push
-            dirty_squares = self.aura_cache.apply_push_effects(mover, self.board)
-            if dirty_squares:
-                self.occupancy.batch_set_positions(
-                    [(sq, self.occupancy.get(sq)) for sq in dirty_squares]
-                )
-                affected.update(dirty_squares)
-            self.aura_cache.apply_move(None, mover, self.board)
+            # 4. Restore Zobrist hash
+            self.sync_zobrist(compute_zobrist(self.board, mover))
 
-            # 3️⃣ Geomancy blocking
-            current_ply = self.halfmove_clock
-            self.geomancy_cache.apply_move(mv, mover, current_ply, self.board)
-
-            # 4️⃣ Trailblaze
-            if piece.ptype == PieceType.TRAILBLAZER and mv.slid_squares:
-                self.trailblaze_cache.mark_trail(from_coord, mv.slid_squares)
-            self.trailblaze_cache.apply_move(mv, mover, self.board)
-
-            # 5️⃣ Incremental cache updates
-            from_piece = piece
-            to_piece = self.occupancy.get(to_coord)
-            captured_piece = captured
-            affected_caches = self.get_affected_caches(mv, mover, from_piece, to_piece, captured_piece)
-            self.update_effect_caches(mv, mover, affected_caches, current_ply)
-
-            # 6️⃣ Attacks cache invalidation
-            self.attacks_cache.invalidate_for_color(mover)
-            self.attacks_cache.invalidate_for_color(mover.opposite())
-            self.move._lazy_revalidate()
+            # 5. Update counters
+            self._move_counter -= 1
+            self._effect_update_counter -= 1
 
             return True
 
         except Exception as e:
-            print(f"Error in apply_move: {e}")
+            # Restore original tensor if anything fails
+            self.board._tensor = original_tensor
+            print(f"[ERROR] Undo move failed: {e}")
             return False
-
-    def undo_move(self, mv: Move, *args, **kwargs) -> None:
-        mover = args[0] if args else self._current
-        current_ply = self.halfmove_clock
-        affected_caches = self.get_affected_caches_for_undo(mv, mover)
-        for cache_name in affected_caches:
-            cache = self._get_cache_by_name(cache_name)
-            if hasattr(cache, 'undo_move'):
-                cache.undo_move(mv, mover, current_ply, self.board)
-
-        # Undo auras, etc.
-        self.aura_cache.undo_pull_effects(mover, self.board)  # Assuming undo methods exist
-        self.aura_cache.undo_push_effects(mover, self.board)
-        self.aura_cache.undo_freeze_effects(mover, self.board)
 
     def _get_cache_by_name(self, name: str):
         if name == "aura":
@@ -226,6 +251,10 @@ class OptimizedCacheManager:
             return self.geomancy_cache
         elif name == "attacks":
             return self.attacks_cache
+        elif name == "occupancy":
+            return self.occupancy_cache
+        elif name == "moves":
+            return self.move_cache
         return None
 
     def get_affected_caches(
@@ -354,9 +383,9 @@ class OptimizedCacheManager:
 
         self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
 
-        self.move.invalidate_attacked_squares(controller)
-        self.move.invalidate_attacked_squares(controller.opposite())
-        self.move._lazy_revalidate()
+        self._move_cache.invalidate_attacked_squares(controller)
+        self._move_cache.invalidate_attacked_squares(controller.opposite())
+        self._move_cache._lazy_revalidate()
 
     def apply_whitehole_pushes(self, controller: Color) -> None:
         dirty_squares = self.aura_cache.apply_push_effects(controller, self.board)
@@ -367,9 +396,9 @@ class OptimizedCacheManager:
 
         self.aura_cache.apply_move(None, controller, self.halfmove_clock, self.board)
 
-        self.move.invalidate_attacked_squares(controller)
-        self.move.invalidate_attacked_squares(controller.opposite())
-        self.move._lazy_revalidate()
+        self._move_cache.invalidate_attacked_squares(controller)
+        self._move_cache.invalidate_attacked_squares(controller.opposite())
+        self._move_cache._lazy_revalidate()
 
     def apply_freeze_effects(self, controller: Color) -> None:
         """Emit freeze auras for <controller> and update occupancy."""
@@ -432,17 +461,6 @@ class OptimizedCacheManager:
     def _log_cache_stats(self, context: str) -> None:
         stats = self.get_cache_stats()
         suggestions = self.get_optimization_suggestions()
-
-    # ---------- property shims for backward compatibility ----------
-    @property
-    def cache(self):
-        """Legacy shim: some code expects game.cache.piece_cache"""
-        return self
-
-    @property
-    def piece_cache(self):
-        """Legacy shim: old name for occupancy cache"""
-        return self.occupancy
 
     @property
     def move(self) -> OptimizedMoveCache:
@@ -542,6 +560,30 @@ class OptimizedCacheManager:
     def batch_set_pieces(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
         """Batch update multiple positions."""
         self.occupancy.batch_set_positions(updates)
+
+    def get_occupancy_array(self) -> np.ndarray:
+        """Get occupancy array for movement generators - public API."""
+        return self.occupancy._occ.copy()
+
+    def get_occupancy_array_readonly(self) -> np.ndarray:
+        """Get readonly occupancy array for performance-critical operations."""
+        return self.occupancy._occ
+
+    def get_piece_type_array(self) -> np.ndarray:
+            """Get piece type array for movement generators - public API."""
+            return self.occupancy._ptype.copy()
+
+        def update_zobrist_for_move(self, mv: Move, from_piece: Piece, captured_piece: Optional[Piece] = None) -> None:
+            """Incrementally update Zobrist hash for a move using the ZobristHash instance."""
+            self._current_zobrist_hash = self._zobrist.update_hash_move(
+                self._current_zobrist_hash, mv, from_piece, captured_piece
+            )
+
+        def update_zobrist_for_piece_change(self, coord: Coord, old_piece: Optional[Piece], new_piece: Optional[Piece]) -> None:
+            """Incrementally update Zobrist hash for a piece placement change."""
+            self._current_zobrist_hash = self._zobrist.update_hash_piece_placement(
+                self._current_zobrist_hash, coord, old_piece, new_piece
+            )
 # =============================================================================
 #  Factory
 # =============================================================================
@@ -551,7 +593,6 @@ def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
     cm = OptimizedCacheManager(board, current)
     cm.initialise(current)
     board.cache_manager = cm
-    cm._current_zobrist_hash = compute_zobrist(board, current)  # ← Move here, after attachment
     return cm
 # =============================================================================
 #  Legacy aliases (zero-cost)

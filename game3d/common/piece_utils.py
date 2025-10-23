@@ -15,6 +15,7 @@ from numba import njit
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.board.board import Board
+    from game3d.cache.manager import OptimizedCacheManager
 
 @njit(cache=True)
 def color_to_code(color: "Color") -> int:
@@ -23,7 +24,7 @@ def color_to_code(color: "Color") -> int:
 
 def find_king(state: "GameState", color: Color) -> Optional[Coord]:
     """Vectorised, lock-free search for the king of *color*."""
-    for coord, piece in state.cache.piece_cache.iter_color(color):
+    for coord, piece in state.cache_manager.get_pieces_of_color(color):
         if piece.ptype == PieceType.KING:
             return coord
     return None
@@ -37,7 +38,7 @@ def infer_piece_from_cache(
     Infer piece from cache, fallback to given type.
     FIXED: Handles Piece objects correctly.
     """
-    piece = cache_manager.occupancy.get(coord)
+    piece = cache_manager.get_piece(coord)
     if piece:
         return piece
     # Fallback - need to know the color
@@ -45,54 +46,37 @@ def infer_piece_from_cache(
     return Piece(Color.WHITE, fallback_type)
 
 def get_player_pieces(state: GameState, color: Color) -> List[Tuple[Coord, Piece]]:
+    """Get all pieces of a given color using standardized cache access."""
     result = []
-    # BETTER - use piece_cache property
-    for coord, piece_data in state.cache.piece_cache.iter_color(color):
-        if not isinstance(piece_data, Piece):
-            continue
-        result.append((coord, piece_data))
+    for coord, piece in state.cache_manager.get_pieces_of_color(color):
+        result.append((coord, piece))
     return result
 
-def iterate_occupied(board: "Board", color: Optional[Color] = None):
-    # print(f"[ITER-ENTER] cache_manager exists: {board.cache_manager is not None}")
-    # if board.cache_manager:  # fast path
-    #     print("[ITER-ENTER] taking fast path")
-    #     if color is None:
-    #         for c in [Color.WHITE, Color.BLACK]:
-    #             print(f"[ITER] iter_color {c}:")
-    #             for coord, piece_data in board.cache_manager.occupancy.iter_color(c):
-    #                 print(f"[ITER]   got {coord} -> {piece_data} (type {type(piece_data)})")
-    if board.cache_manager:  # fast path
+def iterate_occupied(board: "Board", color: Optional[Color] = None, cache_manager: Optional["OptimizedCacheManager"] = None):
+    """
+    Iterate through occupied squares with standardized cache access.
+
+    Args:
+        board: The board instance
+        color: Optional color filter
+        cache_manager: Optional cache manager (uses board.cache_manager if not provided)
+    """
+    if cache_manager is None:
+        cache_manager = board.cache_manager
+
+    # Fast path - cache is available
+    if cache_manager:
         if color is None:
+            # Iterate all pieces of both colors
             for c in [Color.WHITE, Color.BLACK]:
-                for coord, piece_data in board.cache_manager.occupancy.iter_color(c):
-                    # piece_data should already be a Piece object from iter_color
-                    if not isinstance(piece_data, Piece):
-                        # Defensive fallback
-                        if isinstance(piece_data, PieceType):
-                            piece = Piece(c, piece_data)
-                        else:
-                            print(f"[ERROR] Unexpected data type in iterate_occupied: {type(piece_data)}")
-                            continue
-                    else:
-                        piece = piece_data
+                for coord, piece in cache_manager.get_pieces_of_color(c):
                     yield coord, piece
         else:
-            for coord, piece_data in board.cache_manager.occupancy.iter_color(color):
-                # piece_data should already be a Piece object
-                if not isinstance(piece_data, Piece):
-                    # Defensive fallback
-                    if isinstance(piece_data, PieceType):
-                        piece = Piece(color, piece_data)
-                    else:
-                        print(f"[ERROR] Unexpected data type in iterate_occupied: {type(piece_data)}")
-                        continue
-                else:
-                    piece = piece_data
-
-                if piece and (color is None or piece.color == color):
-                    yield coord, piece
-    else:  # slow path, tensor scan
+            # Iterate pieces of specific color
+            for coord, piece in cache_manager.get_pieces_of_color(color):
+                yield coord, piece
+    else:
+        # Slow path - tensor scan (fallback)
         occ = board._tensor[PIECE_SLICE].sum(dim=0) > 0
         indices = torch.nonzero(occ, as_tuple=False)
         for z, y, x in indices.tolist():
@@ -103,36 +87,42 @@ def iterate_occupied(board: "Board", color: Optional[Color] = None):
 def get_pieces_by_type(
     board: "Board",
     ptype: PieceType,
-    color: Optional[Color] = None
+    color: Optional[Color] = None,
+    cache_manager: Optional["OptimizedCacheManager"] = None
 ) -> List[Tuple[Coord, Piece]]:
     """
     Return every (coord, piece) on *board* whose type == *ptype*
     (and optionally colour == *color*).
-    Uses the occupancy cache if already available, otherwise falls back
-    to a direct tensor scan.
-    FIXED: Properly handles Piece objects from iter_color.
-    """
-    # Fast path – cache is ready
-    if board.cache_manager is not None:
-        result = []
-        for sq, piece_data in board.cache_manager.occupancy.iter_color(color):
-            # piece_data is a Piece object from iter_color
-            if not isinstance(piece_data, Piece):
-                # Defensive fallback - should not happen
-                if isinstance(piece_data, PieceType):
-                    if piece_data == ptype:
-                        result.append((sq, Piece(color, ptype)))
-                continue
 
-            # Normal case: piece_data is a Piece
-            if piece_data.ptype == ptype:
-                result.append((sq, piece_data))
+    Uses the provided cache_manager or board.cache_manager if available,
+    otherwise falls back to a direct tensor scan.
+
+    Args:
+        board: The board instance
+        ptype: The piece type to search for
+        color: Optional color filter
+        cache_manager: Optional cache manager (uses board.cache_manager if not provided)
+    """
+    if cache_manager is None:
+        cache_manager = getattr(board, 'cache_manager', None)
+
+    # Fast path – cache is available
+    if cache_manager is not None:
+        result = []
+        # If color is specified, only search that color, otherwise search both
+        colors_to_search = [color] if color is not None else [Color.WHITE, Color.BLACK]
+
+        for search_color in colors_to_search:
+            for coord, piece in cache_manager.get_pieces_of_color(search_color):
+                if piece.ptype == ptype:
+                    result.append((coord, piece))
         return result
 
-    # Slow path – cache not yet attached (e.g. during initial aura rebuild)
+    # Slow path – cache not yet attached (e.g., during initial aura rebuild)
+    # Note: You'll need to define N_PIECE_TYPES or adjust this fallback
     tensor = board._tensor
     piece_planes = tensor[PIECE_SLICE]
-    col_plane = tensor[N_PIECE_TYPES]
+    col_plane = tensor[80]  # Assuming color plane is at index 80 (adjust as needed)
 
     wanted_type = ptype.value
     wanted_color = 1 if color is Color.WHITE else 0
@@ -147,3 +137,21 @@ def get_pieces_by_type(
          Piece(color if color is not None else Color.WHITE, ptype))
         for z, y, x in indices.tolist()
     ]
+
+def get_pieces_by_type_from_cache(
+    cache_manager: "OptimizedCacheManager",
+    ptype: PieceType,
+    color: Color
+) -> List[Tuple[Coord, Piece]]:
+    """
+    Direct cache-based lookup for pieces by type and color.
+    More efficient when you already have the cache manager.
+    """
+    result = []
+    for coord, piece in cache_manager.get_pieces_of_color(color):
+        if piece.ptype == ptype:
+            result.append((coord, piece))
+    return result
+
+# Backward compatibility alias
+list_occupied = iterate_occupied

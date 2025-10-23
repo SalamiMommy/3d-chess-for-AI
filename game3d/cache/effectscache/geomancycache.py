@@ -5,7 +5,7 @@ from typing import Dict, Tuple, Optional, TYPE_CHECKING
 from game3d.common.enums import Color
 from game3d.pieces.pieces.geomancer import block_candidates
 from game3d.movement.movepiece import Move
-
+from game3d.common.coord_utils import Coord
 if TYPE_CHECKING:
     from game3d.board.board import Board
 

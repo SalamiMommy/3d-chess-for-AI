@@ -10,7 +10,7 @@ from collections import OrderedDict
 from game3d.cache.caches.transposition import TranspositionTable, TTEntry, CompactMove
 from game3d.board.symmetry import SymmetryManager, RotationType
 from game3d.common.enums import Color
-from game3d.game.zobrist import compute_zobrist
+from game3d.cache.caches.zobrist import compute_zobrist
 
 @dataclass
 class SymmetryStats:

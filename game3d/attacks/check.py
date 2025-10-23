@@ -82,9 +82,6 @@ def _get_attacked_squares_from_move_cache(
     cache=None
 ) -> Set[Tuple[int, int, int]]:
     """Get all squares attacked by attacker_color using move cache through manager."""
-    if cache is None:
-        cache = _get_cache_from_board(board)
-
     if cache and hasattr(cache, 'move'):
         # CORRECTED: Access through manager
         return cache.move.get_attacked_squares(attacker_color)
@@ -107,7 +104,7 @@ def _calculate_attacked_squares_fallback(
         return attacked
 
     # CORRECTED: Access through manager
-    for coord, piece in cache.piece_cache.iter_color(attacker_color):
+    for coord, piece in cache.occupancy.iter_color(attacker_color):
         moves = _generate_piece_moves(board, coord, piece, cache)
         for move in moves:
             attacked.add(move.to_coord)

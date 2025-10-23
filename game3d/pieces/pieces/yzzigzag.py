@@ -11,9 +11,11 @@ import numpy as np
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movetypes.slidermovement import generate_slider_moves_kernel
+from game3d.movement.slidermovement import generate_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS
 
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 
 # ----------------------------------------------------------
 # 1.  Pre-computed zig-zag vectors (YZ-plane)
@@ -40,28 +42,24 @@ YZ_ZIGZAG_DIRECTIONS = _build_yz_zigzag_vectors()
 # ----------------------------------------------------------
 # 2.  Public generator
 # ----------------------------------------------------------
-def generate_yz_zigzag_moves(cache: CacheManager,
+def generate_yz_zigzag_moves(cache_manager: 'OptimizedCacheManager',
                              color: Color,
                              x: int, y: int, z: int) -> List[Move]:
     """Generate YZ-zig-zag moves using only the slider kernel."""
-    raw = generate_slider_moves_kernel(
+    return generate_moves(
+        piece_type="yzzigzag",
         pos=(x, y, z),
-        directions=YZ_ZIGZAG_DIRECTIONS,
-        occupancy=cache.occupancy._occ,  # ✅ Fixed
         color=color.value,
-        max_distance=16
+        max_distance=16,
+        directions=YZ_ZIGZAG_DIRECTIONS,
+        cache_manager=cache_manager
     )
-    return [
-        Move(from_coord=(x, y, z), to_coord=(nx, ny, nz),
-             flags=MOVE_FLAGS['CAPTURE'] if is_cap else 0)
-        for nx, ny, nz, is_cap in raw
-    ]
 
 # ----------------------------------------------------------
 # 3.  Dispatcher
 # ----------------------------------------------------------
 @register(PieceType.YZZIGZAG)
 def yz_zigzag_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
-    return generate_yz_zigzag_moves(state.cache, state.color, x, y, z)
+    return generate_yz_zigzag_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ['generate_yz_zigzag_moves']

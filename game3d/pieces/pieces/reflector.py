@@ -8,10 +8,14 @@ from numba import njit
 from typing import List, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds
 from game3d.movement.movepiece import convert_legacy_move_args
+from game3d.movement.cache_utils import ensure_int_coords
 
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
+    from game3d.cache.manager import OptimizedCacheManager
 
 # ----------------------------------------------------------
 # 8 pure-diagonal unit directions
@@ -81,18 +85,21 @@ def _bounce_ray(
 class _ReflectingBishopGen:
     __slots__ = ("cache", "_buf")
 
-    def __init__(self, cache: OptimizedCacheManager):
+    def __init__(self, cache: 'OptimizedCacheManager'):
         self.cache = cache
         self._buf = np.empty(256, dtype=np.uint64)
 
     def generate(self, color: Color, pos: tuple[int, int, int]) -> List[Move]:
-        occ = self.cache.occupancy._occ.flatten()  # Use updated occupancy logic: flatten the 3D _occ array
+        # FIXED: Use proper occupancy array access
+        occ_array = self.cache_manager.occupancy._occ
+        # Ensure the array is flattened correctly for the numba function
+        occ_flat = occ_array.reshape(-1)  # This should give us 729 elements
         x, y, z = pos
         color_code = 1 if color == Color.WHITE else 2
         moves: List[Move] = []
 
         for dx, dy, dz in _BISHOP_DIRS:
-            n = _bounce_ray(occ, x, y, z, dx, dy, dz, 3, self._buf, color_code)
+            n = _bounce_ray(occ_flat, x, y, z, dx, dy, dz, 3, self._buf, color_code)
             for i in range(n):
                 packed = self._buf[i]
                 fr_idx = (packed >> 21) & 0x3FFFF
@@ -110,29 +117,31 @@ class _ReflectingBishopGen:
         return moves
 
 # ----------------------------------------------------------
-# Singleton helper
+# Singleton helper - FIXED: Don't modify cache object
 # ----------------------------------------------------------
-def _get_gen(cache: OptimizedCacheManager) -> _ReflectingBishopGen:
-    # double-checked pattern
-    gen = cache._reflecting_bishop_gen
-    if gen is None:
-        gen = _ReflectingBishopGen(cache)
-        cache._reflecting_bishop_gen = gen
-    return gen
+_reflecting_bishop_gens = {}  # cache_id -> generator
+
+def _get_gen(cache: 'OptimizedCacheManager') -> _ReflectingBishopGen:
+    cache_id = id(cache)
+    if cache_id not in _reflecting_bishop_gens:
+        _reflecting_bishop_gens[cache_id] = _ReflectingBishopGen(cache)
+    return _reflecting_bishop_gens[cache_id]
+
 # ----------------------------------------------------------
 # Public API + dispatcher
 # ----------------------------------------------------------
 def generate_reflecting_bishop_moves(
-    cache: OptimizedCacheManager,
+    cache: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return _get_gen(cache).generate(color, (x, y, z))
 
 @register(PieceType.REFLECTOR)
 def reflector_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     gen = _get_gen(state.cache)
-    assert gen is not None, "Reflector generator is None – cache helper broken?"
     return gen.generate(state.color, (x, y, z))
 
 __all__ = ["generate_reflecting_bishop_moves"]

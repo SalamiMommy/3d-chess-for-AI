@@ -1,4 +1,4 @@
-# movecache.py
+# movecache.py - FIXED VERSION
 from __future__ import annotations
 import random
 import time
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import numpy as np
 
 if TYPE_CHECKING:
-    from game3d.cache.manager import get_cache_manager
     from game3d.board.board import Board
 
 from game3d.common.enums import Color, PieceType
@@ -16,11 +15,12 @@ from game3d.pieces.piece import Piece
 from game3d.common.coord_utils import in_bounds
 from game3d.common.piece_utils import get_player_pieces, infer_piece_from_cache
 from game3d.common.debug_utils import fallback_mode
-from game3d.game.zobrist import compute_zobrist, ZobristHash
+from game3d.cache.caches.zobrist import compute_zobrist, ZobristHash
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 from game3d.cache.caches.transposition import TranspositionTable
 from game3d.common.move_utils import  filter_none_moves
+from game3d.common.coord_utils import Coord
 
 # ------------------------------------------------------------------
 # Compact move representation for TT entries
@@ -75,14 +75,14 @@ class OptimizedMoveCache:
         "_main_tt_size_mb", "_sym_tt_size_mb",
         "_needs_rebuild", "_attacked_squares", "_attacked_squares_valid",
         "_cache_manager", "_dirty_flags", "_invalid_squares", "_invalid_attacks",
-        "_gen", "_frozen_bitmap", "_debuffed_bitmap"  # NEW: Precomputed bitmaps
+        "_gen"
     )
 
     def __init__(
         self,
         board: "Board",
         current: Color,
-        cache_manager: "CacheManager",
+        cache_manager: "OptimizedCacheManager",
     ) -> None:
         self._current = current
         self._cache = cache_manager
@@ -93,7 +93,7 @@ class OptimizedMoveCache:
         }
 
         self._zobrist = ZobristHash()
-        self._zobrist_hash = compute_zobrist(board, current)
+        self._zobrist_hash = cache_manager._current_zobrist_hash
         main_mb = cache_manager.config.main_tt_size_mb
         sym_mb = cache_manager.config.sym_tt_size_mb
 
@@ -109,7 +109,6 @@ class OptimizedMoveCache:
         self._main_tt_size_mb = cache_manager.config.main_tt_size_mb
         self._sym_tt_size_mb = cache_manager.config.sym_tt_size_mb
 
-        self._zobrist_hash = compute_zobrist(board, current)
         self._age_counter = 0
         self._simple_move_cache: Dict[int, List[Move]] = {}
 
@@ -176,44 +175,50 @@ class OptimizedMoveCache:
     # Move application / undo
     # ------------------------------------------------------------------
     def apply_move(self, mv: Move, color: Color) -> None:
-        """
-        Incrementally apply a move to the cache and regenerate only the
-        squares that actually changed.  The board tensor and occupancy
-        cache are updated **before** any move generation is triggered.
-        """
+        """Incremental move application with proper cache invalidation."""
         piece = self._cache_manager.occupancy.get(mv.from_coord)
         if piece is None:
             self._needs_rebuild = True
             return
 
+        # Check generation before proceeding
+        board_gen = getattr(self._cache_manager.board, 'generation', 0)
+        if self._gen != board_gen:
+            self._needs_rebuild = True
+            self._gen = board_gen
+
         captured_piece = (
             self._cache_manager.occupancy.get(mv.to_coord) if mv.is_capture else None
         )
 
-        # Update Zobrist hash **before** we mutate the position
+        # Update Zobrist hash
         self._zobrist_hash = self._zobrist.update_hash_move(
             self._zobrist_hash, mv, piece, captured_piece
         )
 
-        # Mutate the **authoritative** board tensor first
+        # Mutate board tensor first
         self._cache_manager.board.apply_move(mv)
 
-        # Update the occupancy cache to stay in sync
+        # Update occupancy cache
         self._cache_manager.set_piece(mv.from_coord, None)
         promoted = (
             Piece(color, PieceType(mv.promotion_ptype)) if getattr(mv, "is_promotion", False) else piece
         )
         self._cache_manager.set_piece(mv.to_coord, promoted)
 
-        # Mark the changed squares (and attacked maps) as dirty
-        self.invalidate_square(mv.from_coord)
-        self.invalidate_square(mv.to_coord)
+        # Mark changed squares as dirty with proper bounds checking
+        if in_bounds(mv.from_coord):
+            self.invalidate_square(mv.from_coord)
+        if in_bounds(mv.to_coord):
+            self.invalidate_square(mv.to_coord)
+
         self.invalidate_attacked_squares(color)
         self.invalidate_attacked_squares(color.opposite())
 
-        # House-keeping
+        # Update generation and housekeeping
         self._current = color.opposite()
         self._age_counter += 1
+        self._gen = getattr(self._cache_manager.board, 'generation', self._gen + 1)
         self._needs_rebuild = False
 
     def undo_move(self, mv: Move, color: Color) -> None:
@@ -285,8 +290,11 @@ class OptimizedMoveCache:
 
     def _batch_update_pieces(self, affected_squares: Set[Tuple[int,int,int]], color: Color) -> None:
         print("_batch_update_pieces: needs_rebuild =", self._needs_rebuild)
+
+        # FIXED: Use self._cache_manager.occupancy instead of undefined 'occupancy'
+        occupancy_cache = self._cache_manager.occupancy
         print('[DEBUG] gen board', self._board.generation,
-            'gen occ', occupancy._gen,
+            'gen occ', occupancy_cache._gen,
             'piece@from', self._cache_manager.occupancy.get(coord),
             'needs_rebuild', self._needs_rebuild)
 
@@ -478,20 +486,6 @@ class OptimizedMoveCache:
                 cache=self._cache_manager
             )
 
-            # ---------- 1.  rebuild frozen / debuffed bitmaps ----------
-            player_pieces = list(get_player_pieces(tmp_state, self._current))
-            self._frozen_bitmap.fill(False)
-            self._debuffed_bitmap.fill(False)
-            for coord, piece in player_pieces:
-                x, y, z = coord
-                # guard against bad coordinates (paranoid)
-                if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):
-                    continue
-                if self._cache_manager.is_frozen(coord, self._current):
-                    self._frozen_bitmap[z, y, x] = True
-                if self._cache_manager.is_movement_debuffed(coord, self._current):
-                    self._debuffed_bitmap[z, y, x] = True
-
             # ---------- 2.  regenerate moves for dirty squares ----------
             for coord in list(self._invalid_squares):
                 x, y, z = coord
@@ -500,7 +494,7 @@ class OptimizedMoveCache:
                     continue
 
                 piece = self._cache_manager.occupancy.get(coord)
-                if piece and piece.color == self._current and not self._frozen_bitmap[z, y, x]:
+                if piece and piece.color == self._current and not self._cache_manager.is_frozen(coord, self._current):  # UPDATED: Direct query here (replaces bitmap check)
                     self._legal_per_piece[coord] = generate_legal_moves_for_piece(tmp_state, coord)
                 else:
                     self._legal_per_piece.pop(coord, None)
@@ -527,21 +521,46 @@ class OptimizedMoveCache:
             self._invalid_attacks.clear()
             raise
 
-    def is_frozen(self, coord: Coord) -> bool:
-        """Check if a coordinate is frozen."""
-        x, y, z = coord
-        return self._frozen_bitmap[z, y, x]
+    def invalidate_affected_squares(self, mv: Move) -> None:
+        """Fine-grained invalidation of only affected squares."""
+        affected = {mv.from_coord, mv.to_coord}
 
-    def is_debuffed(self, coord: Coord) -> bool:
-        """Check if a coordinate is debuffed."""
-        x, y, z = coord
-        return self._debuffed_bitmap[z, y, x]
+        # Add attacked squares in move direction for better cache efficiency
+        from game3d.common.coord_utils import generate_ray
+        direction = tuple(b - a for a, b in zip(mv.from_coord, mv.to_coord))
+        if any(d != 0 for d in direction):
+            # Normalize direction
+            max_d = max(abs(d) for d in direction)
+            unit_dir = tuple(d // max_d for d in direction)
+
+            # Invalidate squares along attack ray (limited range)
+            ray = generate_ray(mv.to_coord, unit_dir, max_steps=3)
+            affected.update(ray)
+
+        self.invalidate_squares(affected)
+
+    def invalidate_piece_and_attackers(self, coord: Tuple[int, int, int]) -> None:
+        """Invalidate a piece and all pieces that could attack it."""
+        affected = {coord}
+
+        # Add pieces that could attack this square
+        from game3d.common.coord_utils import get_aura_squares
+        aura = get_aura_squares(coord, radius=3)  # Extended range for knights, etc.
+
+        for attack_sq in aura:
+            piece = self._cache_manager.occupancy.get(attack_sq)
+            if piece and piece.color != self._current:
+                affected.add(attack_sq)
+
+        self.invalidate_squares(affected)
+
+
 # ==============================================================================
 # FACTORY
 # ==============================================================================
 def create_optimized_move_cache(
     board: "Board",
     current: Color,
-    cache_manager: "CacheManager",
+    cache_manager: "OptimizedCacheManager",
 ) -> OptimizedMoveCache:
     return OptimizedMoveCache(board, current, cache_manager)

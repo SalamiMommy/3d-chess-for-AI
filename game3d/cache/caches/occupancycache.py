@@ -1,7 +1,7 @@
-# occupancycache.py - CORRECTED VERSION
+# occupancycache.py - FIXED VERSION (Consistent coordinate handling)
 from __future__ import annotations
 import numpy as np
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Iterator
 import torch
 
 from game3d.pieces.piece import Piece
@@ -54,7 +54,11 @@ class OccupancyCache:
         if coords.size == 0:
             return np.array([], dtype=bool)
 
-        z, y, x = coords.T
+        # FIXED: Consistent coordinate handling - expect (x,y,z) input
+        if coords.shape[1] != 3:
+            raise ValueError(f"Expected coords with shape (N,3), got {coords.shape}")
+
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         x, y, z = clip_coords(x, y, z)  # UPDATED: Use common.py
         return self._occ[z, y, x] != 0
 
@@ -75,6 +79,9 @@ class OccupancyCache:
 
     def get(self, coord: Coord) -> Optional[Piece]:
         """Get piece - LOCK-FREE cache hit, lock only on miss."""
+        # FIXED: Consistent coordinate handling
+        x, y, z = coord  # Expect (x,y,z)
+
         # Early exit for OOB coordinates (defensive)
         if not in_bounds(coord):
             # Optionally cache None for this invalid coord (rare, but prevents repeated checks)
@@ -88,7 +95,6 @@ class OccupancyCache:
             return cached
 
         # Cache miss - safe to index now
-        x, y, z = coord
         color_code = self._occ[z, y, x]
         if color_code == 0:
             # Cache the None result
@@ -115,6 +121,10 @@ class OccupancyCache:
         if coords.size == 0:
             return []
 
+        # FIXED: Consistent coordinate handling
+        if coords.shape[1] != 3:
+            raise ValueError(f"Expected coords with shape (N,3), got {coords.shape}")
+
         # Filter OOB upfront (fast vectorised reject)
         valid_mask = in_bounds_vectorised(coords)
         if not np.any(valid_mask):
@@ -122,8 +132,8 @@ class OccupancyCache:
 
         # Clamp the valid coordinates before indexing
         valid_coords = coords[valid_mask]
-        x_coords, y_coords, z_coords = valid_coords.T
-        x_coords, y_coords, z_coords = clip_coords(x_coords, y_coords, z_coords)  # UPDATED
+        x_coords, y_coords, z_coords = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x_coords, y_coords, z_coords = clip_coords(x_coords, y_coords, z_coords)
 
         color_codes = self._occ[z_coords, y_coords, x_coords]
         ptypes = self._ptype[z_coords, y_coords, x_coords]
@@ -144,7 +154,8 @@ class OccupancyCache:
 
     def get_type(self, coord: Coord, color: Color) -> Optional[PieceType]:
         """Get piece type - LOCK-FREE."""
-        # Implementation truncated in original; assuming standard get logic
+        # FIXED: Consistent coordinate handling
+        x, y, z = coord
         piece = self.get(coord)
         if piece and piece.color == color:
             return piece.ptype
@@ -195,13 +206,17 @@ class OccupancyCache:
                 self._priest_count[piece.color] += 1
 
     def set_position(self, coord: Coord, piece: Optional[Piece]) -> None:
-
+        # FIXED: Consistent coordinate handling
         x, y, z = coord
+
         if piece is None:
             self._occ[z, y, x] = 0
             self._ptype[z, y, x] = 0
             self._piece_cache.pop(coord, None)
-            # update priest count …
+            # update priest count for removed piece
+            old_piece = self._piece_cache.get(coord)
+            if old_piece and old_piece.ptype == PieceType.PRIEST:
+                self._priest_count[old_piece.color] -= 1
             return
 
         # >>>>>>  NEW: reject garbage colour  <<<<<<
@@ -209,6 +224,11 @@ class OccupancyCache:
             raise ValueError(
                 f"Illegal colour {piece.color!r} for piece {piece} at {coord}"
             )
+
+        # Update priest count for removed piece
+        old_piece = self._piece_cache.get(coord)
+        if old_piece and old_piece.ptype == PieceType.PRIEST:
+            self._priest_count[old_piece.color] -= 1
 
         colour_code = 1 if piece.color == Color.WHITE else 2
         self._occ[z, y, x] = colour_code
@@ -224,7 +244,6 @@ class OccupancyCache:
         """
         Batch update positions - INCREMENTAL with priest count fix.
         """
-
         # CORRECTION: Update priest counts before applying
         for coord, piece in updates:
             old_piece = self.get(coord)  # Cache hit, but lock held now
@@ -366,3 +385,78 @@ class OccupancyCache:
     def has_piece_type(self, ptype: PieceType, color: Color) -> bool:
         pieces = self._white_pieces if color == Color.WHITE else self._black_pieces
         return any(piece.ptype == ptype for piece in pieces.values())
+
+    # Add these methods to the OccupancyCache class
+
+    def batch_get_occupancy(self, coords: np.ndarray) -> np.ndarray:
+        """Vectorized occupancy check for multiple coordinates."""
+        if coords.size == 0:
+            return np.array([], dtype=bool)
+
+        # Consistent coordinate handling: expect (x,y,z)
+        if coords.shape[1] != 3:
+            raise ValueError(f"Expected coords with shape (N,3), got {coords.shape}")
+
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        x, y, z = self._clip_coords(x, y, z)
+        return self._occ[z, y, x] != 0
+
+    def batch_get_pieces_vectorized(self, coords: np.ndarray) -> List[Optional[Piece]]:
+        """Vectorized piece retrieval with caching."""
+        if coords.size == 0:
+            return []
+
+        # Check cache first
+        results = []
+        cache_misses = []
+        cache_indices = []
+
+        for i, coord in enumerate(coords):
+            coord_tuple = tuple(coord)
+            cached = self._piece_cache.get(coord_tuple)
+            if cached is not None:
+                results.append(cached)
+            else:
+                results.append(None)
+                cache_misses.append(coord)
+                cache_indices.append(i)
+
+        if not cache_misses:
+            return results
+
+        # Process cache misses in batch
+        miss_coords = np.array(cache_misses)
+        x, y, z = miss_coords[:, 0], miss_coords[:, 1], miss_coords[:, 2]
+        x, y, z = self._clip_coords(x, y, z)
+
+        color_codes = self._occ[z, y, x]
+        ptypes = self._ptype[z, y, x]
+
+        # Fill cache and results
+        for idx, (coord, color_code, ptype_val) in enumerate(zip(cache_misses, color_codes, ptypes)):
+            coord_tuple = tuple(coord)
+            if color_code == 0:
+                piece = None
+            else:
+                color = Color.WHITE if color_code == 1 else Color.BLACK
+                ptype = PieceType(ptype_val)
+                piece = Piece(color, ptype)
+
+            # Cache the result
+            if len(self._piece_cache) < self._piece_cache_max_size:
+                self._piece_cache[coord_tuple] = piece
+
+            # Update results
+            original_idx = cache_indices[idx]
+            results[original_idx] = piece
+
+        return results
+
+    def batch_is_occupied_vectorized(self, coords: np.ndarray) -> np.ndarray:
+        """Vectorized occupancy check returning numpy array."""
+        if coords.size == 0:
+            return np.array([], dtype=bool)
+
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        x, y, z = self._clip_coords(x, y, z)
+        return self._occ[z, y, x] != 0

@@ -1,7 +1,4 @@
-# pawn.py  – 3-D pawn (push + trigonal capture) + armour immunity
-#            Re-architected to mirror knight.py
 from __future__ import annotations
-
 import numpy as np
 from typing import List, TYPE_CHECKING
 
@@ -10,10 +7,10 @@ from game3d.common.coord_utils import in_bounds
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
-
 # ------------------------------------------------------------------
 # 1. Direction tables – tiny, fast to build
 # ------------------------------------------------------------------
@@ -46,16 +43,13 @@ def _is_promotion_rank(z: int, colour: Color) -> bool:
 # 4. Public generator – same signature as knight.py
 # ------------------------------------------------------------------
 def generate_pawn_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    """
-    Generate every legal pawn move for the piece located at (x,y,z)
-    on the supplied GameState.  Mirrors the knight architecture.
-    """
+    x, y, z = ensure_int_coords(x, y, z)
     cache   = state.cache
     colour  = state.color
     start   = (x, y, z)
 
-    # --- quick reject ------------------------------------------------
-    occ_piece = cache.occupancy.get(start)
+    # Use standardized cache access
+    occ_piece = get_occupancy_safe(cache, start)
     if occ_piece is None or occ_piece.color != colour or occ_piece.ptype != PieceType.PAWN:
         return []
 
@@ -94,7 +88,7 @@ def generate_pawn_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
         piece_name="pawn",
     )
     for mv in cap_moves:
-        victim = cache.occupancy.get(mv.to_coord)
+        victim = get_occupancy_safe(cache, mv.to_coord)  # Use standardized access
         if victim is None or victim.color == colour or _is_armoured(victim):
             continue
         flags = MOVE_FLAGS["CAPTURE"]
@@ -111,6 +105,7 @@ def generate_pawn_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
 # ------------------------------------------------------------------
 @register(PieceType.PAWN)
 def pawn_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_pawn_moves(state, x, y, z)
 
 __all__ = ["generate_pawn_moves"]

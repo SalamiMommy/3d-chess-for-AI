@@ -1,8 +1,5 @@
 """
 Face-Cone-Slider — 6 conical rays (consolidated).
-Exports:
-  generate_face_cone_slider_moves(cache, color, x, y, z) -> list[Move]
-  (decorated) facecone_dispatcher(state, x, y, z) -> list[Move]
 """
 from __future__ import annotations
 
@@ -14,43 +11,68 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import generate_moves
 from game3d.movement.movepiece import Move
+from game3d.movement.cache_utils import ensure_int_coords
+
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
 
 def _cone_dirs() -> np.ndarray:
+    """Optimized cone direction generation."""
     dirs = set()
-    for dx in range(-8, 9):
+    # Generate for each of the 6 cone directions more efficiently
+    cone_axes = [
+        (1, 0, 0), (-1, 0, 0),  # +X, -X
+        (0, 1, 0), (0, -1, 0),  # +Y, -Y
+        (0, 0, 1), (0, 0, -1)   # +Z, -Z
+    ]
+
+    for primary_axis in cone_axes:
+        px, py, pz = primary_axis
+        # Generate directions within the cone
         for dy in range(-8, 9):
             for dz in range(-8, 9):
-                if dx == dy == dz == 0:
-                    continue
-                # cone predicates
-                if any((
-                    dx > 0 and abs(dy) <= dx and abs(dz) <= dx,
-                    dx < 0 and abs(dy) <= -dx and abs(dz) <= -dx,
-                    dy > 0 and abs(dx) <= dy and abs(dz) <= dy,
-                    dy < 0 and abs(dx) <= -dy and abs(dz) <= -dy,
-                    dz > 0 and abs(dx) <= dz and abs(dy) <= dz,
-                    dz < 0 and abs(dx) <= -dz and abs(dy) <= -dz,
-                )):
-                    g = gcd(gcd(abs(dx), abs(dy)), abs(dz))
-                    dirs.add((dx // g, dy // g, dz // g))
-    return np.array(list(dirs), dtype=np.int8)
+                if px != 0:  # X-cone
+                    if abs(dy) <= abs(px * 8) and abs(dz) <= abs(px * 8):
+                        dx = px * max(1, abs(dy), abs(dz))
+                        dirs.add((dx, dy, dz))
+                elif py != 0:  # Y-cone
+                    if abs(dx) <= abs(py * 8) and abs(dz) <= abs(py * 8):
+                        dy = py * max(1, abs(dx), abs(dz))
+                        dirs.add((dx, dy, dz))
+                else:  # Z-cone
+                    if abs(dx) <= abs(pz * 8) and abs(dy) <= abs(pz * 8):
+                        dz = pz * max(1, abs(dx), abs(dy))
+                        dirs.add((dx, dy, dz))
+
+    # Reduce to primitive directions
+    primitive_dirs = set()
+    for dx, dy, dz in dirs:
+        if dx == dy == dz == 0:
+            continue
+        g = gcd(gcd(abs(dx), abs(dy)), abs(dz))
+        primitive_dirs.add((dx // g, dy // g, dz // g))
+
+    return np.array(list(primitive_dirs), dtype=np.int8)
 
 CONE_DIRECTIONS = _cone_dirs()
 
-def generate_face_cone_slider_moves(cache: CacheManager,
+def generate_face_cone_slider_moves(cache: 'OptimizedCacheManager',
                                     color: Color,
                                     x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_moves(
         piece_type='cone_slider',
         pos=(x, y, z),
         color=color.value,
         max_distance=16,
         directions=CONE_DIRECTIONS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
 @register(PieceType.CONESLIDER)
-def face_cone_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
+def face_cone_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_face_cone_slider_moves(state.cache, state.color, x, y, z)
 
 __all__ = ['generate_face_cone_slider_moves']

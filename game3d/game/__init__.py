@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 # Import core classes first
 from .gamestate import GameState
 from .performance import PerformanceMetrics, track_operation_time, track_performance
-from .zobrist import compute_zobrist
-from game3d.pieces.piece import Color
+from game3d.cache.caches.zobrist import compute_zobrist
+
 # Import factory functions
 from .factory import start_game_state, create_game_state_from_tensor, clone_game_state_for_search
 # Import terminal/outcome functions
@@ -36,7 +36,7 @@ from .move_utils import (
 )
 
 # Import moveeffects (now has archery and hive moves)
-from .moveeffects import apply_archery_attack, apply_hive_moves  # MODIFIED: Added apply_hive_moves
+from .moveeffects import apply_archery_attack, apply_hive_moves
 
 # Removed redundant factory redefinitions - use from factory.py
 
@@ -72,15 +72,40 @@ GameState.legal_moves = legal_moves
 GameState.pseudo_legal_moves = pseudo_legal_moves
 GameState.make_move = make_move
 GameState.undo_move = undo_move
-GameState.apply_hive_moves = apply_hive_moves  # MODIFIED: Now using moveeffects import
 
-# Add missing PieceType import for validation methods
-from game3d.common.enums import PieceType
+# Add special move methods
+GameState.apply_archery_attack = apply_archery_attack
+GameState.apply_hive_moves = apply_hive_moves
 
 # Bind factory functions (from factory.py)
 GameState.start_game_state = staticmethod(start_game_state)
 GameState.create_game_state_from_tensor = staticmethod(create_game_state_from_tensor)
 GameState.clone_game_state_for_search = staticmethod(clone_game_state_for_search)
+
+# ------------------------------------------------------------------
+# ADD MISSING BINDINGS FOR CACHE-RELATED METHODS
+# ------------------------------------------------------------------
+
+def _bind_cache_methods():
+    """Bind cache-related methods that were missing."""
+    # Import locally to avoid circular imports
+    from game3d.common.enums import PieceType
+
+    # Add methods that were referenced in other modules but not bound
+    if not hasattr(GameState, 'has_priest'):
+        GameState.has_priest = lambda self, color: self.cache_manager.has_priest(color)
+
+    if not hasattr(GameState, 'any_priest_alive'):
+        GameState.any_priest_alive = lambda self: self.cache_manager.any_priest_alive()
+
+    if not hasattr(GameState, 'find_king'):
+        GameState.find_king = lambda self, color: self.cache_manager.find_king(color)
+
+    if not hasattr(GameState, 'get_attacked_squares'):
+        GameState.get_attacked_squares = lambda self, color: self.cache_manager.get_attacked_squares(color)
+
+# Call the binding function
+_bind_cache_methods()
 
 # ------------------------------------------------------------------
 # EXPORTS
@@ -115,8 +140,9 @@ __all__ = [
     'pseudo_legal_moves',
     'make_move',
     'undo_move',
+    'validate_legal_moves',
 
-    # Special effects
+    # Move utility functions
     'apply_hole_effects',
     'apply_bomb_effects',
     'apply_trailblaze_effect',
@@ -126,7 +152,6 @@ __all__ = [
     # Special game modes
     'apply_archery_attack',
     'apply_hive_moves',
-    # Removed undefined validate_archery_attack, validate_hive_moves - add if implemented
 
     # Performance
     'track_operation_time',

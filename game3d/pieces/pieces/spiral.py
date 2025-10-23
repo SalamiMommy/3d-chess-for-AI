@@ -43,7 +43,7 @@ def generate_spiral_moves(cache: CacheManager,
         color=color.value,
         max_distance=32,
         directions=_SPIRAL_OFFS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
 @register(PieceType.SPIRAL)

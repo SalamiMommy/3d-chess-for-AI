@@ -1,34 +1,37 @@
-# panelmoves.py — Panel: teleport to any empty square on the same x OR y OR z plane
-#                 plus normal 1-step King moves – all in one batch
-from __future__ import annotations
+# game3d/movement/pieces/panel.py
+"""
+Panel: teleport to any square on the same x OR y OR z plane plus king moves.
+"""
 
+from __future__ import annotations
 import numpy as np
 from typing import List, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
+from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import Move, MOVE_FLAGS
-from game3d.common.coord_utils import in_bounds
+from game3d.movement.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# ----------------------------------------------------------
-# 1.  Same-plane offsets (x=const, y=const, z=const) – 24 directions
-# ----------------------------------------------------------
-_PANEL_DIRS = np.array([
-    (dx, dy, dz)
-    for dx in range(-8, 9)
-    for dy in range(-8, 9)
-    for dz in range(-8, 9)
-    if (dx == 0 or dy == 0 or dz == 0)
-       and not (dx == dy == dz == 0)
+# --------------------------------------------------------------------------- #
+#  Panel directions (same x/y/z plane)                                       #
+# --------------------------------------------------------------------------- #
+_PANEL_DIRECTIONS = np.array([
+    # X-axis lines (y,z constant)
+    *[(dx, 0, 0) for dx in range(-8, 9) if dx != 0],
+    # Y-axis lines (x,z constant)
+    *[(0, dy, 0) for dy in range(-8, 9) if dy != 0],
+    # Z-axis lines (x,y constant)
+    *[(0, 0, dz) for dz in range(-8, 9) if dz != 0],
 ], dtype=np.int8)
 
-# ----------------------------------------------------------
-# 2.  26 King directions (inline – no import)
-# ----------------------------------------------------------
-_KING_DIRS = np.array([
+# --------------------------------------------------------------------------- #
+#  King directions (1-step moves)                                             #
+# --------------------------------------------------------------------------- #
+_KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
     for dy in (-1, 0, 1)
@@ -36,59 +39,31 @@ _KING_DIRS = np.array([
     if (dx, dy, dz) != (0, 0, 0)
 ], dtype=np.int8)
 
-# ----------------------------------------------------------
-# 3.  Generator – occupancy-filtered, deduped, single jump batch
-# ----------------------------------------------------------
-def generate_panel_moves(cache, color: Color, x: int, y: int, z: int) -> List[Move]:
-    start = (x, y, z)
-    own_code = 1 if color == Color.WHITE else 2
+def generate_panel_moves(
+    cache: 'OptimizedCacheManager',
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
+    """Generate panel moves: king walks + plane teleports."""
+    x, y, z = ensure_int_coords(x, y, z)
 
-    targets = set()
+    # Combine directions and remove duplicates
+    all_dirs = np.unique(np.vstack((_PANEL_DIRECTIONS, _KING_DIRECTIONS)), axis=0)
 
-    # 3a. panel leaps (same-plane)
-    for dx, dy, dz in _PANEL_DIRS:
-        tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds((tx, ty, tz)):
-            continue
-        if cache.occupancy.is_occupied(tx, ty, tz):
-            victim = cache.occupancy.get((tx, ty, tz))
-            if victim and victim.color != color:
-                targets.add((tx, ty, tz))
-        else:
-            targets.add((tx, ty, tz))
-
-    # 3b. king walks
-    for dx, dy, dz in _KING_DIRS:
-        tx, ty, tz = x + dx, y + dy, z + dz
-        if not in_bounds((tx, ty, tz)):
-            continue
-        if cache.occupancy.is_occupied(tx, ty, tz):
-            victim = cache.occupancy.get((tx, ty, tz))
-            if victim and victim.color != color:
-                targets.add((tx, ty, tz))
-        else:
-            targets.add((tx, ty, tz))
-
-    if not targets:
-        return []
-
-    # 3c. vectorised batch
-    tarr = np.array(list(targets), dtype=np.int16)
-    directions = tarr - np.array(start, dtype=np.int16)
-
-    jump = get_integrated_jump_movement_generator(cache)
-    return jump.generate_jump_moves(
+    # Generate all moves using jump movement
+    jump_gen = get_integrated_jump_movement_generator(cache)
+    moves = jump_gen.generate_jump_moves(
         color=color,
-        pos=start,
-        directions=directions.astype(np.int8),
+        pos=(x, y, z),
+        directions=all_dirs,
         allow_capture=True,
     )
 
-# ----------------------------------------------------------
-# 5.  Dispatcher
-# ----------------------------------------------------------
+    return moves
+
 @register(PieceType.PANEL)
-def panel_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def panel_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_panel_moves(state.cache, state.color, x, y, z)
 
 __all__ = ["generate_panel_moves"]

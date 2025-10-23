@@ -1,12 +1,12 @@
-# game3d/common/move_utils.py
+# game3d/common/move_utils.py - OPTIMIZED VERSION
 # ------------------------------------------------------------------
-# Move-related utilities
+# Move-related utilities with consolidated validation
 # ------------------------------------------------------------------
 from __future__ import annotations
 import numpy as np
 from typing import List, Tuple, Set, Optional, TYPE_CHECKING
 
-from game3d.common.constants import SIZE, N_PIECE_TYPES
+from game3d.common.constants import SIZE, VOLUME
 from game3d.common.coord_utils import in_bounds_vectorised, filter_valid_coords, add_coords
 from game3d.common.piece_utils import get_player_pieces
 from game3d.common.enums import Color, PieceType
@@ -67,14 +67,14 @@ def extend_move_range(move: Move, start: Coord, max_steps: int = 1, debuffed: bo
             break
     return extended_moves
 
-def validate_moves(
+def validate_moves_batch(
     moves: List["Move"],
     state: "GameState",
     piece: Optional[Piece] = None
 ) -> List["Move"]:
     """
-    Vectorized validation of moves: from consistency, bounds, not friendly dest.
-    FIXED: Better error handling for piece validation.
+    Consolidated single-pass validation of moves.
+    Combines bounds checking, occupancy validation, and effect filtering.
     """
     if not moves:
         return []
@@ -84,59 +84,52 @@ def validate_moves(
     if not moves:
         return []
 
+    # Extract coordinates for vectorized processing
     from_coords = np.array([m.from_coord for m in moves])
     to_coords = np.array([m.to_coord for m in moves])
 
-    # Validate piece parameter
+    # Single-pass bounds validation
+    from_valid = in_bounds_vectorised(from_coords)
+    to_valid = in_bounds_vectorised(to_coords)
+    bounds_valid = from_valid & to_valid
+
+    if not np.any(bounds_valid):
+        return []
+
+    # Get piece info for validation
     if piece is not None:
-        if not isinstance(piece, Piece):
-            print(f"[ERROR] Invalid piece parameter in validate_moves: {type(piece)}")
-            return []
         expected_color = piece.color
     else:
         expected_color = state.color
 
-    color_code = 1 if expected_color == Color.WHITE else 2
-    cache = state.cache
+    # Single-pass occupancy and effect validation
+    valid_moves = []
+    cache_manager = state.cache_manager
 
-    # Build occupancy array from iter_color instead of direct access
-    occ = np.zeros((9, 9, 9), dtype=np.uint8)
-    for color in [Color.WHITE, Color.BLACK]:
-        code = 1 if color == Color.WHITE else 2
-        for coord, piece_obj in cache.occupancy.iter_color(color):
-            if not isinstance(piece_obj, Piece):
-                print(f"[WARNING] Non-Piece object in validate_moves iter_color: {type(piece_obj)}")
-                continue
-            x, y, z = coord
-            occ[z, y, x] = code
-
-    # Validate from coordinates match expected color
-    valid_from = np.ones(len(from_coords), dtype=bool)
-    for i, (x, y, z) in enumerate(from_coords):
-        if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):
-            valid_from[i] = False
+    for i, move in enumerate(moves):
+        if not bounds_valid[i]:
             continue
-        if occ[z, y, x] != color_code:
-            valid_from[i] = False
 
-    # Filter valid to_coords
-    to_coords = filter_valid_coords(to_coords, log_oob=True)
-    if len(to_coords) == 0:
-        return []
+        # Check piece exists and is correct color
+        from_piece = cache_manager.occupancy.get(move.from_coord)
+        if not from_piece or from_piece.color != expected_color:
+            continue
 
-    # Check destinations are not friendly pieces
-    to_x, to_y, to_z = to_coords[:, 0], to_coords[:, 1], to_coords[:, 2]
-    dest_codes = occ[to_z, to_y, to_x]
-    valid_dest = dest_codes != color_code
+        # Check frozen status
+        if cache_manager.is_frozen(move.from_coord, expected_color):
+            continue
 
-    # Combine masks
-    min_len = min(len(valid_from), len(valid_dest))
-    valid_mask = valid_from[:min_len] & valid_dest[:min_len]
+        # Check destination is not friendly
+        to_piece = cache_manager.occupancy.get(move.to_coord)
+        if to_piece and to_piece.color == expected_color:
+            continue
 
-    validated = [moves[i] for i in np.flatnonzero(valid_mask)]
+        valid_moves.append(move)
 
-    # DEFENSIVE: Final None filter before returning
-    return filter_none_moves(validated)
+    return valid_moves
+
+# Alias for backward compatibility
+validate_moves = validate_moves_batch
 
 def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType], List[int]]:
     """
@@ -152,7 +145,7 @@ def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType]
         coords.append(coord)
         types.append(piece.ptype)
 
-        if coord in state.cache.move._debuffed_set and piece.ptype != PieceType.PAWN:
+        if state.cache_manager.is_movement_debuffed(coord, state.color) and piece.ptype != PieceType.PAWN:
             debuffed.append(idx)
 
     return coords, types, debuffed

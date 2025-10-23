@@ -244,7 +244,10 @@ class Move:
         """Return this instance to the pool."""
         _get_move_pool().release(self)
 
-
+    @property
+    def promotion_type(self) -> int:
+        """Extract promotion piece type from packed data (6 bits sufficient for PieceType values)."""
+        return (self._data >> 38) & 0x3F
 # ------------------------------------------------------------------
 # legacy adaptor (unchanged)
 # ------------------------------------------------------------------
@@ -284,6 +287,8 @@ def convert_legacy_move_args(
         flags |= MOVE_FLAGS['BUFFED']
     if is_debuffed:
         flags |= MOVE_FLAGS['DEBUFFED']
+    if is_frozen:
+        flags |= MOVE_FLAGS['FROZEN']
 
     captured_int = captured_piece.ptype.value if captured_piece else 0
     promotion_int = promotion_type.ptype.value if promotion_type else 0

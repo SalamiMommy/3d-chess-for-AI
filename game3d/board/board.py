@@ -179,8 +179,10 @@ class Board:
         return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
 
     def apply_move(self, mv: Move) -> bool:
+        """Apply move with proper cache synchronization."""
         if self.cache_manager is None:
             raise RuntimeError("Board has no cache_manager – cannot apply_move.")
+
         from_coord = mv.from_coord
         to_coord   = mv.to_coord
 
@@ -188,31 +190,29 @@ class Board:
         if piece is None:
             raise ValueError(f"apply_move: empty from-square {from_coord}")
 
+        # Increment generation BEFORE making changes
+        self._gen += 1
+
         if mv.is_capture:
             self.set_piece(to_coord, None)
 
-        from game3d.game.move_utils import (
-            apply_swap_move,
-            apply_promotion_move,
-            apply_geomancy_effect,
-        )
-
+        # Handle special moves
         if mv.metadata.get("is_swap", False):
+            from game3d.game.move_utils import apply_swap_move
             apply_swap_move(self, mv)
-            return True
-
-        if mv.metadata.get("is_geomancy_effect", False):
-            pass
-
-        if getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
+        elif getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
+            from game3d.game.move_utils import apply_promotion_move
             apply_promotion_move(self, mv, piece)
         else:
+            # Standard move
             self.set_piece(from_coord, None)
             self.set_piece(to_coord, piece)
 
         self._hash = None
-        self._gen += 1
+        self._occupancy_mask = None
+        self._occupied_list = None
 
+        # Sync with cache manager
         self.cache_manager.set_piece(from_coord, None)
         self.cache_manager.set_piece(to_coord, piece)
 

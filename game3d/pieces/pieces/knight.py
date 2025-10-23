@@ -11,10 +11,12 @@ from game3d.common.enums import Color, PieceType
 from game3d.common.coord_utils import in_bounds
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.movepiece import convert_legacy_move_args
+from game3d.movement.movepiece import Move
+from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
+    from game3d.cache.manager import OptimizedCacheManager
 
 # ------------------------------------------------------------------
 # 24 classical knight offsets (2,1,0) permutations
@@ -31,7 +33,8 @@ KNIGHT_OFFSETS = np.array([
 # ------------------------------------------------------------------
 # Public generator – same architecture as bigknights
 # ------------------------------------------------------------------
-def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     cache = state.cache
     color = state.color
     start = (x, y, z)
@@ -42,7 +45,8 @@ def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move
         tx, ty, tz = x + dx, y + dy, z + dz
         if not in_bounds((tx, ty, tz)):
             continue
-        occ = cache.occupancy.get((tx, ty, tz))
+        # Use standardized occupancy check
+        occ = get_occupancy_safe(cache, (tx, ty, tz))
         if occ is None or occ.color != color:        # empty or enemy
             targets.append((tx, ty, tz))
 
@@ -65,7 +69,8 @@ def generate_knight_moves(state: GameState, x: int, y: int, z: int) -> List[Move
 # Dispatcher registration
 # ------------------------------------------------------------------
 @register(PieceType.KNIGHT)
-def knight_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def knight_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_knight_moves(state, x, y, z)
 
 __all__ = ["generate_knight_moves"]

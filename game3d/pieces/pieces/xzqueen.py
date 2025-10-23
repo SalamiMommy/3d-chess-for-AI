@@ -42,7 +42,7 @@ def generate_xz_queen_moves(cache: CacheManager,
         color=color.value,
         max_distance=8,
         directions=_XZ_SLIDER_DIRS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
     king_moves = generate_moves(
@@ -51,7 +51,7 @@ def generate_xz_queen_moves(cache: CacheManager,
         color=color.value,
         max_distance=1,
         directions=_KING_3D_DIRS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
     return slider_moves + king_moves

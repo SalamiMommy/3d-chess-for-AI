@@ -5,15 +5,13 @@ from game3d.movement.movepiece import Move
 import numpy as np
 from numba import njit
 from numba.typed import List as NbList
+from game3d.movement.movepiece import MOVE_FLAGS
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 
 _REGISTRY: Dict[PieceType, Callable[["GameState", int, int, int], List]] = {}
 
-_PIECE_DIRECTIONS = {  # Precompute directions
-    # Add directions for each PieceType
-}
 
 def register(pt: PieceType):
     def _decorator(fn):
@@ -47,7 +45,7 @@ def dispatch_batch(
     raw = _batch_kernel(
         nb_coords,
         nb_types,
-        state.cache.piece_cache.get_occupancy_view(),
+        state.cache_manager.occupancy.get_occupancy_view(),
         color.value,
     )
 

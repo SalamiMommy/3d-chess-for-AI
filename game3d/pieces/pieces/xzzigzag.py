@@ -46,7 +46,7 @@ def generate_xz_zigzag_moves(cache: CacheManager,
     raw = generate_slider_moves_kernel(
         pos=(x, y, z),
         directions=XZ_ZIGZAG_DIRECTIONS,
-        occupancy=cache.occupancy._occ,  # ✅ Fixed: Remove .mask
+        cache_manager=cache,  # ✅ Fixed: Remove .mask
         color=color.value,
         max_distance=16
     )

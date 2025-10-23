@@ -9,8 +9,11 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move
+from game3d.movement.cache_utils import ensure_int_coords
+
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
+    from game3d.cache.manager import OptimizedCacheManager
 
 # 66 Manhattan-4 offsets
 _ORBITAL_DIRS = np.array([
@@ -21,14 +24,16 @@ _ORBITAL_DIRS = np.array([
     if abs(dx) + abs(dy) + abs(dz) == 4
 ], dtype=np.int8)
 
-def generate_orbital_moves(cache, color: Color, x: int, y: int, z: int) -> List:
+def generate_orbital_moves(cache: 'OptimizedCacheManager', color: Color, x: int, y: int, z: int) -> List[Move]:
     """Orbiter jumps to any square exactly 4 Manhattan away."""
+    x, y, z = ensure_int_coords(x, y, z)
     return get_integrated_jump_movement_generator(cache).generate_jump_moves(
         color=color, pos=(x, y, z), directions=_ORBITAL_DIRS
     )
 
 @register(PieceType.ORBITER)
-def orbital_move_dispatcher(state: State, x: int, y: int, z: int):
+def orbital_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
     return generate_orbital_moves(state.cache, state.color, x, y, z)
 
 __all__ = ["generate_orbital_moves"]

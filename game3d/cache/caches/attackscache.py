@@ -38,9 +38,11 @@ class AttacksCache:
 
     def get_for_color(self, color: Color) -> Optional[Set[Tuple[int, int, int]]]:
         """Get attacked squares for a color if cache is valid."""
-        if self.is_valid.get(color, False):
-            return self.attacked_squares.get(color, set()).copy()
-        return None
+        if self._manager.has_priest(color.opposite()):
+            return set()
+        if not self.is_valid.get(color, False):
+            self._full_rebuild(color)
+        return self.attacked_squares.get(color, set()).copy()
 
     def store_for_color(self, color: Color, attacked: Set[Tuple[int, int, int]]) -> None:
         """Store attacked squares for a color and mark as valid."""
@@ -69,11 +71,17 @@ class AttacksCache:
 
     def apply_move(self, mv: 'Move', mover: Color, board: 'Board') -> None:
         """Incrementally update attacked squares on move."""
+        if self._manager.has_priest(mover.opposite()):
+            return
         self._incremental_update(mv, mover, board, is_undo=False)
+        self.is_valid[mover] = True
 
     def undo_move(self, mv: 'Move', mover: Color, board: 'Board') -> None:
         """Incrementally update on undo."""
+        if self._manager.has_priest(mover.opposite()):
+            return
         self._incremental_update(mv, mover, board, is_undo=True)
+        self.is_valid[mover] = True
 
     def _incremental_update(
         self,
@@ -83,11 +91,6 @@ class AttacksCache:
         is_undo: bool,
     ) -> None:
         """Incrementally update attacked squares after move."""
-        if self._manager and self._manager.has_priest(mover):
-            # priests alive → no need to track attacks for this colour
-            self.is_valid[mover] = True
-            return
-
         from_coord = mv.from_coord
         to_coord = mv.to_coord
 
@@ -107,17 +110,8 @@ class AttacksCache:
         # Update affected sliding pieces
         self._update_affected_sliders(from_coord, to_coord, mover, board)
 
-        # Mark both colors as valid
-        self.is_valid[mover] = True
-        self.is_valid[mover.opposite()] = True
-
     def _full_rebuild(self, color: Color) -> None:
         """Complete rebuild for *color*."""
-        if self._manager and self._manager.has_priest(color):
-            self.attacked_squares[color] = set()
-            self.is_valid[color] = True
-            return
-
         attacked: Set[Tuple[int, int, int]] = set()
 
         # CORRECTED: Iterate via manager's occupancy cache
@@ -161,6 +155,12 @@ class AttacksCache:
 
             piece = self._manager.occupancy.get(coord)
             if piece is None:
+                continue
+
+            if self._manager.has_priest(piece.color.opposite()):
+                if coord in self.piece_attacks:
+                    self.attacked_squares[piece.color] -= self.piece_attacks[coord]
+                    del self.piece_attacks[coord]
                 continue
 
             # Recalculate attacks for this slider

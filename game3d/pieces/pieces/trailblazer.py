@@ -51,7 +51,7 @@ def generate_trailblazer_moves(
         color=color.value,
         max_distance=3,
         directions=_ROOK_DIRS,
-        occupancy=cache.occupancy._occ,
+        cache_manager=cache,
     )
 
     # Annotate every move with the **slid path** (intermediates only)
