@@ -151,7 +151,6 @@ def _filter_wall_capture_restrictions(
             filtered.append(d)  # Behind the wall – capture allowed
     return filtered
 
-
 def modify_raw_moves(
     from_coord: Tuple[int, int, int],
     to_coords: np.ndarray,
@@ -162,60 +161,65 @@ def modify_raw_moves(
     *,
     current_ply: int,
 ) -> List[Move]:
+    # Input validation
+    if len(to_coords) == 0:
+        return []
+
+    # 1. Bounds check and filter
     to_coords = filter_valid_coords(to_coords)
     captures = captures[:len(to_coords)]
     if len(to_coords) == 0:
         return []
 
-    # 1.  Bounds and frozen filter -----------------------------------------
-    to_coords = filter_valid_coords(to_coords)          # ndarray (N,3)
-    # Defensive check
-    assert np.all(to_coords >= 0) and np.all(to_coords < 9), f"Out-of-bounds after filter: {to_coords}"
-    captures  = captures[:len(to_coords)]
+    # 2. Frozen filter
+    frozen_mask = np.array([not cache_manager.is_frozen(tuple(c), color) for c in to_coords])
+    to_coords = to_coords[frozen_mask]
+    captures = captures[frozen_mask]
+
     if len(to_coords) == 0:
         return []
 
-    frozen_mask = ~np.array([cache_manager.is_frozen(tuple(c), color) for c in to_coords])
-
-    # keep only un-frozen targets
-    to_coords = [tuple(int(c) for c in row) for row in to_coords[frozen_mask]]
-    captures  = captures[frozen_mask]
-
-    if not to_coords:
-        return []
-
-    # 2.  Slow debuff -------------------------------------------------------
+    # 3. Slow debuff range reduction
     if cache_manager.is_movement_debuffed(from_coord, color):
-        new_max = max(1, int(np.max(np.abs(to_coords - np.array(from_coord)))) - 1)
-        # keep only moves whose Chebyshev distance <= new_max
-        keep = [max(abs(x - from_coord[0]), abs(y - from_coord[1]), abs(z - from_coord[2])) <= new_max
-                for x, y, z in to_coords]
-        to_coords = [c for c, k in zip(to_coords, keep) if k]
-        captures = [c for c, k in zip(captures, keep) if k]
+        from_arr = np.array(from_coord)
+        distances = np.max(np.abs(to_coords - from_arr), axis=1)
+        new_max = max(1, np.max(distances) - 1) if len(distances) > 0 else 1
+        keep_mask = distances <= new_max
+        to_coords = to_coords[keep_mask]
+        captures = captures[keep_mask]
 
-    if not to_coords:
+    if len(to_coords) == 0:
         return []
 
-    # 3.  Geomancy block ----------------------------------------------------
-    blocked = [cache_manager.is_geomancy_blocked(c, current_ply) for c in to_coords]
+    # 4. Geomancy block filter
+    blocked_mask = np.array([not cache_manager.is_geomancy_blocked(tuple(c), current_ply) for c in to_coords])
+    to_coords = to_coords[blocked_mask]
+    captures = captures[blocked_mask]
 
-    # 4.  Wall-capture restriction -----------------------------------------
-    piece = cache_manager.occupancy.get(from_coord)
-    if piece and piece.ptype is PieceType.WALL:
+    if len(to_coords) == 0:
+        return []
+
+    # 5. Wall-capture restriction
+    piece = cache_manager.occupancy_cache.get(from_coord)
+    if piece and piece.ptype == PieceType.WALL:
         from game3d.pieces.pieces.wall import can_capture_wall
-        filtered = []
-        filt_cap = []
-        for c, cap in zip(to_coords, captures):
-            if can_capture_wall(attacker_sq=c, wall_anchor=from_coord):
-                filtered.append(c)
-                filt_cap.append(cap)
-        to_coords, captures = filtered, filt_cap
+        keep_indices = []
+        for i, coord in enumerate(to_coords):
+            if can_capture_wall(attacker_sq=tuple(coord), wall_anchor=from_coord):
+                keep_indices.append(i)
+        to_coords = to_coords[keep_indices]
+        captures = captures[keep_indices]
 
-    # 6.  Build Move objects -------------------------------------------------
-    return Move.create_batch(from_coord,
-                             np.array(to_coords, dtype=np.int32),
-                             np.array(captures, dtype=bool),
-                             debuffed=debuffed)
+    if len(to_coords) == 0:
+        return []
+
+    # 6. Build Move objects
+    return Move.create_batch(
+        from_coord,
+        np.array(to_coords, dtype=np.int32),
+        np.array(captures, dtype=bool),
+        debuffed=debuffed
+    )
 
 
 def _extend_move_range(m: "Move", start: Tuple[int, int, int], state) -> List["Move"]:

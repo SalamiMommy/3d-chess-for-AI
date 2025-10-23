@@ -100,29 +100,33 @@ class OptimizedCacheManager(CacheManagerProtocol):
         self._move_cache: Optional[OptimizedMoveCache] = None
         self._move_counter = 0
         self._age_counter = 0
-        self._needs_rebuild = False
+
         self._skip_effect_updates = False
         self._effect_update_counter = 0
         self._effect_update_interval = 10
         self._check_summary_cache: Optional[Dict[str, Any]] = None
         self._check_summary_age = -1
-        self._network_teleport_dirty = {Color.WHITE: False, Color.BLACK: False}
-        self._swap_targets_dirty = {Color.WHITE: False, Color.BLACK: False}
+
+
         self._integrated_jump_gen: Optional[Any] = None
         self._swap_targets = {Color.WHITE: set(), Color.BLACK: set()}
-        self._swap_targets_dirty = {Color.WHITE: True, Color.BLACK: True}
+
         self._network_teleport_targets = {Color.WHITE: set(), Color.BLACK: set()}
-        self._network_teleport_dirty = {Color.WHITE: True, Color.BLACK: True}
-        self._reflecting_bishop_gen: Optional[Any] = None
+
+        self._integrated_jump_gen: Optional[IntegratedJumpMovementGenerator] = None
+        self._reflecting_bishop_gen: Optional[_ReflectingBishopGen] = None
         record_cache_creation(self, board)
         if board is not None:
             board.cache_manager = self
+        self._initialize_effect_caches()
 
-        # Initialize direct effect caches
-        self.aura_cache = UnifiedAuraCache(board, self)
-        self.trailblaze_cache = TrailblazeCache(self)
-        self.geomancy_cache = GeomancyCache(self)
-        self.attacks_cache = AttacksCache(board)
+        _dirty_flags: Dict[str, bool] = {
+            'moves': False,
+            'attacks': False,
+            'effects': False,
+            'network_teleport': {Color.WHITE: False, Color.BLACK: False},
+            'swap_targets': {Color.WHITE: False, Color.BLACK: False}
+        }
 
     def initialise(self, current: Color) -> None:
         """
@@ -134,6 +138,18 @@ class OptimizedCacheManager(CacheManagerProtocol):
         # Create move cache (which will use the already-computed hash)
         self._move_cache = create_optimized_move_cache(self.board, current, self)
 
+    def _initialize_effect_caches(self) -> None:
+        """Initialize all effect caches with proper references."""
+        self.aura_cache = UnifiedAuraCache(self.board, self)
+        self.trailblaze_cache = TrailblazeCache(self)
+        self.geomancy_cache = GeomancyCache(self)
+        self.attacks_cache = AttacksCache(self.board)
+
+        # Set cache manager references
+        self.aura_cache._cache_manager = self
+        self.trailblaze_cache._cache_manager = self
+        self.geomancy_cache._cache_manager = self
+        self.attacks_cache._manager = self
     # ------------------------------------------------------------------ #
     #  Consolidated Move application / undo (centralized incremental updates)
     # ------------------------------------------------------------------ #
@@ -331,6 +347,7 @@ class OptimizedCacheManager(CacheManagerProtocol):
         for cache_name in affected_caches:
             cache = self._get_cache_by_name(cache_name)
             if cache and hasattr(cache, 'apply_move'):
+                # FIXED: Pass 4 parameters consistently
                 cache.apply_move(mv, mover, current_ply, self.board)
 
     def is_movement_buffed(self, sq: Coord, color: Color) -> bool:
@@ -518,17 +535,28 @@ class OptimizedCacheManager(CacheManagerProtocol):
     def update_occupancy_incrementally(
         self,
         board: "Board",
-        moved_sq: Tuple[int, int, int],
-        captured_sq: Optional[Tuple[int, int, int]] = None
+        moved_sq: Coord,
+        captured_sq: Optional[Coord] = None
     ) -> None:
         """
-        Mirror the board state into the occupancy cache without a full rebuild.
+        Unified occupancy update using batch_set_pieces.
         """
-        self.occupancy.set_position(moved_sq, None)
+        updates = []
+
+        # Remove piece from source square
+        updates.append((moved_sq, None))
+
+        # Remove captured piece if any
         if captured_sq is not None:
-            self.occupancy.set_position(captured_sq, None)
-        to_piece = self.occupancy.get(moved_sq)
-        self.occupancy.set_position(moved_sq, to_piece)
+            updates.append((captured_sq, None))
+
+        # Add piece back to destination (handles promotion)
+        to_piece = self.occupancy.get(moved_sq)  # Gets the moved piece
+        if to_piece:
+            updates.append((moved_sq, to_piece))
+
+        # Apply all updates in batch
+        self.batch_set_pieces(updates)
 
     def _fast_occupancy_update(self, mv: Move, piece: Piece, mover: Color) -> None:
         captured_sq = mv.to_coord if mv.is_capture else None
@@ -573,17 +601,15 @@ class OptimizedCacheManager(CacheManagerProtocol):
             """Get piece type array for movement generators - public API."""
             return self.occupancy._ptype.copy()
 
-        def update_zobrist_for_move(self, mv: Move, from_piece: Piece, captured_piece: Optional[Piece] = None) -> None:
-            """Incrementally update Zobrist hash for a move using the ZobristHash instance."""
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, from_piece, captured_piece
-            )
+    @property
+    def occupancy_cache(self):
+        """Standardized name for occupancy cache access."""
+        return self.occupancy
 
-        def update_zobrist_for_piece_change(self, coord: Coord, old_piece: Optional[Piece], new_piece: Optional[Piece]) -> None:
-            """Incrementally update Zobrist hash for a piece placement change."""
-            self._current_zobrist_hash = self._zobrist.update_hash_piece_placement(
-                self._current_zobrist_hash, coord, old_piece, new_piece
-            )
+    @property
+    def move_cache(self):
+        """Standardized name for move cache access."""
+        return self._move_cache
 # =============================================================================
 #  Factory
 # =============================================================================

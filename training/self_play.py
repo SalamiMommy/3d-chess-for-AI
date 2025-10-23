@@ -202,8 +202,10 @@ class SelfPlayGenerator:
 
         # 1. create ONE board and ONE cache
         board = new_board_with_manager(Color.WHITE)
-        cache = board.cache_manager
+        cache_manager = board.cache_manager
 
+        if not hasattr(cache_manager, 'initialise') or cache_manager._move_cache is None:
+            cache_manager.initialise(Color.WHITE)
         # DIAGNOSTIC: Verify board has pieces
         occupied = list(board.list_occupied())
         print(f"[DIAGNOSTIC] Board has {len(occupied)} pieces")
@@ -215,7 +217,7 @@ class SelfPlayGenerator:
         print(f"[DIAGNOSTIC] Cache type: {type(cache)}")
         print(f"[DIAGNOSTIC] Cache has piece_cache: {hasattr(cache, 'piece_cache')}")
 
-        game = OptimizedGame3D(board=board, cache=cache)
+        game = OptimizedGame3D(board=board, cache=cache_manager)
         game.toggle_debug_turn_info(False)
 
         print("[DEBUG] Terminal-rule breakdown:")

@@ -10,7 +10,7 @@ from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.coord_utils import in_bounds
 from game3d.common.constants import RADIUS_3_OFFSETS
-from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
+from game3d.common.cache_utils import get_occupancy_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.board.board import Board

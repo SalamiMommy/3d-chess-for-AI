@@ -123,10 +123,7 @@ class OptimizedMoveCache:
             Color.WHITE: False,
             Color.BLACK: False
         }
-        self._dirty_flags = {
-            'targets': False,
-            'attacks': False,
-        }
+
         self._gen = -1  # NEW: Initialize generation
         self._frozen_bitmap: np.ndarray = np.zeros((9,9,9), dtype=bool)  # NEW
         self._debuffed_bitmap: np.ndarray = np.zeros((9,9,9), dtype=bool)  # NEW
@@ -181,37 +178,15 @@ class OptimizedMoveCache:
             self._needs_rebuild = True
             return
 
-        # Check generation before proceeding
+        # Check generation before proceeding - FIXED
         board_gen = getattr(self._cache_manager.board, 'generation', 0)
         if self._gen != board_gen:
             self._needs_rebuild = True
             self._gen = board_gen
 
-        captured_piece = (
-            self._cache_manager.occupancy.get(mv.to_coord) if mv.is_capture else None
-        )
-
-        # Update Zobrist hash
-        self._zobrist_hash = self._zobrist.update_hash_move(
-            self._zobrist_hash, mv, piece, captured_piece
-        )
-
-        # Mutate board tensor first
-        self._cache_manager.board.apply_move(mv)
-
-        # Update occupancy cache
-        self._cache_manager.set_piece(mv.from_coord, None)
-        promoted = (
-            Piece(color, PieceType(mv.promotion_ptype)) if getattr(mv, "is_promotion", False) else piece
-        )
-        self._cache_manager.set_piece(mv.to_coord, promoted)
-
-        # Mark changed squares as dirty with proper bounds checking
-        if in_bounds(mv.from_coord):
-            self.invalidate_square(mv.from_coord)
-        if in_bounds(mv.to_coord):
-            self.invalidate_square(mv.to_coord)
-
+        # FIXED: Don't update board here - it's already updated by cache manager
+        # Just invalidate affected squares
+        self.invalidate_affected_squares(mv)
         self.invalidate_attacked_squares(color)
         self.invalidate_attacked_squares(color.opposite())
 
@@ -488,13 +463,18 @@ class OptimizedMoveCache:
 
             # ---------- 2.  regenerate moves for dirty squares ----------
             for coord in list(self._invalid_squares):
+                # VALIDATE COORDINATES CONSISTENTLY
+                if not isinstance(coord, tuple) or len(coord) != 3:
+                    self._legal_per_piece.pop(coord, None)
+                    continue
+
                 x, y, z = coord
-                if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):  # extra safety
+                if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):  # CONSISTENT bounds check
                     self._legal_per_piece.pop(coord, None)
                     continue
 
                 piece = self._cache_manager.occupancy.get(coord)
-                if piece and piece.color == self._current and not self._cache_manager.is_frozen(coord, self._current):  # UPDATED: Direct query here (replaces bitmap check)
+                if piece and piece.color == self._current and not self._cache_manager.is_frozen(coord, self._current):
                     self._legal_per_piece[coord] = generate_legal_moves_for_piece(tmp_state, coord)
                 else:
                     self._legal_per_piece.pop(coord, None)
@@ -538,23 +518,6 @@ class OptimizedMoveCache:
             affected.update(ray)
 
         self.invalidate_squares(affected)
-
-    def invalidate_piece_and_attackers(self, coord: Tuple[int, int, int]) -> None:
-        """Invalidate a piece and all pieces that could attack it."""
-        affected = {coord}
-
-        # Add pieces that could attack this square
-        from game3d.common.coord_utils import get_aura_squares
-        aura = get_aura_squares(coord, radius=3)  # Extended range for knights, etc.
-
-        for attack_sq in aura:
-            piece = self._cache_manager.occupancy.get(attack_sq)
-            if piece and piece.color != self._current:
-                affected.add(attack_sq)
-
-        self.invalidate_squares(affected)
-
-
 # ==============================================================================
 # FACTORY
 # ==============================================================================

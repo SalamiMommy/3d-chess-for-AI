@@ -8,7 +8,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.common.coord_utils import in_bounds_scalar, filter_valid_coords
 from game3d.common.piece_utils import color_to_code
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -170,10 +170,12 @@ class IntegratedJumpMovementGenerator:
 _jump_generators = {}  # cache_id -> generator
 
 def get_integrated_jump_movement_generator(cm: 'OptimizedCacheManager') -> IntegratedJumpMovementGenerator:
-    """Factory function with proper caching - doesn't modify cache manager."""
-    cache_id = id(cm)
-    if cache_id not in _jump_generators:
-        _jump_generators[cache_id] = IntegratedJumpMovementGenerator(cm)
-    return _jump_generators[cache_id]
+    """Use the cache manager's existing generator instead of creating new one."""
+    if hasattr(cm, '_integrated_jump_gen') and cm._integrated_jump_gen is not None:
+        return cm._integrated_jump_gen
+
+    # Create and store in cache manager if not exists
+    cm._integrated_jump_gen = IntegratedJumpMovementGenerator(cm)
+    return cm._integrated_jump_gen
 
 __all__ = ["get_integrated_jump_movement_generator"]

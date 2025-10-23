@@ -128,39 +128,6 @@ class UnifiedAuraCache:
         if board:
             self._full_rebuild(board)
 
-    # ---------- CRITICAL MISSING METHOD IMPLEMENTATIONS ----------
-    def _apply_map_effects(self, aura: AuraType, controller: Color, board: "Board") -> Set[Coord]:
-        """Execute push (WHITEHOLE) or pull (BLACKHOLE) and track changed squares."""
-        self._ensure_built()
-        changed: Set[Coord] = set()
-
-        if aura not in self._maps:
-            return changed
-
-        cmap = self._maps[aura][controller]
-
-        for fr, to in cmap.items():
-            piece = self._cache_manager.occupancy.get(fr)
-            if piece is None:                       # nothing to move
-                continue
-            if piece.color == controller:           # never push/pull own pieces
-                continue
-            if not in_bounds(to):                   # safety belt
-                continue
-
-            # ---- perform the move ----
-            board.set_piece(to, piece)
-            board.set_piece(fr, None)
-            self._cache_manager.occupancy.set_position(fr, None)
-            self._cache_manager.occupancy.set_position(to, piece)
-            changed.update({fr, to})
-
-        # snapshot for undo (push/pull actually mutate the board)
-        if changed:
-            self._record_undo_snapshot(controller, board, aura)
-
-        return changed
-
     def _apply_push_effects(self, controller: Color, board: "Board") -> Set[Coord]:
         """Apply white-hole push effects."""
         return self._apply_map_effects(AuraType.PUSH, controller, board)
@@ -558,29 +525,6 @@ class UnifiedAuraCache:
     # ------------------------------------------------------------------
     #  PUBLIC FACADE – called by OptimizedCacheManager
     # ------------------------------------------------------------------
-    def apply_freeze_effects(self, controller: Color, board: "Board") -> Set[Coord]:
-        """Emit freeze auras for <controller>. Returns frozen squares."""
-        self._ensure_built()
-        victim = controller.opposite()
-        frozen_now = set()
-        for sq in self._affected_sets[AuraType.FREEZE][victim]:
-            piece = self._cache_manager.occupancy.get(sq)
-            if piece and piece.color == victim:
-                frozen_now.add(sq)
-        return frozen_now
-
-    def apply_push_effects(self, controller: Color, board: "Board") -> Set[Coord]:
-        """Apply white-hole pushes and return squares whose occupancy changed."""
-        return self._apply_push_effects(controller, board)
-
-    def apply_pull_effects(self, controller: Color, board: "Board") -> Set[Coord]:
-        """Apply black-hole pulls and return squares whose occupancy changed."""
-        return self._apply_pull_effects(controller, board)
-
-    def _ensure_built(self) -> None:
-        """Ensure cache is built before operations."""
-        if any(self._dirty_flags.values()):
-            self._incremental_rebuild()
 
     def _sanitize(self, coord: Any) -> Coord:
         """Ensure coordinates are within bounds."""
@@ -637,6 +581,69 @@ class UnifiedAuraCache:
             else:
                 affected.discard(sq)
 
+    def _ensure_built(self) -> None:
+        """Ensure cache is built before operations."""
+        if any(self._dirty_flags.values()):
+            self._incremental_rebuild()
+
+    def apply_freeze_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """Emit freeze auras for <controller>. Returns frozen squares."""
+        self._ensure_built()
+        victim = controller.opposite()
+        frozen_now = set()
+        for sq in self._affected_sets[AuraType.FREEZE][victim]:
+            piece = self._cache_manager.occupancy.get(sq)
+            if piece and piece.color == victim:
+                frozen_now.add(sq)
+        return frozen_now
+
+    def apply_push_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """Apply white-hole pushes and return squares whose occupancy changed."""
+        return self._apply_map_effects(AuraType.PUSH, controller, board)
+
+    def apply_pull_effects(self, controller: Color, board: "Board") -> Set[Coord]:
+        """Apply black-hole pulls and return squares whose occupancy changed."""
+        return self._apply_map_effects(AuraType.PULL, controller, board)
+
+    def _apply_map_effects(self, aura: AuraType, controller: Color, board: "Board") -> Set[Coord]:
+        """Execute push (WHITEHOLE) or pull (BLACKHOLE) and track changed squares."""
+        self._ensure_built()
+        changed: Set[Coord] = set()
+
+        if aura not in self._maps:
+            return changed
+
+        cmap = self._maps[aura][controller]
+
+        for fr, to in cmap.items():
+            piece = self._cache_manager.occupancy.get(fr)
+            if piece is None:                       # nothing to move
+                continue
+            if piece.color == controller:           # never push/pull own pieces
+                continue
+            if not in_bounds(to):                   # safety belt
+                continue
+
+            # ---- perform the move ----
+            board.set_piece(to, piece)
+            board.set_piece(fr, None)
+            self._cache_manager.occupancy.set_position(fr, None)
+            self._cache_manager.occupancy.set_position(to, piece)
+            changed.update({fr, to})
+
+        # snapshot for undo (push/pull actually mutate the board)
+        if changed:
+            self._record_undo_snapshot(controller, board, aura)
+
+        return changed
+
+    def _record_undo_snapshot(self, controller: Color, board: "Board", aura: AuraType) -> None:
+        """Record state for undo operations."""
+        snapshot = []
+        for coord in self._affected_sets[aura][controller]:
+            piece = self._cache_manager.occupancy.get(coord)
+            snapshot.append((coord, piece))
+        self._undo_stack.append((controller, snapshot))
 # ==============================================================================
 # FACTORY FUNCTION
 # ==============================================================================

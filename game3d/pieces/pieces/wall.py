@@ -13,7 +13,7 @@ from game3d.movement.movepiece import Move
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.common.coord_utils import in_bounds, add_coords
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState

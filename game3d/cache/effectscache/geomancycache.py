@@ -27,13 +27,8 @@ class GeomancyCache:
 
     def block_square(self, sq: Tuple[int, int, int], current_ply: int, board: Board) -> bool:
         """Manually block a square if empty and not already blocked."""
-        # Use cache manager to check if square is occupied
-        if self._cache_manager:
-            piece = self._cache_manager.occupancy.get(sq)
-        else:
-            piece = None  # Conservative: assume occupied if no cache
-
-        if piece is not None:
+        # FIXED: Use cache manager to check occupancy
+        if self._cache_manager and self._cache_manager.occupancy.get(sq) is not None:
             return False
         if self.is_blocked(sq, current_ply):
             return False
@@ -82,19 +77,3 @@ class GeomancyCache:
         return {
             'blocked_squares': len(self._blocks),
         }
-
-    def _update_occupancy_incrementally(
-        self,
-        board: "Board",
-        moved_sq: Coord,
-        captured_sq: Optional[Coord],
-    ) -> None:
-        occ = self._cache_manager.occupancy
-
-        self._cache_manager.set_piece(moved_sq, None)
-        if captured_sq is not None:
-            self._cache_manager.set_piece(captured_sq, None)
-
-        # Cache-first read – avoids board.get
-        to_piece = self._cache_manager.occupancy.get(moved_sq)
-        self._cache_manager.set_piece(moved_sq, to_piece)

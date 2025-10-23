@@ -61,12 +61,3 @@ class TrailblazeCache:
         """Clear all cached trail data."""
         self._recorders.clear()
         self._counters.clear()
-
-    def _update_occupancy_incrementally(
-        self, board: "Board", from_sq: Coord, to_sq: Coord
-    ) -> None:
-        occ: OccupancyCache = self._cache_manager.occupancy
-        self._cache_manager.set_piece(from_sq, None)
-        # Cache-first read
-        to_piece = self._cache_manager.occupancy.get(to_sq)
-        self._cache_manager.set_piece(to_sq, to_piece)

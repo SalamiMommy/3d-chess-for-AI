@@ -12,7 +12,7 @@ from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.jumpmovement import (
     get_integrated_jump_movement_generator,
 )
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -39,7 +39,7 @@ def generate_hive_moves(
 ) -> List[Move]:
     """Return every **one-step** Hive move from the given coordinate."""
     x, y, z = ensure_int_coords(x, y, z)
-    engine = get_integrated_jump_movement_generator(cache)
+    engine = get_integrated_jump_movement_generator(cache_manager)
     return engine.generate_jump_moves(
         color=color,
         pos=(x, y, z),

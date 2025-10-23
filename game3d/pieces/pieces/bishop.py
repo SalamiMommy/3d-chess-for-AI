@@ -10,7 +10,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.slidermovement import generate_moves
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager

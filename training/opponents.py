@@ -34,9 +34,14 @@ class OpponentBase:
         self.color = color
 
     def _get_simulated_state(self, state: GameState, move: Move) -> GameState:
-        """Create an isolated simulated state after the move."""
+        """Create an isolated simulated state using the existing cache manager."""
+        # Use the existing cache manager but create a temporary board
         temp_board = Board(state.board.tensor().clone())
-        temp_cache = get_cache_manager(temp_board, state.color)
+
+        # Reuse the same cache manager type but with temporary board
+        temp_cache = state.cache_manager.__class__(temp_board, state.color)
+        temp_cache.initialise(state.color)
+
         temp_state = GameState(
             board=temp_board,
             color=state.color,

@@ -8,18 +8,23 @@ from game3d.common.enums import Color, PieceType
 from game3d.common.piece_utils import get_player_pieces, color_to_code, find_king
 from game3d.common.coord_utils import filter_valid_coords
 from game3d.common.move_utils import filter_none_moves
-
+from game3d.common.coord_utils import Coord
+from game3d.pieces.piece import Piece
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
 def _get_check_summary(state: GameState) -> Dict[str, Any]:
-    # STANDARDIZED: cache_manager
-    return state.cache_manager.get_check_summary()
+    # STANDARDIZED: cache_manager - use the method that exists
+    return state.cache_manager.get_check_summary(state.has_priest)  # Pass the has_priest callable
 
-def _attacked_by(state: GameState, attacker: Color) -> set[Tuple[int, int, int]]:
+def _attacked_by(state: GameState, attacker: Color) -> set[Coord]:
     # STANDARDIZED: cache_manager
-    return state.cache_manager.get_attacked_squares(attacker) or set()
+    return state.cache_manager.get_attacked_squares(attacker)
+
+def has_priest(state: GameState, color: Color) -> bool:
+    """Check if player has any priests alive."""
+    return state.cache_manager.has_priest(color)
 
 def validate_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
     """Single-pass validation without redundant checks."""
@@ -44,12 +49,13 @@ def _blocked_by_own_color(move: Move, state: GameState) -> bool:
     return color_to_code(dest.color) == color_to_code(state.color)
 
 def leaves_king_in_check(move: Move, state: GameState) -> bool:
-    # STANDARDIZED: cache_manager
     if state.cache_manager.is_frozen(move.from_coord, state.color):
         return True
 
     tmp = state.clone()
     tmp.make_move(move)
+
+    # FIX: Use the standardized function
     summary = _get_check_summary(tmp)
     del tmp
     return summary[f"{state.color.name.lower()}_check"]

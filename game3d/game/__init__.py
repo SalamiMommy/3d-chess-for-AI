@@ -26,15 +26,6 @@ from .terminal import (
     insufficient_material
 )
 
-# Import move_utils (breaks circular dependency)
-from .move_utils import (
-    apply_hole_effects,
-    apply_bomb_effects,
-    apply_trailblaze_effect,
-    reconstruct_trailblazer_path,
-    extract_enemy_slid_path
-)
-
 # Import moveeffects (now has archery and hive moves)
 from .moveeffects import apply_archery_attack, apply_hive_moves
 
@@ -141,13 +132,6 @@ __all__ = [
     'make_move',
     'undo_move',
     'validate_legal_moves',
-
-    # Move utility functions
-    'apply_hole_effects',
-    'apply_bomb_effects',
-    'apply_trailblaze_effect',
-    'reconstruct_trailblazer_path',
-    'extract_enemy_slid_path',
 
     # Special game modes
     'apply_archery_attack',

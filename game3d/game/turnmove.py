@@ -1,4 +1,4 @@
-# turnmove.py
+# game3d/game/turnmove.py - CLEANED
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
@@ -14,23 +14,18 @@ from game3d.attacks.check import _any_priest_alive
 from .performance import track_operation_time
 from game3d.cache.caches.zobrist import compute_zobrist
 from game3d.movement.movepiece import MOVE_FLAGS
-from game3d.common.move_utils import validate_moves
-from game3d.common.debug_utils import UndoSnapshot
 
-from .move_utils import (
-    apply_hole_effects,
-    apply_bomb_effects,
-    apply_trailblaze_effect,
-    apply_geomancy_effect,
-    reconstruct_trailblazer_path,
-    extract_enemy_slid_path,
-)
+# Common imports
+from game3d.common.move_utils import validate_moves, apply_special_effects, create_enriched_move
+from game3d.common.cache_utils import validate_cache_integrity
+from game3d.common.debug_utils import UndoSnapshot
+from game3d.common.move_validation import validate_move_basic, validate_move_destination
 
 if TYPE_CHECKING:
     from .gamestate import GameState
 
 # ------------------------------------------------------------------
-# VALIDATION
+# VALIDATION (use common modules)
 # ------------------------------------------------------------------
 def validate_legal_moves(game_state: 'GameState', moves: List[Move], color: Color) -> List[Move]:
     """Paranoid validation of legal moves - remove any from empty squares."""
@@ -86,24 +81,18 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
 def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
     return generate_pseudo_legal_moves(game_state)
 
-
 # ------------------------------------------------------------------
-# OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES - REUSING CACHE MANAGER
+# OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     from .gamestate import GameState
 
-    # CORRECTED: Access through manager
-    if game_state.cache_manager.occupancy.get(mv.from_coord) is None:
-        raise ValueError(f"make_move: no piece at {mv.from_coord}")
+    # Use common validation
+    if not validate_move_basic(game_state, mv, game_state.color):
+        raise ValueError(f"make_move: invalid move {mv}")
 
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1
-
-        # --- sanity checks --------------------------------------------------
-        moving_piece = game_state.cache_manager.occupancy.get(mv.from_coord)
-        if moving_piece is None or moving_piece.color != game_state.color:
-            raise RuntimeError(f"Cache/board desync or wrong side to move: {mv}")
 
         # --- clone board but REUSE cache manager ----------------------------
         new_board = Board(game_state.board.tensor().clone())
@@ -113,6 +102,7 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         existing_cache_manager.board = new_board
         new_board.cache_manager = existing_cache_manager
 
+        moving_piece = existing_cache_manager.occupancy.get(mv.from_coord)
         captured_piece = existing_cache_manager.occupancy.get(mv.to_coord)
         undo_info = _compute_undo_info(game_state, mv, moving_piece, captured_piece)
 
@@ -138,10 +128,13 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         if is_pawn or is_capture:
             new_state.halfmove_clock = 0
 
-        # Note: All cache updates are now handled by cache_manager.apply_move()
-        # which incrementally updates all sub-caches
+        if not validate_cache_integrity(new_state):
+            print("WARNING: Cache desync detected after move")
+            # Optionally force rebuild
+            new_state.cache_manager.rebuild(new_state.board, new_state.color)
 
         return new_state
+
 # ------------------------------------------------------------------
 # UNDO MOVE IMPLEMENTATION
 # ------------------------------------------------------------------
@@ -152,35 +145,32 @@ def undo_move(game_state: 'GameState') -> 'GameState':
     with track_operation_time(game_state._metrics, 'total_undo_move_time'):
         game_state._metrics.undo_move_calls += 1
 
-        # we always store undo_info since the last patch
         return _fast_undo(game_state)
-
 
 def _fast_undo(game_state: 'GameState') -> 'GameState':
     """Revert last move using cached tensors + cache-manager undo."""
     from .gamestate import GameState
 
-    undo_info = game_state._undo_info  # UndoSnapshot
+    undo_info = game_state._undo_info
     last_mv   = game_state.history[-1]
 
-    # --- restore board tensor ------------------------------------------
+    # Restore board tensor
     new_board = Board(undo_info.original_board_tensor.clone())
 
-    # --- ask the cache manager to undo *its* part -----------------------
+    # Update cache manager with restored board
     game_state.cache_manager.board = new_board
-    game_state.cache_manager.undo_move(
-        last_mv,
-        game_state.color.opposite(),
-        undo_info.original_halfmove_clock,  # ✅ Correct ply
-        game_state._undo_info
-    )
-    game_state.cache_manager.occupancy.rebuild(new_board)
 
-    # --- rebuild previous state ----------------------------------------
+    # Call undo_move with proper parameters
+    success = game_state.cache_manager.undo_move(last_mv, game_state.color.opposite())
+    if not success:
+        # Fallback: rebuild cache
+        game_state.cache_manager.rebuild(new_board, game_state.color.opposite())
+
+    # Rebuild previous state
     prev_state = GameState(
         board=new_board,
         color=game_state.color.opposite(),
-        cache=game_state.cache,
+        cache_manager=game_state.cache_manager,  # Reuse same manager
         history=game_state.history[:-1],
         halfmove_clock=undo_info.original_halfmove_clock,
         game_mode=game_state.game_mode,
@@ -189,10 +179,6 @@ def _fast_undo(game_state: 'GameState') -> 'GameState':
     prev_state._zkey = undo_info.original_zkey
     prev_state._clear_caches()
     return prev_state
-
-def _full_undo(game_state: 'GameState') -> 'GameState':
-    """Full undo by replaying moves from initial state."""
-    raise NotImplementedError("Full undo requires storing initial state")
 
 def _compute_undo_info(game_state: 'GameState',
                        mv: Move,
@@ -206,39 +192,10 @@ def _compute_undo_info(game_state: 'GameState',
         original_zkey=game_state._zkey,
         moving_piece=moving_piece,
         captured_piece=captured_piece,
-    )
-
-def _create_enriched_move(
-    game_state: 'GameState',
-    mv: Move,
-    removed_pieces: List,
-    moved_pieces: List,
-    is_self_detonate: bool,
-    undo_info: Dict[str, Any],
-    captured_piece: Optional['Piece'] = None,
-    is_pawn: bool = False,
-    is_capture: bool = False
-) -> 'EnrichedMove':
-    """Create enriched move with all side effects and undo information."""
-    is_capture_flag = mv.is_capture or (captured_piece is not None)
-    core_move = convert_legacy_move_args(
-        from_coord=mv.from_coord,
-        to_coord=mv.to_coord,
-        is_capture=is_capture_flag,
-        captured_piece=captured_piece,
-        is_promotion=mv.is_promotion,
-        promotion_type=None,
-        is_en_passant=False,
-        is_castle=False,
-    )
-    return EnrichedMove(
-        core_move=core_move,
-        removed_pieces=removed_pieces,
-        moved_pieces=moved_pieces,
-        is_self_detonate=is_self_detonate,
-        undo_info=undo_info,
-        is_pawn_move=is_pawn,
-        is_capture=is_capture
+        # ADD these for cache manager undo
+        original_aura_state=getattr(game_state.cache_manager.aura_cache, '_state', None),
+        original_trailblaze_state=getattr(game_state.cache_manager.trailblaze_cache, '_state', None),
+        original_geomancy_state=getattr(game_state.cache_manager.geomancy_cache, '_state', None),
     )
 
 @dataclass(slots=True)

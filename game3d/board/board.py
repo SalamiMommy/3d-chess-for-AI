@@ -1,4 +1,4 @@
-# game3d/board/board.py
+# game3d/board/board.py - CLEANED
 """
 9×9×9 board – tensor-first, zero-copy, training-ready.
 """
@@ -6,10 +6,11 @@ from __future__ import annotations
 import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List
-from game3d.common.coord_utils import  Coord, in_bounds, coord_to_idx, idx_to_coord
+
+from game3d.common.coord_utils import Coord, in_bounds
 from game3d.common.tensor_utils import hash_board_tensor
 from game3d.common.piece_utils import iterate_occupied
-from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME, N_PIECE_TYPES, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS, N_COLOR_PLANES, N_TOTAL_PLANES
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_PIECE_TYPES, PIECE_SLICE
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
@@ -143,7 +144,6 @@ class Board:
         # print("[POST-INIT] BK plane-40 value:", self._tensor[40, 8, 4, 4].item())
         # print("[POST-INIT] BK nonzero:", self._tensor[:, 8, 4, 4].nonzero(as_tuple=False).flatten())
 
-
     @property
     def occupancy_mask(self) -> torch.Tensor:
         if self.cache_manager is not None:
@@ -198,10 +198,10 @@ class Board:
 
         # Handle special moves
         if mv.metadata.get("is_swap", False):
-            from game3d.game.move_utils import apply_swap_move
+            from game3d.common.move_utils import apply_swap_move
             apply_swap_move(self, mv)
         elif getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
-            from game3d.game.move_utils import apply_promotion_move
+            from game3d.common.move_utils import apply_promotion_move
             apply_promotion_move(self, mv, piece)
         else:
             # Standard move
@@ -234,25 +234,10 @@ class Board:
         b.init_startpos()
         return b
 
-    def _validate_board_state(self) -> None:
-        """Validate that all required attributes are present."""
-        required_attrs = ['_tensor', '_hash', '_gen', '_occupancy_mask', '_occupied_list', '_symmetry_manager']
-        missing = [attr for attr in required_attrs if not hasattr(self, attr)]
-        if missing:
-            raise AttributeError(f"Board missing required attributes: {missing}")
-
     @property
     def generation(self) -> int:
         """Get the current generation number of the board."""
         return self._gen
-
-    # def enumerate(self) -> Iterable[Tuple[Coord, Optional[Piece]]]:
-    #     """Yield (coord, piece_or_None) for every square on the 9×9×9 board."""
-    #     for z in range(SIZE_Z):
-    #         for y in range(SIZE_Y):
-    #             for x in range(SIZE_X):
-    #                 c = (x, y, z)
-    #                 yield c, self.piece_at(c)
 
     def set_piece(self, coord: Coord, piece: Optional[Piece]) -> None:
         """Set piece at coord, updating tensor."""

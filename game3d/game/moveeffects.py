@@ -1,22 +1,17 @@
-# moveeffects.py - FIXED
-# moveeffects.py
+# game3d/game/moveeffects.py - CLEANED
 from __future__ import annotations
 from typing import List, Tuple, Optional, Set, TYPE_CHECKING
-import time  # Added missing import
+import time
 
 from game3d.board.board import Board
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
-
 from game3d.pieces.piece import Piece
 from game3d.movement.movepiece import MOVE_FLAGS
-from .move_utils import (
-    apply_hole_effects,
-    apply_bomb_effects,
-    apply_trailblaze_effect,
-    reconstruct_trailblazer_path,
-    extract_enemy_slid_path
-)
+
+# Common imports
+from game3d.common.move_utils import apply_special_effects, create_enriched_move
+from game3d.common.move_validation import validate_move_basic
 
 if TYPE_CHECKING:
     from .gamestate import GameState
@@ -68,7 +63,6 @@ def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int
             turn_number=game_state.turn_number + 1,
         )
 
-        # Zobrist will be incrementally updated by cache manager
         return new_state
 
 def apply_hive_moves(game_state: 'GameState', moves: List[Move]) -> 'GameState':

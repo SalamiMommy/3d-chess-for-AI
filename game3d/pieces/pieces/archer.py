@@ -12,7 +12,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move, convert_legacy_move_args, MOVE_FLAGS
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -54,7 +54,7 @@ def generate_archer_moves(
     moves = []
 
     # 1. King walks using jump movement
-    jump_gen = get_integrated_jump_movement_generator(cache)
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)
     king_moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),

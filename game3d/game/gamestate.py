@@ -1,16 +1,16 @@
-# gamestate.py - FIXED
+# game3d/game/gamestate.py - CLEANED
 from __future__ import annotations
 """
-game3d/game/gamestate.py
 Optimized 9×9×9 game state with incremental updates, caching, and performance monitoring.
 """
 
 from dataclasses import dataclass, field, replace
-from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING, Set
+from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING
 from enum import Enum
 
 import torch
 import numpy as np
+
 from game3d.board.board import Board
 from game3d.common.enums import Color, PieceType, Result
 from game3d.movement.movepiece import Move
@@ -18,10 +18,13 @@ from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_PI
 from game3d.game.performance import PerformanceMetrics
 from game3d.pieces.piece import Piece
 
-# Avoid circular imports - functions will be bound later
+# Common imports for standardized access
+from game3d.common.cache_utils import get_cache_manager, validate_cache_integrity
+from game3d.common.piece_utils import find_king, get_player_pieces
+from game3d.common.state_utils import create_new_state
+
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
-    from typing import Callable
 
 class GameMode(Enum):
     """Game mode enumeration."""
@@ -76,7 +79,7 @@ class GameState:
     def occupancy_cache(self):
         return self.cache_manager.occupancy
 
-    # EFFECT ACCESS METHODS - STANDARDIZED
+    # EFFECT ACCESS METHODS - STANDARDIZED (delegate to cache manager)
     def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
         return self.cache_manager.is_frozen(sq, victim)
 
@@ -101,8 +104,32 @@ class GameState:
     def _with_metrics(self, **kw) -> "GameState":
         return replace(self, _metrics=replace(self._metrics, **kw))
 
+    # PIECE UTILITIES (delegate to common modules)
+    def has_priest(self, color: Color) -> bool:
+        """Check if player has any priests alive."""
+        return self.cache_manager.has_priest(color)
+
+    def any_priest_alive(self) -> bool:
+        """Check if any priests are alive on the board."""
+        return self.cache_manager.any_priest_alive()
+
+    def find_king(self, color: Color) -> Optional[Tuple[int, int, int]]:
+        """Find king position for given color."""
+        return find_king(self, color)
+
+    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
+        """Get squares attacked by given color."""
+        return self.cache_manager.get_attacked_squares(color)
+
+    @property
+    def ply(self) -> int:
+        """Get current ply (half-move count)."""
+        return self.halfmove_clock
+
     # TENSOR REPRESENTATION - OPTIMIZED
     def to_tensor(self, device: Optional[torch.device | str] = None) -> torch.Tensor:
+        from game3d.common.tensor_utils import create_occupancy_mask_tensor, get_current_player
+
         cache_key = (self.board.byte_hash(), self.color)
 
         if (self._tensor_cache is not None and
@@ -119,35 +146,11 @@ class GameState:
         )
 
         # Use cache_manager for efficient piece iteration
-        occupied_data = []
         for color in [Color.WHITE, Color.BLACK]:
             for coord, piece in self.cache_manager.occupancy.iter_color(color):
-                occupied_data.append((coord, piece))
-
-        if occupied_data:
-            coords, pieces = zip(*occupied_data)
-            x_coords, y_coords, z_coords = zip(*coords)
-
-            x_coords = np.array(x_coords)
-            y_coords = np.array(y_coords)
-            z_coords = np.array(z_coords)
-
-            for piece_color in [Color.WHITE, Color.BLACK]:
-                color_mask = np.array([p.color == piece_color for p in pieces])
-                if not np.any(color_mask):
-                    continue
-
-                color_x = x_coords[color_mask]
-                color_y = y_coords[color_mask]
-                color_z = z_coords[color_mask]
-                color_pieces = [p for p, mask in zip(pieces, color_mask) if mask]
-                ptype_values = np.array([p.ptype.value for p in color_pieces])
-
-                offset = 0 if piece_color == self.color else N_TOTAL_PLANES // 2
-
-                for i, (x, y, z, ptype) in enumerate(zip(color_x, color_y, color_z, ptype_values)):
-                    if ptype < N_TOTAL_PLANES - 1:
-                        tensor[ptype + offset, z, y, x] = 1.0
+                x, y, z = coord
+                offset = 0 if piece.color == Color.WHITE else N_PIECE_TYPES
+                tensor[offset + piece.ptype.value, z, y, x] = 1.0
 
         tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
 
@@ -183,7 +186,6 @@ class GameState:
             new_cache_manager.board = self.board.clone()
             new_cache_manager.board.cache_manager = new_cache_manager
             new_cache_manager._current = self.color
-            # Zobrist will be incrementally updated, no need to recompute here
 
         return GameState(
             board=new_cache_manager.board,
@@ -212,6 +214,7 @@ class GameState:
             turn_number=self.turn_number,
         )
 
+    # GAME LOGIC (delegate to other modules)
     def legal_moves(self) -> List[Move]:
         """Get legal moves for current player."""
         from game3d.game.turnmove import legal_moves
@@ -251,10 +254,6 @@ class GameState:
             game_mode=self.game_mode,
             turn_number=self.turn_number + 1,
         )
-
-    @property
-    def ply(self) -> int:
-        return self.turn_number
 
     def get_performance_stats(self) -> Dict[str, Any]:
         return self._metrics.get_stats()

@@ -11,7 +11,7 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds
-from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
+from game3d.common.cache_utils import get_occupancy_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -91,7 +91,7 @@ def generate_edgerook_moves(cache: 'OptimizedCacheManager', color: Color, x: int
     directions = tarr - np.array(start, dtype=np.int16)
 
     # FIXED: Pass cache_manager
-    jump = get_integrated_jump_movement_generator(cache)
+    jump = get_integrated_jump_movement_generator(cache_manager)
     return jump.generate_jump_moves(
         color=color, pos=start,
         directions=directions.astype(np.int8),

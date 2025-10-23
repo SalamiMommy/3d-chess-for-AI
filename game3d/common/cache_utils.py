@@ -38,3 +38,32 @@ def is_movement_debuffed(cache_manager: 'OptimizedCacheManager', coord: Tuple[in
 def is_geomancy_blocked(cache_manager: 'OptimizedCacheManager', coord: Tuple[int, int, int], current_ply: int) -> bool:
     """Standardized geomancy block check"""
     return cache_manager.is_geomancy_blocked(coord, current_ply)
+
+def get_cache_manager(board_or_state):
+    """Unified cache manager access."""
+    if hasattr(board_or_state, 'cache_manager'):
+        return board_or_state.cache_manager
+    if hasattr(board_or_state, 'cache'):
+        return board_or_state.cache
+    return None
+
+def validate_cache_integrity(game_state: 'GameState') -> bool:
+    """Validate that all caches are in sync after move."""
+    try:
+        # Check occupancy cache vs board
+        for coord, piece in game_state.board.list_occupied():
+            cached_piece = game_state.cache_manager.occupancy.get(coord)
+            if cached_piece != piece:
+                print(f"Cache desync at {coord}: board={piece}, cache={cached_piece}")
+                return False
+
+        # Check Zobrist hash
+        computed_hash = compute_zobrist(game_state.board, game_state.color)
+        if computed_hash != game_state.zkey:
+            print(f"Zobrist desync: computed={computed_hash:#x}, cached={game_state.zkey:#x}")
+            return False
+
+        return True
+    except Exception as e:
+        print(f"Cache validation failed: {e}")
+        return False

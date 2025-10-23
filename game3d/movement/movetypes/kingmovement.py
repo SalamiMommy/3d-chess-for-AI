@@ -6,7 +6,7 @@ import numpy as np
 
 from game3d.common.enums import Color
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.movement.movepiece import Move

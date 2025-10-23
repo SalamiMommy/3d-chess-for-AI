@@ -1,4 +1,4 @@
-# factory.py - FIXED
+# game3d/game/factory.py - CLEANED
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 import torch
@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
 
 from .gamestate import GameState, GameMode
-
 
 def start_game_state(cache_manager: 'OptimizedCacheManager' | None = None) -> GameState:
     """
@@ -28,7 +27,6 @@ def start_game_state(cache_manager: 'OptimizedCacheManager' | None = None) -> Ga
         game_mode=GameMode.STANDARD,
         turn_number=1,
     )
-
 
 def create_game_state_from_tensor(
     tensor: torch.Tensor,
@@ -57,11 +55,9 @@ def create_game_state_from_tensor(
         turn_number=1,
     )
 
-
 def clone_game_state_for_search(original: GameState) -> GameState:
     """Clone game state for search - only create new cache when needed for threading."""
     return original.clone(deep_cache=True)  # Use deep cache for thread safety
-
 
 def new_board_with_manager(color: Color = Color.WHITE) -> Board:
     """

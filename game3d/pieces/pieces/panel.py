@@ -10,7 +10,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -51,7 +51,7 @@ def generate_panel_moves(
     all_dirs = np.unique(np.vstack((_PANEL_DIRECTIONS, _KING_DIRECTIONS)), axis=0)
 
     # Generate all moves using jump movement
-    jump_gen = get_integrated_jump_movement_generator(cache)
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),

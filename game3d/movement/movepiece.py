@@ -5,6 +5,7 @@ import struct
 from typing import Optional, Tuple, List, Any, Dict
 import numpy as np
 from game3d.common.coord_utils import _COORD_TO_IDX, filter_valid_coords
+from game3d.common.enums import PieceType
 
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,
@@ -266,6 +267,7 @@ def convert_legacy_move_args(
     is_capture=False,
     is_buffed=False,
     is_debuffed=False,
+    is_frozen=False,  # ADD THIS MISSING PARAMETER
     **kwargs,
 ):
     flags = 0
@@ -291,11 +293,9 @@ def convert_legacy_move_args(
         flags |= MOVE_FLAGS['FROZEN']
 
     captured_int = captured_piece.ptype.value if captured_piece else 0
-    promotion_int = promotion_type.ptype.value if promotion_type else 0
+    promotion_int = promotion_type.value if promotion_type else 0  # FIXED: removed .ptype
 
     return Move(from_coord, to_coord, flags, captured_int, promotion_int)
-
-
 # ------------------------------------------------------------------
 # MoveReceipt (unchanged)
 # ------------------------------------------------------------------

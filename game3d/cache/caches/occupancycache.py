@@ -45,8 +45,9 @@ class OccupancyCache:
                 f"Only [0,1,2] are allowed (0=empty, 1=white, 2=black)."
             )
 
+
     def is_occupied(self, x: int, y: int, z: int) -> bool:
-        """Check if occupied - NO LOCK for read-only operations."""
+        """Check if occupied - CONSISTENT (x,y,z) parameters."""
         return self._occ[z, y, x] != 0
 
     def is_occupied_batch(self, coords: np.ndarray) -> np.ndarray:
@@ -78,9 +79,8 @@ class OccupancyCache:
         return self._occ.tobytes()
 
     def get(self, coord: Coord) -> Optional[Piece]:
-        """Get piece - LOCK-FREE cache hit, lock only on miss."""
-        # FIXED: Consistent coordinate handling
-        x, y, z = coord  # Expect (x,y,z)
+        """Get piece - CONSISTENT (x,y,z) coordinate input."""
+        x, y, z = coord
 
         # Early exit for OOB coordinates (defensive)
         if not in_bounds(coord):
@@ -162,7 +162,7 @@ class OccupancyCache:
         return None
 
     def _clip_coords(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Clamp coordinates to board bounds."""
+        """Clamp coordinates to board bounds - CONSISTENT (x,y,z) handling."""
         return np.clip(x, 0, SIZE_X - 1), np.clip(y, 0, SIZE_Y - 1), np.clip(z, 0, SIZE_Z - 1)
 
     def iter_color(self, color: Optional[Color]) -> Iterator[Tuple[Coord, Piece]]:
@@ -241,11 +241,14 @@ class OccupancyCache:
             self._priest_count[piece.color] += 1
 
     def batch_set_positions(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
-        """
-        Batch update positions - INCREMENTAL with priest count fix.
-        """
+        """Batch update positions - INCREMENTAL with priest count fix."""
         # CORRECTION: Update priest counts before applying
         for coord, piece in updates:
+            # FIXED: Consistent coordinate handling
+            x, y, z = coord
+            if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):
+                continue
+
             old_piece = self.get(coord)  # Cache hit, but lock held now
             if old_piece and old_piece.ptype == PieceType.PRIEST:
                 self._priest_count[old_piece.color.value] -= 1
@@ -255,12 +258,16 @@ class OccupancyCache:
         # Apply updates (standard logic)
         for coord, piece in updates:
             x, y, z = coord
+            if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):
+                continue
+
             if piece is None:
                 self._occ[z, y, x] = 0
                 self._ptype[z, y, x] = 0
             else:
                 self._occ[z, y, x] = 1 if piece.color == Color.WHITE else 2
                 self._ptype[z, y, x] = piece.ptype.value
+
             # CORRECTION: Invalidate piece cache for affected coords
             self._piece_cache.pop(coord, None)
 

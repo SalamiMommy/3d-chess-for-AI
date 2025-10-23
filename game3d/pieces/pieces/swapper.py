@@ -10,7 +10,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -35,7 +35,7 @@ def generate_swapper_moves(
     """Generate swapper moves: king walks + friendly swaps."""
     x, y, z = ensure_int_coords(x, y, z)
 
-    jump_gen = get_integrated_jump_movement_generator(cache)
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = []
 
     # 1. King walks

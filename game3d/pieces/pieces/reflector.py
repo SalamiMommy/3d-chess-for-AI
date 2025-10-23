@@ -11,7 +11,7 @@ from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds
 from game3d.movement.movepiece import convert_legacy_move_args
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -119,14 +119,15 @@ class _ReflectingBishopGen:
 # ----------------------------------------------------------
 # Singleton helper - FIXED: Don't modify cache object
 # ----------------------------------------------------------
-_reflecting_bishop_gens = {}  # cache_id -> generator
-
 def _get_gen(cache: 'OptimizedCacheManager') -> _ReflectingBishopGen:
-    cache_id = id(cache)
-    if cache_id not in _reflecting_bishop_gens:
-        _reflecting_bishop_gens[cache_id] = _ReflectingBishopGen(cache)
-    return _reflecting_bishop_gens[cache_id]
+    """Use the cache manager's existing generator instead of creating new one."""
+    # Use the cache manager's integrated jump generator
+    if hasattr(cache, '_reflecting_bishop_gen') and cache._reflecting_bishop_gen is not None:
+        return cache._reflecting_bishop_gen
 
+    # Create and store in cache manager if not exists
+    cache._reflecting_bishop_gen = _ReflectingBishopGen(cache)
+    return cache._reflecting_bishop_gen
 # ----------------------------------------------------------
 # Public API + dispatcher
 # ----------------------------------------------------------

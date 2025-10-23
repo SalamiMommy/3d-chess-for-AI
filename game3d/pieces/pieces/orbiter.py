@@ -9,7 +9,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move
-from game3d.movement.cache_utils import ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -27,7 +27,7 @@ _ORBITAL_DIRS = np.array([
 def generate_orbital_moves(cache: 'OptimizedCacheManager', color: Color, x: int, y: int, z: int) -> List[Move]:
     """Orbiter jumps to any square exactly 4 Manhattan away."""
     x, y, z = ensure_int_coords(x, y, z)
-    return get_integrated_jump_movement_generator(cache).generate_jump_moves(
+    return get_integrated_jump_movement_generator(cache_manager).generate_jump_moves(
         color=color, pos=(x, y, z), directions=_ORBITAL_DIRS
     )
 

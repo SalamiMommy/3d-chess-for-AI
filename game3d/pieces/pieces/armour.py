@@ -10,7 +10,7 @@ from typing import List, Tuple, Set, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
-from game3d.movement.cache_utils import get_occupancy_safe, ensure_int_coords
+from game3d.common.cache_utils import get_occupancy_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState

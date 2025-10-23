@@ -8,7 +8,7 @@ from typing import List, TYPE_CHECKING
 from game3d.common.enums import Color
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.coord_utils import in_bounds, in_bounds_scalar
-from game3d.movement.cache_utils import ensure_int_coords, get_occupancy_array
+from game3d.common.cache_utils import ensure_int_coords, get_occupancy_array
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -29,8 +29,8 @@ def generate_moves(
     # Ensure coordinates are safe
     pos = ensure_int_coords(*pos)
 
-    # Get occupancy array through public API
-    occupancy = get_occupancy_array(cache_manager)
+    # Use cache manager's public API to get occupancy array
+    occupancy = cache_manager.get_occupancy_array_readonly()
 
     raw = generate_slider_moves_kernel(
         pos=pos,

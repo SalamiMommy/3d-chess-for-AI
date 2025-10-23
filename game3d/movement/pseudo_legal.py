@@ -46,8 +46,8 @@ def generate_pseudo_legal_moves_for_piece(
     state: GameState, coord: Tuple[int, int, int]
 ) -> List[Move]:
     """Single implementation without redundant filtering."""
-    # STANDARDIZED: cache_manager
-    piece = state.cache_manager.occupancy.get(coord)
+    # STANDARDIZED: cache_manager - use occupancy_cache property
+    piece = state.cache_manager.occupancy_cache.get(coord)
     if not piece or piece.color != state.color:
         return []
 
