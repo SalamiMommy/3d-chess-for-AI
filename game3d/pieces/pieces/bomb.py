@@ -1,4 +1,4 @@
-# game3d/movement/pieces/bomb.py
+# game3d/movement/pieces/bomb.py - FIXED
 """
 Unified Bomb generator – king steps + self-detonation.
 """
@@ -17,9 +17,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -29,7 +27,7 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_bomb_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -37,7 +35,7 @@ def generate_bomb_moves(
     x, y, z = ensure_int_coords(x, y, z)
     pos = (x, y, z)
 
-    # 1. King walks using jump movement
+    # 1. King walks using jump movement - FIXED: Use parameter name
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -47,7 +45,7 @@ def generate_bomb_moves(
     )
 
     # 2. Self-detonation move (if it would affect enemies)
-    if _detonate_would_affect_enemies(cache, pos, color):
+    if _detonate_would_affect_enemies(cache_manager, pos, color):
         detonate_move = convert_legacy_move_args(
             from_coord=pos,
             to_coord=pos,
@@ -59,7 +57,7 @@ def generate_bomb_moves(
     return moves
 
 def _detonate_would_affect_enemies(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     center: Tuple[int, int, int],
     current_color: Color
 ) -> bool:
@@ -67,10 +65,11 @@ def _detonate_would_affect_enemies(
     from game3d.attacks.check import _any_priest_alive
 
     for sq in get_aura_squares(center, radius=2):
-        victim = cache.occupancy.get(sq)
+        # FIXED: Use public API instead of direct occupancy access
+        victim = cache_manager.get_piece(sq)
         if victim is None or victim.color == current_color:
             continue
-        if victim.ptype is PieceType.KING and _any_priest_alive(cache.board, victim.color):
+        if victim.ptype is PieceType.KING and _any_priest_alive(cache_manager.board, victim.color):
             continue
         return True  # At least one enemy would be affected
 
@@ -79,6 +78,7 @@ def _detonate_would_affect_enemies(
 @register(PieceType.BOMB)
 def bomb_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_bomb_moves(state.cache, state.color, x, y, z)
+    # FIXED: Use cache_manager property
+    return generate_bomb_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_bomb_moves"]

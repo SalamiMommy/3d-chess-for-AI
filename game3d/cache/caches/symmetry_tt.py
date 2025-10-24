@@ -1,6 +1,5 @@
+# symmetry_tt.py (updated with common modules)
 from __future__ import annotations
-"""Optimized symmetry-aware transposition table – tuned for Ryzen 5 5600X + 64GB RAM."""
-# game3d/cache/symmetry_tt.py
 
 from typing import Optional, Dict, Any, Set, Tuple, List
 from dataclasses import dataclass
@@ -11,10 +10,11 @@ from game3d.cache.caches.transposition import TranspositionTable, TTEntry, Compa
 from game3d.board.symmetry import SymmetryManager, RotationType
 from game3d.common.enums import Color
 from game3d.cache.caches.zobrist import compute_zobrist
+from game3d.common.coord_utils import coord_to_idx, idx_to_coord
+from game3d.common.debug_utils import CacheStatsMixin
 
 @dataclass
 class SymmetryStats:
-    """Statistics for symmetry operations."""
     __slots__ = ("probe_count", "hit_count", "store_count", "transform_time", "canonical_hits")
     probe_count: int
     hit_count: int
@@ -31,7 +31,6 @@ class SymmetryStats:
 
 
 class LRUCache:
-    """Simple LRU cache with size limit."""
     def __init__(self, maxsize: int = 5000):
         self.maxsize = maxsize
         self.cache = OrderedDict()
@@ -53,8 +52,7 @@ class LRUCache:
         self.cache.clear()
 
 
-class SymmetryAwareTranspositionTable(TranspositionTable):
-    """High-performance symmetry-aware TT – 6GB default, Zobrist-based, 3D-optimized."""
+class SymmetryAwareTranspositionTable(TranspositionTable, CacheStatsMixin):
     __slots__ = (
         "_symmetry_manager", "_symmetry_stats", "_canonical_cache",
         "_inverse_transform_map", "_zobrist"
@@ -66,7 +64,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         self._symmetry_stats = SymmetryStats()
         self._canonical_cache = LRUCache(maxsize=10000)
 
-        # Precompute inverse transforms for all 24 rotations
         self._inverse_transform_map = {
             RotationType.IDENTITY: RotationType.IDENTITY,
             RotationType.ROTATE_X_90: RotationType.ROTATE_X_270,
@@ -78,7 +75,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             RotationType.ROTATE_Z_90: RotationType.ROTATE_Z_270,
             RotationType.ROTATE_Z_270: RotationType.ROTATE_Z_90,
             RotationType.ROTATE_Z_180: RotationType.ROTATE_Z_180,
-            # Vertex rotations
             RotationType.ROTATE_XYZ_120: RotationType.ROTATE_XYZ_240,
             RotationType.ROTATE_XYZ_240: RotationType.ROTATE_XYZ_120,
             RotationType.ROTATE_XYmZ_120: RotationType.ROTATE_XYmZ_240,
@@ -87,7 +83,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             RotationType.ROTATE_XmYZ_240: RotationType.ROTATE_XmYZ_120,
             RotationType.ROTATE_XmYmZ_120: RotationType.ROTATE_XmYmZ_240,
             RotationType.ROTATE_XmYmZ_240: RotationType.ROTATE_XmYmZ_120,
-            # Edge rotations (self-inverse)
             RotationType.ROTATE_XY_EDGE: RotationType.ROTATE_XY_EDGE,
             RotationType.ROTATE_XmY_EDGE: RotationType.ROTATE_XmY_EDGE,
             RotationType.ROTATE_XZ_EDGE: RotationType.ROTATE_XZ_EDGE,
@@ -96,18 +91,13 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             RotationType.ROTATE_YmZ_EDGE: RotationType.ROTATE_YmZ_EDGE,
         }
 
-    # --------------------------------------------------------------------------
-    # PUBLIC API
-    # --------------------------------------------------------------------------
     def probe_with_symmetry(self, hash_value: int, board) -> Optional[TTEntry]:
-        # Fast path: exact match
         exact_hit = self.probe(hash_value)
         if exact_hit:
             return exact_hit
 
         self._symmetry_stats.probe_count += 1
 
-        # Check canonical cache
         canonical_result = self._canonical_cache.get(hash_value)
         if canonical_result:
             canonical_hash, transform_name = canonical_result
@@ -116,7 +106,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
                 self._symmetry_stats.canonical_hits += 1
                 return self._transform_entry_back(canonical_entry, transform_name)
 
-        # Compute canonical form ONCE
         start = time.perf_counter()
         try:
             canonical_board, canonical_transform = self._symmetry_manager.get_canonical_form(board)
@@ -126,7 +115,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             return None
         self._symmetry_stats.transform_time += time.perf_counter() - start
 
-        # Probe canonical form
         canonical_entry = self.probe(canonical_hash)
         if canonical_entry:
             self._symmetry_stats.hit_count += 1
@@ -137,11 +125,9 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
 
     def store_with_symmetry(self, hash_value: int, board, depth: int,
                         score: int, node_type: int, best_move: Optional[CompactMove] = None) -> None:
-        # Store original
         self.store(hash_value, depth, score, node_type, best_move, self.age_counter)
         self._symmetry_stats.store_count += 1
 
-        # Store canonical form for depth ≥ 3
         if depth >= 3:
             try:
                 canonical_board, canonical_transform = self._symmetry_manager.get_canonical_form(board)
@@ -166,15 +152,10 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             'memory_usage_mb': self.get_memory_usage() / (1024 * 1024),
         }
 
-    # --------------------------------------------------------------------------
-    # INTERNAL HELPERS
-    # --------------------------------------------------------------------------
     def _compute_zobrist_hash(self, board) -> int:
-        """Compute Zobrist hash without side-to-move (for canonical form)."""
         return compute_zobrist(board, Color.WHITE)
 
     def _transform_entry_back(self, entry: TTEntry, transform_name: str) -> TTEntry:
-        """Transform entry back using transformation name (string)."""
         if transform_name == "identity" or not entry.best_move:
             return entry
         original_move = self._transform_move_back(entry.best_move, transform_name)
@@ -188,13 +169,11 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         )
 
     def _transform_move(self, move: CompactMove, transform_name: str) -> CompactMove:
-        """Transform move TO canonical coordinates using string name."""
         if transform_name == "identity":
             return move
         from_coord, to_coord, is_capture, is_promotion = move.unpack()
         from_canon = self._apply_transform_to_coord(from_coord, transform_name)
         to_canon = self._apply_transform_to_coord(to_coord, transform_name)
-        # Reconstruct with proper piece type handling
         from game3d.common.enums import PieceType
         piece_type_value = (move.data >> 20) & 0x3F
         piece_type = PieceType(piece_type_value)
@@ -203,14 +182,12 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         return CompactMove(from_canon, to_canon, piece_type, is_capture, captured_type, is_promotion)
 
     def _transform_move_back(self, move: CompactMove, transform_name: str) -> CompactMove:
-        """Transform move FROM canonical back to original using string name."""
         if transform_name == "identity":
             return move
         inverse_name = self._get_inverse_transform_name(transform_name)
         return self._transform_move(move, inverse_name)
 
     def _get_inverse_transform_name(self, transform_name: str) -> str:
-        """Get inverse transformation name from string."""
         for rot_type in RotationType:
             if rot_type.value == transform_name:
                 inverse_type = self._inverse_transform_map.get(rot_type, rot_type)
@@ -218,7 +195,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         return "identity"
 
     def _apply_transform_to_coord(self, coord: Tuple[int, int, int], transform_name: str) -> Tuple[int, int, int]:
-        """Apply 3D rotation to coordinate using symmetry manager's matrices."""
         R = None
         for rot_type in RotationType:
             if rot_type.value == transform_name:
@@ -228,7 +204,7 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             return coord
 
         x, y, z = coord
-        center = 4  # (9-1)//2
+        center = 4
         centered = [x - center, y - center, z - center]
         rotated = [
             R[0][0]*centered[0] + R[0][1]*centered[1] + R[0][2]*centered[2],
@@ -240,7 +216,6 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             int(round(rotated[1])) + center,
             int(round(rotated[2])) + center,
         )
-        # Clamp to board
         return (
             max(0, min(8, new_coord[0])),
             max(0, min(8, new_coord[1])),

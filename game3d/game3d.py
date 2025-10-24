@@ -42,7 +42,7 @@ class OptimizedGame3D:
         self._state = GameState(
             board=board,
             color=Color.WHITE,
-            cache_manager=cache,  # Use standardized parameter name
+            cache_manager=cache_manager,  # Use standardized parameter name
             game_mode=game_mode,
         )
         self._game_mode = game_mode

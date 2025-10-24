@@ -1,4 +1,4 @@
-# game3d/movement/movetypes/knight.py
+# game3d/movement/movetypes/knight.py - FIXED
 """
 Unified Knight movement generator – 2+1 leaper, share-square aware.
 """
@@ -18,9 +18,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# ------------------------------------------------------------------
 # 24 classical knight offsets (2,1,0) permutations
-# ------------------------------------------------------------------
 KNIGHT_OFFSETS = np.array([
     (1, 2, 0), (1, -2, 0), (-1, 2, 0), (-1, -2, 0),
     (2, 1, 0), (2, -1, 0), (-2, 1, 0), (-2, -1, 0),
@@ -30,13 +28,12 @@ KNIGHT_OFFSETS = np.array([
     (0, 2, 1), (0, 2, -1), (0, -2, 1), (0, -2, -1),
 ], dtype=np.int8)
 
-# ------------------------------------------------------------------
-# Public generator – same architecture as bigknights
-# ------------------------------------------------------------------
-def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+def generate_knight_moves(
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Added parameter
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    cache = state.cache
-    color = state.color
     start = (x, y, z)
 
     # 1. Collect all legal targets (empty or enemy)
@@ -46,7 +43,7 @@ def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List[Mo
         if not in_bounds((tx, ty, tz)):
             continue
         # Use standardized occupancy check
-        occ = get_occupancy_safe(cache, (tx, ty, tz))
+        occ = get_occupancy_safe(cache_manager, (tx, ty, tz))
         if occ is None or occ.color != color:        # empty or enemy
             targets.append((tx, ty, tz))
 
@@ -57,6 +54,7 @@ def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List[Mo
     tarr = np.array(targets, dtype=np.int16)
     directions = tarr - np.array(start, dtype=np.int16)
 
+    # FIXED: Use parameter name
     jump = get_integrated_jump_movement_generator(cache_manager)
     return jump.generate_jump_moves(
         color=color,
@@ -65,12 +63,10 @@ def generate_knight_moves(state: 'GameState', x: int, y: int, z: int) -> List[Mo
         allow_capture=True,
     )
 
-# ------------------------------------------------------------------
-# Dispatcher registration
-# ------------------------------------------------------------------
 @register(PieceType.KNIGHT)
 def knight_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_knight_moves(state, x, y, z)
+    # FIXED: Use cache_manager property and pass to generator
+    return generate_knight_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_knight_moves"]

@@ -1,4 +1,4 @@
-# game3d/movement/pieces/mirror.py
+# game3d/movement/pieces/mirror.py - FIXED
 """
 Mirror-Teleporter – single jump to (8-x, 8-y, 8-z).
 """
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 
 def generate_mirror_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -33,7 +33,7 @@ def generate_mirror_moves(
         return []
 
     # Check if target is occupied by friendly piece
-    victim = cache.occupancy.get(target)
+    victim = cache_manager.get_piece(target)
     if victim is not None and victim.color == color:
         return []
 
@@ -41,6 +41,7 @@ def generate_mirror_moves(
     dx, dy, dz = target[0] - x, target[1] - y, target[2] - z
     directions = np.array([(dx, dy, dz)], dtype=np.int8)
 
+    # FIXED: Use parameter name
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -54,6 +55,6 @@ def generate_mirror_moves(
 @register(PieceType.MIRROR)
 def mirror_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_mirror_moves(state.cache, state.color, x, y, z)
+    return generate_mirror_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_mirror_moves"]

@@ -1,4 +1,4 @@
-# game3d/movement/pieces/nebula.py
+# game3d/movement/pieces/nebula.py - FIXED
 """
 Nebula – teleport to any square within radius-3 sphere.
 """
@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  Radius-3 sphere directions (122 directions)                               #
-# --------------------------------------------------------------------------- #
+# Radius-3 sphere directions (122 directions)
 _NEBULA_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in range(-3, 4)
@@ -28,13 +26,14 @@ _NEBULA_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_nebula_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
     """Generate nebula moves: teleport within radius-3 sphere."""
     x, y, z = ensure_int_coords(x, y, z)
 
+    # FIXED: Use parameter name
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -48,6 +47,7 @@ def generate_nebula_moves(
 @register(PieceType.NEBULA)
 def nebula_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_nebula_moves(state.cache, state.color, x, y, z)
+    # FIXED: Use cache_manager property
+    return generate_nebula_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_nebula_moves"]

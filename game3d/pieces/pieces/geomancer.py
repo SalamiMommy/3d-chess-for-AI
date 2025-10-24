@@ -1,5 +1,4 @@
-# Updated geomancer.py (with consistent cache access)
-
+# geomancer.py - FIXED
 from __future__ import annotations
 from typing import List, Tuple, TYPE_CHECKING
 import numpy as np
@@ -10,23 +9,20 @@ from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.coord_utils import in_bounds
 from game3d.common.constants import RADIUS_3_OFFSETS
-from game3d.common.cache_utils import get_occupancy_safe, ensure_int_coords
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.board.board import Board
     from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState  # Added missing import
+    from game3d.game.gamestate import GameState
 
 def block_candidates(
-    board: "Board",
-    mover_color: "Color",
-    cache_manager: "OptimizedCacheManager | None" = None,
+    cache_manager: 'OptimizedCacheManager',  # STANDARDIZED: Single parameter
+    mover_color: 'Color',
 ) -> List[Tuple[int, int, int]]:
     """
     Return empty squares that <mover_color> may block via geomancy this turn.
     """
-    if cache_manager is None:
-        cache_manager = board.cache_manager
     candidates: List[Tuple[int, int, int]] = []
 
     # Use standardized cache iteration
@@ -41,23 +37,24 @@ def block_candidates(
             if not in_bounds((tx, ty, tz)):
                 continue
 
-            # Use standardized occupancy check
-            if get_occupancy_safe(cache_manager, (tx, ty, tz)) is None:
+            # FIXED: Use cache_manager.get_piece() instead of get_occupancy_safe
+            if cache_manager.get_piece((tx, ty, tz)) is None:
                 candidates.append((tx, ty, tz))
 
     return candidates
 
 def generate_geomancer_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
+    """Generate geomancer moves using single cache manager."""
     x, y, z = ensure_int_coords(x, y, z)
     start = (x, y, z)
     moves: List[Move] = []
 
     # 1. Normal king walks
-    moves.extend(generate_king_moves(cache, color, x, y, z))
+    moves.extend(generate_king_moves(cache_manager, color, x, y, z))
 
     # 2. Geomancy block targets (3-sphere surface)
     for dx, dy, dz in RADIUS_3_OFFSETS:
@@ -65,8 +62,8 @@ def generate_geomancer_moves(
         if not in_bounds((tx, ty, tz)):
             continue
 
-        # Use standardized occupancy check
-        if get_occupancy_safe(cache, (tx, ty, tz)) is not None:
+        # FIXED: Use cache_manager.get_piece() instead of get_occupancy_safe
+        if cache_manager.get_piece((tx, ty, tz)) is not None:
             continue
 
         # Create stationary "effect" move
@@ -81,8 +78,9 @@ def generate_geomancer_moves(
     return moves
 
 @register(PieceType.GEOMANCER)
-def geomancer_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
+def geomancer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_geomancer_moves(state.cache, state.color, x, y, z)
+    # STANDARDIZED: Use cache_manager property
+    return generate_geomancer_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_geomancer_moves"]

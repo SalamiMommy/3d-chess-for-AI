@@ -1,4 +1,4 @@
-# movecache.py - FIXED VERSION
+# movecache.py - UPDATED TO USE COMMON LOGIC
 from __future__ import annotations
 import random
 import time
@@ -12,15 +12,18 @@ if TYPE_CHECKING:
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
-from game3d.common.coord_utils import in_bounds
-from game3d.common.piece_utils import get_player_pieces, infer_piece_from_cache
-from game3d.common.debug_utils import fallback_mode
+
+# Import common modules
+from game3d.common.coord_utils import in_bounds, validate_and_sanitize_coord, Coord, add_coords
+from game3d.common.piece_utils import get_player_pieces, infer_piece_from_cache, get_piece_effect_type, is_effect_piece
+from game3d.common.debug_utils import fallback_mode, CacheStatsMixin
 from game3d.cache.caches.zobrist import compute_zobrist, ZobristHash
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 from game3d.cache.caches.transposition import TranspositionTable
-from game3d.common.move_utils import  filter_none_moves
-from game3d.common.coord_utils import Coord
+from game3d.common.move_utils import filter_none_moves
+from game3d.common.move_validation import validate_move_comprehensive
+from game3d.common.cache_utils import synchronize_zobrist_after_move, get_piece, is_occupied
 
 # ------------------------------------------------------------------
 # Compact move representation for TT entries
@@ -66,7 +69,7 @@ def move_to_key(m: Move) -> int:
 # ==============================================================================
 # OPTIMIZED MOVE CACHE — FULLY TUNED  (NO KING / PRIEST BOOK-KEEPING)
 # ==============================================================================
-class OptimizedMoveCache:
+class OptimizedMoveCache(CacheStatsMixin):
     __slots__ = (
         "_current", "_cache", "_legal_per_piece", "_legal_by_color",
         "_zobrist", "_transposition_table",
@@ -84,6 +87,7 @@ class OptimizedMoveCache:
         current: Color,
         cache_manager: "OptimizedCacheManager",
     ) -> None:
+        super().__init__()
         self._current = current
         self._cache = cache_manager
         self._cache_manager = cache_manager
@@ -125,8 +129,6 @@ class OptimizedMoveCache:
         }
 
         self._gen = -1  # NEW: Initialize generation
-        self._frozen_bitmap: np.ndarray = np.zeros((9,9,9), dtype=bool)  # NEW
-        self._debuffed_bitmap: np.ndarray = np.zeros((9,9,9), dtype=bool)  # NEW
 
     # ------------------------------------------------------------------
     # Properties
@@ -173,7 +175,13 @@ class OptimizedMoveCache:
     # ------------------------------------------------------------------
     def apply_move(self, mv: Move, color: Color) -> None:
         """Incremental move application with proper cache invalidation."""
-        piece = self._cache_manager.occupancy.get(mv.from_coord)
+        # Use common validation
+        if not validate_move_comprehensive(self._cache_manager, mv, color):
+            self._needs_rebuild = True
+            return
+
+        # Use common piece access
+        piece = get_piece(self._cache_manager, mv.from_coord)
         if piece is None:
             self._needs_rebuild = True
             return
@@ -183,6 +191,12 @@ class OptimizedMoveCache:
         if self._gen != board_gen:
             self._needs_rebuild = True
             self._gen = board_gen
+
+        # Use common Zobrist synchronization
+        captured_piece = get_piece(self._cache_manager, mv.to_coord) if getattr(mv, 'is_capture', False) else None
+        synchronize_zobrist_after_move(
+            self._cache_manager, mv, piece, captured_piece, color.opposite()
+        )
 
         # FIXED: Don't update board here - it's already updated by cache manager
         # Just invalidate affected squares
@@ -202,7 +216,8 @@ class OptimizedMoveCache:
         changed.  Board tensor is rolled back **before** any cache update
         or move generation.
         """
-        piece_now = self._cache_manager.occupancy.get(mv.to_coord)
+        # Use common piece access
+        piece_now = get_piece(self._cache_manager, mv.to_coord)
         captured_type = getattr(mv, "captured_ptype", None)
         captured_piece = (
             Piece(color.opposite(), PieceType(captured_type)) if captured_type else None
@@ -266,11 +281,11 @@ class OptimizedMoveCache:
     def _batch_update_pieces(self, affected_squares: Set[Tuple[int,int,int]], color: Color) -> None:
         print("_batch_update_pieces: needs_rebuild =", self._needs_rebuild)
 
-        # FIXED: Use self._cache_manager.occupancy instead of undefined 'occupancy'
+        # FIXED: Use common piece access
         occupancy_cache = self._cache_manager.occupancy
         print('[DEBUG] gen board', self._board.generation,
             'gen occ', occupancy_cache._gen,
-            'piece@from', self._cache_manager.occupancy.get(coord),
+            'piece@from', get_piece(self._cache_manager, coord),
             'needs_rebuild', self._needs_rebuild)
 
         if self._needs_rebuild:
@@ -280,10 +295,10 @@ class OptimizedMoveCache:
         for coord in affected_squares:
             self._legal_per_piece.pop(coord, None)
 
-        # Identify pieces that need updating
+        # Identify pieces that need updating using common piece access
         pieces_to_update = [
             coord for coord in affected_squares
-            if (p := self._cache_manager.occupancy.get(coord)) and p.color == color
+            if (p := get_piece(self._cache_manager, coord)) and p.color == color
         ]
 
         # Use generator.py for updates
@@ -308,7 +323,8 @@ class OptimizedMoveCache:
     def _generate_piece_moves(self, coord: Tuple[int, int, int]) -> List[Move]:
         from game3d.game.gamestate import GameState
         from game3d.movement.generator import generate_legal_moves, generate_legal_moves_for_piece
-        piece = self._cache_manager.occupancy.get(coord)
+        # Use common piece access
+        piece = get_piece(self._cache_manager, coord)
         if not piece:
             return []
 
@@ -324,12 +340,13 @@ class OptimizedMoveCache:
             if not moves:
                 continue
 
-            # DEFENSIVE: Filter out None moves
+            # DEFENSIVE: Filter out None moves using common utility
             moves = filter_none_moves(moves)
             if not moves:
                 continue
 
-            piece = self._cache_manager.occupancy.get(coord)
+            # Use common piece access
+            piece = get_piece(self._cache_manager, coord)
             if not piece:
                 continue
 
@@ -367,13 +384,14 @@ class OptimizedMoveCache:
             from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
             pseudo_moves = generate_pseudo_legal_moves(tmp_state)
 
-            # DEFENSIVE: Filter out None values immediately
+            # DEFENSIVE: Filter out None values immediately using common utility
             pseudo_moves = filter_none_moves(pseudo_moves)
 
             # Filter out moves from empty squares (paranoid check)
             valid_moves = []
             for move in pseudo_moves:
-                piece = occupancy.get(move.from_coord)
+                # Use common piece access
+                piece = get_piece(self._cache_manager, move.from_coord)
                 if piece is None:
                     print(f"[REBUILD] WARNING: Skipping move from empty square {move.from_coord}")
                     continue
@@ -414,7 +432,7 @@ class OptimizedMoveCache:
 
     def _infer_piece(self, coord: Tuple[int, int, int], color: Color) -> Piece:
         """Infer piece type from legal move cache when board is stale."""
-        # UPDATED: Use common.py
+        # Use common piece inference
         return infer_piece_from_cache(self._cache_manager, coord)
 
     def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
@@ -423,18 +441,22 @@ class OptimizedMoveCache:
         return self._attacked_squares[color].copy()
 
     def _update_attacked_squares(self, color: Color) -> None:
-        # CORRECTION: Validate against current occupancy before adding
+        # Use common piece access for validation
         self._attacked_squares[color].clear()
         if self._needs_rebuild:
             self._full_rebuild()
             return
         for mv in self._legal_by_color[color]:
-            if self._cache.occupancy.get(mv.from_coord):  # Skip if piece gone
+            if get_piece(self._cache_manager, mv.from_coord):  # Skip if piece gone
                 self._attacked_squares[color].add(mv.to_coord)
         self._attacked_squares_valid[color] = True
 
     def invalidate_square(self, coord: Tuple[int,int,int]) -> None:
-        """Cheap O(1) mark."""
+        """Cheap O(1) mark with validation."""
+        # Use common coordinate validation
+        coord = validate_and_sanitize_coord(coord)
+        if coord is None:
+            return
         self._invalid_squares.add(coord)
         # remove immediately so we do not rely on the big rebuild
         self._legal_per_piece.pop(coord, None)
@@ -463,17 +485,19 @@ class OptimizedMoveCache:
 
             # ---------- 2.  regenerate moves for dirty squares ----------
             for coord in list(self._invalid_squares):
-                # VALIDATE COORDINATES CONSISTENTLY
-                if not isinstance(coord, tuple) or len(coord) != 3:
+                # Use common coordinate validation
+                coord = validate_and_sanitize_coord(coord)
+                if coord is None:
                     self._legal_per_piece.pop(coord, None)
                     continue
 
                 x, y, z = coord
-                if not (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9):  # CONSISTENT bounds check
+                if not in_bounds(coord):  # Use common bounds check
                     self._legal_per_piece.pop(coord, None)
                     continue
 
-                piece = self._cache_manager.occupancy.get(coord)
+                # Use common piece access and freeze check
+                piece = get_piece(self._cache_manager, coord)
                 if piece and piece.color == self._current and not self._cache_manager.is_frozen(coord, self._current):
                     self._legal_per_piece[coord] = generate_legal_moves_for_piece(tmp_state, coord)
                 else:

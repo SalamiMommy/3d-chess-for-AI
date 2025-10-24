@@ -1,44 +1,41 @@
-# slidermovement.py (updated with public API)
-"""Slider movement – kernel-only, no pre-computed rays."""
+# slidermovement.py - FIXED (parameter name consistency)
+"""Slider movement – use only public cache manager API."""
 from __future__ import annotations
 import numpy as np
 from numba import njit, prange
 from typing import List, TYPE_CHECKING
 
 from game3d.common.enums import Color
-from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.coord_utils import in_bounds, in_bounds_scalar
-from game3d.common.cache_utils import ensure_int_coords, get_occupancy_array
+from game3d.movement.movepiece import Move, convert_legacy_move_args
+from game3d.common.coord_utils import in_bounds_scalar
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
 
-# ------------------------------------------------------------------
-# 1.  Public generator (single entry-point)
-# ------------------------------------------------------------------
 def generate_moves(
     piece_type: str,
     pos: tuple[int, int, int],
-    color: int,
+    color: Color,
     max_distance: int = 8,
     *,
     directions: np.ndarray,
-    cache_manager: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
 ) -> List[Move]:
-    """Generate every slider move by running the Numba kernel once."""
-    # Ensure coordinates are safe
+    """Generate every slider move using cache manager's public API."""
     pos = ensure_int_coords(*pos)
 
-    # Use cache manager's public API to get occupancy array
+    # Use public API to get occupancy array
     occupancy = cache_manager.get_occupancy_array_readonly()
 
     raw = generate_slider_moves_kernel(
         pos=pos,
         directions=directions,
         occupancy=occupancy,
-        color=color,
+        color=color.value,  # Convert to int for kernel
         max_distance=max_distance,
     )
+
     return [
         convert_legacy_move_args(
             from_coord=pos,
@@ -47,7 +44,6 @@ def generate_moves(
         )
         for nx, ny, nz, is_cap in raw
     ]
-
 # ------------------------------------------------------------------
 # 2.  Hot Numba kernel (unchanged)
 # ------------------------------------------------------------------

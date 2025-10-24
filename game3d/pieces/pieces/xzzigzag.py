@@ -1,31 +1,28 @@
 """
 XZ-Zig-Zag — 9-step zig-zag rays in XZ-plane + dispatcher (consolidated).
-Exports:
-  generate_xz_zigzag_moves(cache, color, x, y, z) -> list[Move]
-  (decorated) xz_zigzag_dispatcher(state, x, y, z) -> list[Move]
 """
 from __future__ import annotations
-
 from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movetypes.slidermovement import generate_slider_moves_kernel
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.slidermovement import generate_moves
+from game3d.movement.movepiece import Move, convert_legacy_move_args
 
-# ----------------------------------------------------------
-# 1.  Pre-computed zig-zag vectors (same table as before)
-# ----------------------------------------------------------
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
+
 def _build_xz_zigzag_vectors() -> np.ndarray:
     vecs = []
     for pri, sec in ((1, -1), (-1, 1)):
         seq = []
         curr = np.zeros(3, dtype=np.int8)
         move_primary = True
-        for seg in range(3):                # 3 segments × 3 steps
+        for seg in range(3):
             step = np.zeros(3, dtype=np.int8)
-            ax = 0 if move_primary else 2  # Fixed: XZ-plane uses axes 0 (X) and 2 (Z)
+            ax = 0 if move_primary else 2  # XZ-plane uses axes 0 (X) and 2 (Z)
             step[ax] = pri if move_primary else sec
             for _ in range(3):
                 curr += step
@@ -36,32 +33,23 @@ def _build_xz_zigzag_vectors() -> np.ndarray:
 
 XZ_ZIGZAG_DIRECTIONS = _build_xz_zigzag_vectors()
 
-# ----------------------------------------------------------
-# 2.  Public generator (drop-in replacement)
-# ----------------------------------------------------------
-def generate_xz_zigzag_moves(cache: CacheManager,
-                             color: Color,
-                             x: int, y: int, z: int) -> List[Move]:
+def generate_xz_zigzag_moves(
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     """Generate XZ-zig-zag moves using only the slider kernel."""
-    raw = generate_slider_moves_kernel(
+    return generate_moves(
+        piece_type='xzzigzag',
         pos=(x, y, z),
+        color=color,
+        max_distance=16,
         directions=XZ_ZIGZAG_DIRECTIONS,
-        cache_manager=cache,  # ✅ Fixed: Remove .mask
-        color=color.value,
-        max_distance=16
+        cache_manager=cache_manager,  # FIXED: Use parameter
     )
-    # Convert raw tuples → Move objects
-    return [
-        Move(from_coord=(x, y, z), to_coord=(nx, ny, nz),
-             flags=MOVE_FLAGS['CAPTURE'] if is_cap else 0)
-        for nx, ny, nz, is_cap in raw
-    ]
 
-# ----------------------------------------------------------
-# 3.  Dispatcher (registered here)
-# ----------------------------------------------------------
 @register(PieceType.XZZIGZAG)
-def xz_zigzag_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
-    return generate_xz_zigzag_moves(state.cache, state.color, x, y, z)
+def xz_zigzag_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    return generate_xz_zigzag_moves(state.cache_manager, state.color, x, y, z)  # FIXED: Use cache_manager
 
 __all__ = ['generate_xz_zigzag_moves']

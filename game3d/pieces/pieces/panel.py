@@ -1,4 +1,4 @@
-# game3d/movement/pieces/panel.py
+# game3d/movement/pieces/panel.py - FIXED
 """
 Panel: teleport to any square on the same x OR y OR z plane plus king moves.
 """
@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  Panel directions (same x/y/z plane)                                       #
-# --------------------------------------------------------------------------- #
+# Panel directions (same x/y/z plane)
 _PANEL_DIRECTIONS = np.array([
     # X-axis lines (y,z constant)
     *[(dx, 0, 0) for dx in range(-8, 9) if dx != 0],
@@ -28,9 +26,7 @@ _PANEL_DIRECTIONS = np.array([
     *[(0, 0, dz) for dz in range(-8, 9) if dz != 0],
 ], dtype=np.int8)
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -40,17 +36,19 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_panel_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """Generate panel moves: king walks + plane teleports."""
+    """Generate panel moves using single cache manager."""
     x, y, z = ensure_int_coords(x, y, z)
 
     # Combine directions and remove duplicates
     all_dirs = np.unique(np.vstack((_PANEL_DIRECTIONS, _KING_DIRECTIONS)), axis=0)
 
-    # Generate all moves using jump movement
+    if len(all_dirs) == 0:  # ADDED: Early return for empty directions
+        return []
+
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -64,6 +62,6 @@ def generate_panel_moves(
 @register(PieceType.PANEL)
 def panel_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_panel_moves(state.cache, state.color, x, y, z)
+    return generate_panel_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_panel_moves"]

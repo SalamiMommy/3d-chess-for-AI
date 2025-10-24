@@ -1,14 +1,6 @@
-# game3d/movement/trailblazer.py
+# game3d/movement/trailblazer.py - FIXED
 """
 Unified Trailblazer – 3-step rook slider + trailblaze side-effects.
-
-Movement:
-  - orthogonal slides up to 3 squares (like Rook)
-
-Side-effect:
-  - every square the piece **slides through** is **recorded** (last 3 moves)
-  - when an **enemy piece moves into** any recorded square (Trailblazer owner's recorded) → **+1 trail counter**
-  - counter reaches 3 → piece is **removed** (king spared if priests alive)
 """
 
 from __future__ import annotations
@@ -22,7 +14,7 @@ from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import generate_moves
 from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
 from game3d.common.coord_utils import reconstruct_path
-from game3d.attacks.check import _any_priest_alive  # king spared if priests
+from game3d.attacks.check import _any_priest_alive
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -37,10 +29,10 @@ _ROOK_DIRS = np.array([
 ], dtype=np.int8)
 
 # ----------------------------------------------------------
-# 1.  Movement generator – 3-step rook + trail metadata
+# 1. Movement generator – FIXED parameter name
 # ----------------------------------------------------------
 def generate_trailblazer_moves(
-    cache,          # OptimizedCacheManager
+    cache_manager,  # FIXED: Changed from 'cache' to 'cache_manager' for consistency
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -48,10 +40,10 @@ def generate_trailblazer_moves(
     moves = generate_moves(
         piece_type='rook',
         pos=(x, y, z),
-        color=color.value,
+        color=color,
         max_distance=3,
         directions=_ROOK_DIRS,
-        cache_manager=cache,
+        cache_manager=cache_manager,  # FIXED: Use parameter name
     )
 
     # Annotate every move with the **slid path** (intermediates only)
@@ -64,7 +56,7 @@ def generate_trailblazer_moves(
     return moves
 
 # ----------------------------------------------------------
-# 2.  Trailblaze recorder – per-trailblazer FIFO (last 3 slid sets)
+# 2. Trailblaze recorder (unchanged)
 # ----------------------------------------------------------
 class TrailblazeRecorder:
     __slots__ = ("_history",)
@@ -83,44 +75,42 @@ class TrailblazeRecorder:
         return out
 
 # ----------------------------------------------------------
-# 3.  Side-effect helpers – called by cache manager when enemy moves
+# 3. Side-effect helpers (unchanged)
 # ----------------------------------------------------------
 def apply_trailblaze_step(
     enemy_sq: Tuple[int, int, int],
     enemy_color: Color,
-    cache,
+    cache_manager,  # FIXED: Consistent parameter name
     board,
 ) -> List[Tuple[Tuple[int, int, int], "Piece"]]:
     """
     Enemy *enemy_sq* just moved; if it lands on a trail-marked square,
     increment its counter and remove if counter == 3 (king spared if priests).
-    Returns list of (sq, piece) that were actually removed.
     """
     removed: List[Tuple[Tuple[int, int, int], "Piece"]] = []
 
-    # 1.  Get current trail squares (union of last 3 Trailblazer slides)
-    # FIXED: current_trail_squares takes controller (owner), but for enemy check, use owner's opposite
-    trail = cache.trailblaze_cache.current_trail_squares(enemy_color.opposite(), board)
+    # 1. Get current trail squares
+    trail = cache_manager.trailblaze_cache.current_trail_squares(enemy_color.opposite(), board)
     if enemy_sq not in trail:
         return removed
 
-    # 2.  Increment counter
-    if cache.trailblaze_cache.increment_counter(enemy_sq, enemy_color, board):
-        # 3.  Remove if limit reached (king spared if priests alive)
-        victim = cache.occupancy.get(enemy_sq)
+    # 2. Increment counter
+    if cache_manager.trailblaze_cache.increment_counter(enemy_sq, enemy_color, board):
+        # 3. Remove if limit reached (king spared if priests alive)
+        victim = cache_manager.occupancy.get(enemy_sq)
         if victim is not None:
             if victim.ptype is PieceType.KING and _any_priest_alive(board, victim.color):
                 return removed  # king spared
             removed.append((enemy_sq, victim))
-            cache.occupancy.set_piece(enemy_sq, None)
+            cache_manager.occupancy.set_piece(enemy_sq, None)
 
     return removed
 
 # ----------------------------------------------------------
-# 4.  Dispatcher – ONLY Trailblazer
+# 4. Dispatcher – FIXED: Use cache_manager property
 # ----------------------------------------------------------
 @register(PieceType.TRAILBLAZER)
 def trailblazer_move_dispatcher(state: GameState, x: int, y: int, z: int) -> List[Move]:
-    return generate_trailblazer_moves(state.cache, state.color, x, y, z)
+    return generate_trailblazer_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_trailblazer_moves", "TrailblazeRecorder", "apply_trailblaze_step"]

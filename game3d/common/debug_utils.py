@@ -145,3 +145,28 @@ class UndoSnapshot:
     original_zkey: int
     moving_piece: Piece
     captured_piece: Optional[Piece] = None
+
+
+@dataclass(slots=True)
+class CacheStats:
+    """Standardized cache statistics."""
+    hits: int = 0
+    misses: int = 0
+    collisions: int = 0
+    size: int = 0
+    memory_usage_mb: float = 0.0
+    last_rebuild: float = 0.0
+
+    def get_stats_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+
+class CacheStatsMixin:
+    """Mixin for standardized cache statistics."""
+    def __init__(self):
+        self._stats = CacheStats()
+        self._performance_tracker = StatsTracker()
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        base_stats = self._stats.get_stats_dict()
+        base_stats.update(self._performance_tracker.get_stats())
+        return base_stats

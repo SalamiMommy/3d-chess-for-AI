@@ -1,4 +1,4 @@
-# game3d/movement/pieces/echo.py
+# game3d/movement/pieces/echo.py - FIXED
 """
 Echo – 2-sphere surface projected ±3 in every axis.
 """
@@ -11,15 +11,13 @@ from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.common.cache_utils import ensure_int_coords
-from game3d.common.coord_utils import in_bounds_vectorised
+from game3d.common.coord_utils import in_bounds_vectorised  # ADDED: Import
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  Echo directions (2-sphere surface anchored 3 steps away)                  #
-# --------------------------------------------------------------------------- #
+# Echo directions (2-sphere surface anchored 3 steps away)
 # 8 anchor offsets (±2, ±2, ±2)
 _ANCHORS = np.array([
     (dx, dy, dz)
@@ -41,11 +39,11 @@ _BUBBLE = np.array([
 _ECHO_DIRECTIONS = (_ANCHORS[:, None, :] + _BUBBLE[None, :, :]).reshape(-1, 3)
 
 def generate_echo_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """Generate echo moves: jumps to 2-sphere surface anchored 3 steps away."""
+    """Generate echo moves using single cache manager."""
     x, y, z = ensure_int_coords(x, y, z)
     start = np.array([x, y, z], dtype=np.int16)
 
@@ -60,6 +58,9 @@ def generate_echo_moves(
         final_mask = np.all((dest_check >= 0) & (dest_check < 9), axis=1)
         safe_dirs = safe_dirs[final_mask]
 
+    if len(safe_dirs) == 0:
+        return []
+
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -73,6 +74,6 @@ def generate_echo_moves(
 @register(PieceType.ECHO)
 def echo_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_echo_moves(state.cache, state.color, x, y, z)
+    return generate_echo_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_echo_moves"]

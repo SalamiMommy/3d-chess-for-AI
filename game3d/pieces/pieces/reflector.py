@@ -1,4 +1,4 @@
-# reflector.py
+# reflector.py - FIXED
 """Reflecting-Bishop – diagonal slider that bounces off walls (max 3 reflections)."""
 
 from __future__ import annotations
@@ -17,18 +17,12 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# ----------------------------------------------------------
 # 8 pure-diagonal unit directions
-# ----------------------------------------------------------
 _BISHOP_DIRS = np.array(
     [(dx, dy, dz) for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)],
     dtype=np.int8,
 )
 
-# ----------------------------------------------------------
-# Bouncing kernel – walks one ray, reflects ≤3×, returns
-# packed (from_idx, to_idx, is_capture) into uint64 buffer
-# ----------------------------------------------------------
 @njit(fastmath=True, boundscheck=False, cache=True)
 def _bounce_ray(
     occ_flat,          # flat uint8[729]  (x + y*9 + z*81)
@@ -79,20 +73,16 @@ def _bounce_ray(
         sx, sy, sz = tx, ty, tz
     return ptr
 
-# ----------------------------------------------------------
-# Generator class – thin Python wrapper
-# ----------------------------------------------------------
 class _ReflectingBishopGen:
-    __slots__ = ("cache", "_buf")
+    __slots__ = ("cache_manager", "_buf")  # FIXED: Consistent naming
 
-    def __init__(self, cache: 'OptimizedCacheManager'):
-        self.cache = cache
+    def __init__(self, cache_manager: 'OptimizedCacheManager'):  # FIXED: Parameter name
+        self.cache_manager = cache_manager  # FIXED: Consistent naming
         self._buf = np.empty(256, dtype=np.uint64)
 
     def generate(self, color: Color, pos: tuple[int, int, int]) -> List[Move]:
-        # FIXED: Use proper occupancy array access
-        occ_array = self.cache_manager.occupancy._occ
-        # Ensure the array is flattened correctly for the numba function
+        # FIXED: Use proper occupancy array access through public API
+        occ_array = self.cache_manager.get_occupancy_array_readonly()
         occ_flat = occ_array.reshape(-1)  # This should give us 729 elements
         x, y, z = pos
         color_code = 1 if color == Color.WHITE else 2
@@ -116,33 +106,28 @@ class _ReflectingBishopGen:
                 ))
         return moves
 
-# ----------------------------------------------------------
-# Singleton helper - FIXED: Don't modify cache object
-# ----------------------------------------------------------
-def _get_gen(cache: 'OptimizedCacheManager') -> _ReflectingBishopGen:
+# FIXED: Consistent parameter naming
+def _get_gen(cache_manager: 'OptimizedCacheManager') -> _ReflectingBishopGen:
     """Use the cache manager's existing generator instead of creating new one."""
-    # Use the cache manager's integrated jump generator
-    if hasattr(cache, '_reflecting_bishop_gen') and cache._reflecting_bishop_gen is not None:
-        return cache._reflecting_bishop_gen
+    if hasattr(cache_manager, '_reflecting_bishop_gen') and cache_manager._reflecting_bishop_gen is not None:
+        return cache_manager._reflecting_bishop_gen
 
     # Create and store in cache manager if not exists
-    cache._reflecting_bishop_gen = _ReflectingBishopGen(cache)
-    return cache._reflecting_bishop_gen
-# ----------------------------------------------------------
-# Public API + dispatcher
-# ----------------------------------------------------------
+    cache_manager._reflecting_bishop_gen = _ReflectingBishopGen(cache_manager)
+    return cache_manager._reflecting_bishop_gen
+
 def generate_reflecting_bishop_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return _get_gen(cache).generate(color, (x, y, z))
+    return _get_gen(cache_manager).generate(color, (x, y, z))
 
 @register(PieceType.REFLECTOR)
 def reflector_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    gen = _get_gen(state.cache)
+    gen = _get_gen(state.cache_manager)  # FIXED: Use cache_manager property
     return gen.generate(state.color, (x, y, z))
 
 __all__ = ["generate_reflecting_bishop_moves"]

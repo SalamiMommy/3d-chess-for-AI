@@ -96,8 +96,8 @@ class IntegratedJumpMovementGenerator:
         self._priest_cache: dict = {}
 
     def _get_occ_array(self) -> np.ndarray:
-        """Get occupancy array through public API."""
-        return self.mgr.get_occupancy_array()
+        """Get occupancy array through public API only."""
+        return self.mgr.get_occupancy_array_readonly()
 
     def generate_jump_moves(
         self,
@@ -109,18 +109,15 @@ class IntegratedJumpMovementGenerator:
         use_amd: bool = True,
         piece_name: str | None = None,
     ) -> List[Move]:
-        # Ensure coordinates are safe
         pos = ensure_int_coords(*pos)
 
-        # Use public API to get occupancy array
+        # Use public API only
         occ = self._get_occ_array()
+        is_buffed = self.mgr.is_movement_buffed(pos, color)
         own_code = color_to_code(color)
         enemy_code = 1 if color == Color.BLACK else 2
 
         enemy_has_priests = self._enemy_still_has_priests_fast(color)
-
-        # Use manager method
-        is_buffed = self.mgr.is_movement_buffed(pos, color)
 
         raw = _jump_kernel_direct(
             pos,

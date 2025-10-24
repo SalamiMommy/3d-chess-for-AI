@@ -1,4 +1,4 @@
-# game3d/movement/pieces/archer.py
+# game3d/movement/pieces/archer.py - FIXED
 """
 Unified Archer dispatcher
 - 1-radius sphere  → walk (normal king-like move)
@@ -18,9 +18,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -29,9 +27,7 @@ _KING_DIRECTIONS = np.array([
     if (dx, dy, dz) != (0, 0, 0)
 ], dtype=np.int8)
 
-# --------------------------------------------------------------------------- #
-#  Archery directions (2-radius surface only)                                #
-# --------------------------------------------------------------------------- #
+# Archery directions (2-radius surface only)
 _ARCHERY_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in range(-2, 3)
@@ -41,20 +37,20 @@ _ARCHERY_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_archer_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
     """Generate all archer moves: king walks + archery shots."""
     x, y, z = ensure_int_coords(x, y, z)
 
-    if cache.is_frozen((x, y, z), color):
+    if cache_manager.is_frozen((x, y, z), color):
         return []
 
     moves = []
 
-    # 1. King walks using jump movement
-    jump_gen = get_integrated_jump_movement_generator(cache_manager)
+    # 1. King walks using jump movement - FIXED: Use parameter name
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)  # FIXED: cache_manager
     king_moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),
@@ -71,8 +67,8 @@ def generate_archer_moves(
         if not (0 <= tx < 9 and 0 <= ty < 9 and 0 <= tz < 9):
             continue
 
-        # Check for enemy piece at target
-        victim = cache.occupancy.get((tx, ty, tz))
+        # Check for enemy piece at target using public API
+        victim = cache_manager.get_piece((tx, ty, tz))
         if victim is not None and victim.color != color:
             # Create archery move (archer doesn't move, just captures)
             archery_move = convert_legacy_move_args(
@@ -91,6 +87,6 @@ def generate_archer_moves(
 @register(PieceType.ARCHER)
 def archer_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_archer_moves(state.cache, state.color, x, y, z)
+    return generate_archer_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_archer_moves"]

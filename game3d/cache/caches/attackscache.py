@@ -1,9 +1,12 @@
-# game3d/cache/caches/attackscache.py
+# game3d/cache/caches/attackscache.py - UPDATED
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional, TYPE_CHECKING, List
 from dataclasses import dataclass, field
 from game3d.common.enums import Color, PieceType
-from game3d.common.coord_utils import Coord
+from game3d.common.coord_utils import Coord, validate_and_sanitize_coord
+from game3d.common.debug_utils import CacheStatsMixin
+from game3d.common.piece_utils import get_piece_effect_type, is_effect_piece
+from game3d.common.cache_utils import get_piece
 
 if TYPE_CHECKING:
     from game3d.board.board import Board
@@ -12,21 +15,18 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
 
 @dataclass(slots=True)
-class AttacksCache:
+class AttacksCache(CacheStatsMixin):
     """Incremental cache for attacked squares by each color."""
 
     board: "Board"
-
-    # weak ref to the board's cache manager
     _manager: Optional["OptimizedCacheManager"] = field(init=False, repr=False)
-
     attacked_squares: Dict[Color, Set[Tuple[int, int, int]]] = field(default_factory=dict)
     piece_attacks: Dict[Tuple[int, int, int], Set[Tuple[int, int, int]]] = field(default_factory=dict)
     last_positions: Dict[Color, Set[Tuple[int, int, int]]] = field(default_factory=dict)
     is_valid: Dict[Color, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # grab the manager that the board already holds
+        super().__init__()
         self._manager = getattr(self.board, "cache_manager", None)
 
         self.attacked_squares[Color.WHITE] = set()
@@ -58,14 +58,11 @@ class AttacksCache:
             self.piece_attacks.clear()
         else:
             self.is_valid[color] = False
-            # Clear piece attacks for invalidated color
             coords_to_remove = []
             for coord in self.piece_attacks.keys():
-                # CORRECTED: Access through manager
-                if self._manager:
-                    piece = self._manager.occupancy.get(coord)
-                    if piece and piece.color == color:
-                        coords_to_remove.append(coord)
+                piece = get_piece(self._manager, coord)
+                if piece and piece.color == color:
+                    coords_to_remove.append(coord)
             for coord in coords_to_remove:
                 del self.piece_attacks[coord]
 
@@ -94,27 +91,22 @@ class AttacksCache:
         from_coord = mv.from_coord
         to_coord = mv.to_coord
 
-        # CORRECTED: Access through manager
         if is_undo:
-            moving_piece = self._manager.occupancy.get(from_coord) if self._manager else None
+            moving_piece = get_piece(self._manager, from_coord)
         else:
-            moving_piece = self._manager.occupancy.get(to_coord) if self._manager else None
+            moving_piece = get_piece(self._manager, to_coord)
 
         if moving_piece is None:
             self.invalidate()
             return
 
-        # Update attacker's color
         self._update_piece_attacks(from_coord, to_coord, moving_piece, mover, board, is_undo)
-
-        # Update affected sliding pieces
         self._update_affected_sliders(from_coord, to_coord, mover, board)
 
     def _full_rebuild(self, color: Color) -> None:
         """Complete rebuild for *color*."""
         attacked: Set[Tuple[int, int, int]] = set()
 
-        # CORRECTED: Iterate via manager's occupancy cache
         if self._manager:
             for coord, piece in self._manager.occupancy.iter_color(color):
                 attacks = self._calculate_piece_attacks(coord, piece, self.board)
@@ -127,14 +119,12 @@ class AttacksCache:
     def _update_piece_attacks(self, from_coord: Coord, to_coord: Coord,
                             piece: 'Piece', color: Color, board: 'Board', is_undo: bool) -> None:
         """Update attacks for a specific piece movement."""
-        # Remove old attacks
         if from_coord in self.piece_attacks:
             old_attacks = self.piece_attacks[from_coord]
             self.attacked_squares[color] -= old_attacks
             del self.piece_attacks[from_coord]
 
-        # Add new attacks
-        if not is_undo or (self._manager and self._manager.occupancy.get(from_coord) is not None):
+        if not is_undo or get_piece(self._manager, from_coord) is not None:
             new_attacks = self._calculate_piece_attacks(
                 to_coord if not is_undo else from_coord,
                 piece,
@@ -149,11 +139,10 @@ class AttacksCache:
         affected_coords = self._get_potentially_affected_sliders(from_coord, to_coord, board)
 
         for coord in affected_coords:
-            # CORRECTED: Access through manager
             if not self._manager:
                 continue
 
-            piece = self._manager.occupancy.get(coord)
+            piece = get_piece(self._manager, coord)
             if piece is None:
                 continue
 
@@ -163,7 +152,6 @@ class AttacksCache:
                     del self.piece_attacks[coord]
                 continue
 
-            # Recalculate attacks for this slider
             if coord in self.piece_attacks:
                 old_attacks = self.piece_attacks[coord]
                 self.attacked_squares[piece.color] -= old_attacks
@@ -188,7 +176,6 @@ class AttacksCache:
         if not self._manager:
             return affected
 
-        # Check all 26 directions from both coordinates
         for coord in [from_coord, to_coord]:
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
@@ -206,8 +193,7 @@ class AttacksCache:
                                 break
 
                             check_coord = (curr_x, curr_y, curr_z)
-                            # CORRECTED: Access through manager
-                            piece = self._manager.occupancy.get(check_coord)
+                            piece = get_piece(self._manager, check_coord)
 
                             if piece is not None:
                                 if piece.ptype in sliding_types:
@@ -221,6 +207,9 @@ class AttacksCache:
         from game3d.movement.registry import get_dispatcher
 
         attacks = set()
+        coord = validate_and_sanitize_coord(coord)
+        if coord is None:
+            return attacks
 
         dispatcher = get_dispatcher(piece.ptype)
         if dispatcher is None:
@@ -230,17 +219,14 @@ class AttacksCache:
             from game3d.game.gamestate import GameState
             from game3d.cache.manager import get_cache_manager
 
-            # CORRECTED: Use manager (get it from board or create temp)
             temp_cache = self._manager if self._manager else get_cache_manager(board, piece.color)
             temp_state = GameState.__new__(GameState)
             temp_state.board = board
             temp_state.color = piece.color
             temp_state.cache = temp_cache
 
-            # Generate pseudo-legal moves
             moves = dispatcher(temp_state, coord[0], coord[1], coord[2])
 
-            # Extract attack squares
             for move in moves:
                 attacks.add(move.to_coord)
 
@@ -254,14 +240,11 @@ class AttacksCache:
         if not self._manager:
             return
 
-        # Clear existing entries for this colour
         for c in list(self.piece_attacks):
-            # CORRECTED: Access through manager
-            p = self._manager.occupancy.get(c)
+            p = get_piece(self._manager, c)
             if p and p.color == color:
                 del self.piece_attacks[c]
 
-        # Re-calculate via manager's occupancy cache
         for coord, piece in self._manager.occupancy.iter_color(color):
             attacks = self._calculate_piece_attacks(coord, piece, self.board)
             self.piece_attacks[coord] = attacks

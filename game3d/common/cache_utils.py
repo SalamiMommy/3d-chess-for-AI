@@ -67,3 +67,40 @@ def validate_cache_integrity(game_state: 'GameState') -> bool:
     except Exception as e:
         print(f"Cache validation failed: {e}")
         return False
+
+def batch_process_effect_updates(
+    cache_manager: "OptimizedCacheManager",
+    updates: List[Tuple[Coord, Optional[Piece]]],
+    effect_types: List[str]
+) -> None:
+    """Standardized batch processing for effect caches."""
+    # Update occupancy first
+    cache_manager.batch_set_pieces(updates)
+
+    # Update effect caches
+    for effect_type in effect_types:
+        cache = cache_manager._get_cache_by_name(effect_type)
+        if cache and hasattr(cache, 'batch_update'):
+            cache.batch_update(updates)
+
+def synchronize_zobrist_after_move(
+    cache_manager: "OptimizedCacheManager",
+    move: "Move",
+    from_piece: Piece,
+    captured_piece: Optional[Piece],
+    new_color: Color
+) -> None:
+    """Standardized Zobrist hash synchronization after moves."""
+    new_hash = cache_manager._zobrist.update_hash_move(
+        cache_manager._current_zobrist_hash,
+        move,
+        from_piece,
+        captured_piece
+    )
+    cache_manager.sync_zobrist(new_hash)
+
+def is_occupied_safe(cache_manager: 'OptimizedCacheManager', coord: Tuple[int, int, int]) -> bool:
+    """Safe occupancy check with bounds validation."""
+    if not in_bounds(coord):
+        return False
+    return cache_manager.get_piece(coord) is not None

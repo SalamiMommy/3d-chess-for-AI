@@ -1,4 +1,4 @@
-# game3d/movement/pieces/friendlytp.py
+# game3d/movement/pieces/friendlytp.py - FIXED
 """
 Friendly-Teleporter – teleport to any empty neighbour of a friendly piece
 PLUS normal 1-step King moves.
@@ -18,9 +18,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -30,7 +28,7 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_friendlytp_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -39,7 +37,7 @@ def generate_friendlytp_moves(
     start = np.array([x, y, z], dtype=np.int16)
 
     # Get teleport directions
-    teleport_dirs = _build_network_directions(cache, color, x, y, z)
+    teleport_dirs = _build_network_directions(cache_manager, color, x, y, z)
 
     # Combine all directions
     if len(teleport_dirs) > 0:
@@ -47,8 +45,8 @@ def generate_friendlytp_moves(
     else:
         all_dirs = _KING_DIRECTIONS
 
-    # Generate all moves using jump movement
-    jump_gen = get_integrated_jump_movement_generator(cache_manager)
+    # Generate all moves using jump movement - FIXED: Use parameter name
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)  # FIXED: cache_manager
     moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),
@@ -66,16 +64,16 @@ def generate_friendlytp_moves(
     return moves
 
 def _build_network_directions(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> np.ndarray:
     """Build directions to empty squares adjacent to friendly pieces."""
     start = np.array([x, y, z], dtype=np.int16)
 
-    # Collect friendly pieces
+    # Collect friendly pieces using public API
     friendly_coords = []
-    for coord, piece in cache.occupancy.iter_color(color):
+    for coord, piece in cache_manager.get_pieces_of_color(color):
         if coord != (x, y, z):
             friendly_coords.append(coord)
 
@@ -94,12 +92,12 @@ def _build_network_directions(
     if len(neighbours) == 0:
         return np.empty((0, 3), dtype=np.int8)
 
-    # Check occupancy
-    occ_mask = (cache.occupancy._occ != 0)
+    # Check occupancy using public API
+    occupancy_array = cache_manager.get_occupancy_array_readonly()
     x_coords = np.clip(neighbours[:, 0], 0, 8)
     y_coords = np.clip(neighbours[:, 1], 0, 8)
     z_coords = np.clip(neighbours[:, 2], 0, 8)
-    empty_mask = ~occ_mask[z_coords, y_coords, x_coords]
+    empty_mask = occupancy_array[z_coords, y_coords, x_coords] == 0
 
     empty_neighbours = neighbours[empty_mask]
 
@@ -118,6 +116,6 @@ def _build_network_directions(
 @register(PieceType.FRIENDLYTELEPORTER)
 def friendlytp_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_friendlytp_moves(state.cache, state.color, x, y, z)
+    return generate_friendlytp_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_friendlytp_moves"]

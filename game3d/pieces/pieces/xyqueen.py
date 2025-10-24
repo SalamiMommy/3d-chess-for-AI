@@ -1,19 +1,18 @@
 """
 XY-Queen: 8 slider rays in XY-plane + full 3-D king hop (26 directions, 1 step).
-Now uses the **hot slider kernel** for both parts.
-Exports:
-  generate_xy_queen_moves(cache, color, x, y, z) -> list[Move]
-  (decorated) xy_queen_dispatcher(state, x, y, z) -> list[Move]
 """
 from __future__ import annotations
-
 from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movetypes.slidermovement import generate_moves
+from game3d.movement.slidermovement import generate_moves
+from game3d.movement.movepiece import Move
 
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
 
 # 8 directions confined to the XY-plane (Z fixed)
 _XY_SLIDER_DIRS = np.array([
@@ -32,32 +31,34 @@ _KING_3D_DIRS = np.array([
     if (dx, dy, dz) != (0, 0, 0)
 ], dtype=np.int8)
 
-def generate_xy_queen_moves(cache: CacheManager,
-                            color: Color,
-                            x: int, y: int, z: int) -> List:
+def generate_xy_queen_moves(
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     """Slider rays (XY-plane, 8 dirs, 8 steps) + king hop (26 dirs, 1 step)."""
     slider_moves = generate_moves(
         piece_type='xy_queen',
         pos=(x, y, z),
-        color=color.value,
+        color=color,
         max_distance=8,
         directions=_XY_SLIDER_DIRS,
-        cache_manager=cache,
+        cache_manager=cache_manager,  # FIXED: Use parameter
     )
 
     king_moves = generate_moves(
         piece_type='xy_queen_kinghop',
         pos=(x, y, z),
-        color=color.value,
+        color=color,
         max_distance=1,
         directions=_KING_3D_DIRS,
-        cache_manager=cache,
+        cache_manager=cache_manager,  # FIXED: Use parameter
     )
 
     return slider_moves + king_moves
 
 @register(PieceType.XYQUEEN)
-def xy_queen_move_dispatcher(state, x: int, y: int, z: int) -> List:
-    return generate_xy_queen_moves(state.cache, state.color, x, y, z)
+def xy_queen_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    return generate_xy_queen_moves(state.cache_manager, state.color, x, y, z)  # FIXED: Use cache_manager
 
 __all__ = ['generate_xy_queen_moves']

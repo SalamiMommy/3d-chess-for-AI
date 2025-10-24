@@ -174,18 +174,16 @@ class GameState:
         self._is_check_cache_key = None
 
     def clone(self, deep_cache: bool = False) -> GameState:
-        """Clone game state. Only create new cache manager if absolutely necessary."""
-        if deep_cache:
-            # Only create new cache manager for search or threading
+        """Clone game state with intelligent cache manager reuse."""
+        if not deep_cache and hasattr(self.cache_manager, '_can_reuse'):
+            # Reuse existing cache manager with board reference update
+            self.cache_manager.board = self.board.clone()
+            self.cache_manager.board.cache_manager = self.cache_manager
+            new_cache_manager = self.cache_manager
+        else:
+            # Only create new cache manager when absolutely necessary
             from game3d.cache.manager import get_cache_manager
             new_cache_manager = get_cache_manager(self.board.clone(), self.color)
-        else:
-            # Reuse existing cache manager with updated board reference
-            new_cache_manager = self.cache_manager
-            new_cache_manager._attach_board(self.board.clone())
-            new_cache_manager.board = self.board.clone()
-            new_cache_manager.board.cache_manager = new_cache_manager
-            new_cache_manager._current = self.color
 
         return GameState(
             board=new_cache_manager.board,

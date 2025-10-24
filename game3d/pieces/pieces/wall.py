@@ -1,4 +1,4 @@
-# game3d/movement/movetypes/wall.py
+# game3d/movement/movetypes/wall.py - FIXED
 """
 Unified Wall movement + behind-capture logic.
 """
@@ -19,9 +19,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# ------------------------------------------------------------------
 # 2×2×1 block geometry helpers
-# ------------------------------------------------------------------
 def _wall_squares(anchor: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
     """Return the 4 squares occupied by a Wall anchored at (x,y,z)."""
     x, y, z = anchor
@@ -32,9 +30,7 @@ def _block_in_bounds(anchor: Tuple[int, int, int]) -> bool:
     x, y, z = anchor
     return 0 <= x + 1 < 9 and 0 <= y + 1 < 9 and 0 <= z < 9
 
-# ------------------------------------------------------------------
 # Behind-mask builder (used for capture validation)
-# ------------------------------------------------------------------
 def _build_behind_mask(anchor: Tuple[int, int, int]) -> Set[Tuple[int, int, int]]:
     """
     Return every square that is **behind** the Wall anchored at *anchor*.
@@ -53,21 +49,22 @@ def _build_behind_mask(anchor: Tuple[int, int, int]) -> Set[Tuple[int, int, int]
             behind.add(sq)
     return behind
 
-# ------------------------------------------------------------------
 # Public generator – king steps for the whole block
-# ------------------------------------------------------------------
-def generate_wall_moves(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+def generate_wall_moves(
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Added parameter
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
     anchor = (x, y, z)
     if not _block_in_bounds(anchor):
         return []
 
     # Re-use king engine for the anchor; block validity is checked later
-    return generate_king_moves(state.cache, state.color, x, y, z)
+    # FIXED: Use parameter name
+    return generate_king_moves(cache_manager, color, x, y, z)
 
-# ------------------------------------------------------------------
 # Behind-capture validator (called by cache manager)
-# ------------------------------------------------------------------
 def can_capture_wall(attacker_sq: Tuple[int, int, int],
                      wall_anchor: Tuple[int, int, int]) -> bool:
     """
@@ -75,12 +72,11 @@ def can_capture_wall(attacker_sq: Tuple[int, int, int],
     """
     return attacker_sq in _build_behind_mask(wall_anchor)
 
-# ------------------------------------------------------------------
 # Dispatcher registration
-# ------------------------------------------------------------------
 @register(PieceType.WALL)
 def wall_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_wall_moves(state, x, y, z)
+    # FIXED: Use cache_manager property and pass to generator
+    return generate_wall_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_wall_moves", "can_capture_wall"]

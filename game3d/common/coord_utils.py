@@ -281,3 +281,18 @@ def validate_directions(start: Coord, directions: np.ndarray, board_size: int = 
 def _clip_coords(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Clamp coordinates to [0, 8] to prevent index errors."""
     return np.clip(x, 0, 8), np.clip(y, 0, 8), np.clip(z, 0, 8)
+
+def validate_and_sanitize_coord(coord: Coord) -> Optional[Coord]:
+    """Comprehensive coordinate validation and sanitization."""
+    if not isinstance(coord, tuple) or len(coord) != 3:
+        return None
+    x, y, z = coord
+    if not all(isinstance(c, int) for c in (x, y, z)):
+        return None
+    if not in_bounds(coord):
+        return None
+    return (max(0, min(8, x)), max(0, min(8, y)), max(0, min(8, z))
+
+def batch_validate_coords(coords: List[Coord]) -> List[Coord]:
+    """Batch validate multiple coordinates."""
+    return [c for c in coords if validate_and_sanitize_coord(c)]

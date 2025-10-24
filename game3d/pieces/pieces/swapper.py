@@ -1,4 +1,4 @@
-# game3d/movement/pieces/swapper.py
+# swapper.py - FIXED
 """
 Swapper == King-steps ∪ friendly-swap teleport
 """
@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -28,11 +26,11 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_swapper_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # STANDARDIZED: Parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
-    """Generate swapper moves: king walks + friendly swaps."""
+    """Generate swapper moves using single cache manager."""
     x, y, z = ensure_int_coords(x, y, z)
 
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
@@ -48,7 +46,7 @@ def generate_swapper_moves(
     moves.extend(king_moves)
 
     # 2. Friendly swaps
-    swap_dirs = _get_friendly_swap_directions(cache, color, x, y, z)
+    swap_dirs = _get_friendly_swap_directions(cache_manager, color, x, y, z)
     if len(swap_dirs) > 0:
         swap_moves = jump_gen.generate_jump_moves(
             color=color,
@@ -66,7 +64,7 @@ def generate_swapper_moves(
     return moves
 
 def _get_friendly_swap_directions(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # STANDARDIZED: Parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> np.ndarray:
@@ -74,7 +72,8 @@ def _get_friendly_swap_directions(
     start = np.array([x, y, z], dtype=np.int16)
 
     friendly_coords = []
-    for coord, piece in cache.occupancy.iter_color(color):
+    # FIXED: Use cache_manager.get_pieces_of_color()
+    for coord, piece in cache_manager.get_pieces_of_color(color):
         if coord != (x, y, z):
             friendly_coords.append(coord)
 
@@ -89,6 +88,7 @@ def _get_friendly_swap_directions(
 @register(PieceType.SWAPPER)
 def swapper_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_swapper_moves(state.cache, state.color, x, y, z)
+    # STANDARDIZED: Use cache_manager property
+    return generate_swapper_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_swapper_moves"]

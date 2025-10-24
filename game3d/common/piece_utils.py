@@ -153,5 +153,23 @@ def get_pieces_by_type_from_cache(
             result.append((coord, piece))
     return result
 
+AURA_EFFECT_MAP = {
+    PieceType.SPEEDER: "aura",
+    PieceType.SLOWER: "aura",
+    PieceType.FREEZER: "aura",
+    PieceType.WHITEHOLE: "aura",
+    PieceType.BLACKHOLE: "aura",
+    PieceType.TRAILBLAZER: "trailblaze",
+    PieceType.GEOMANCER: "geomancy"
+}
+
+def get_piece_effect_type(piece_type: PieceType) -> Optional[str]:
+    """Get standardized effect type for piece."""
+    return AURA_EFFECT_MAP.get(piece_type)
+
+def is_effect_piece(piece_type: PieceType) -> bool:
+    """Check if piece type has special effects."""
+    return piece_type in AURA_EFFECT_MAP
+
 # Backward compatibility alias
 list_occupied = iterate_occupied

@@ -1,4 +1,4 @@
-# game3d/movement/pieces/infiltrator.py
+# game3d/movement/pieces/infiltrator.py - FIXED
 """
 Infiltrator – king moves + teleport to squares in front of enemy pawns.
 """
@@ -17,9 +17,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# --------------------------------------------------------------------------- #
-#  King directions (1-step moves)                                             #
-# --------------------------------------------------------------------------- #
+# King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -29,7 +27,7 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_infiltrator_moves(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -37,7 +35,7 @@ def generate_infiltrator_moves(
     x, y, z = ensure_int_coords(x, y, z)
 
     # Get teleport directions
-    teleport_dirs = _get_pawn_front_directions(cache, color, x, y, z)
+    teleport_dirs = _get_pawn_front_directions(cache_manager, color, x, y, z)
 
     # Combine directions
     if len(teleport_dirs) > 0:
@@ -45,8 +43,8 @@ def generate_infiltrator_moves(
     else:
         all_dirs = _KING_DIRECTIONS
 
-    # Generate all moves using jump movement
-    jump_gen = get_integrated_jump_movement_generator(cache_manager)
+    # Generate all moves using jump movement - FIXED: Use parameter name
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)  # FIXED: cache_manager
     moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),
@@ -57,7 +55,7 @@ def generate_infiltrator_moves(
     return moves
 
 def _get_pawn_front_directions(
-    cache: 'OptimizedCacheManager',
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
     color: Color,
     x: int, y: int, z: int
 ) -> np.ndarray:
@@ -67,8 +65,8 @@ def _get_pawn_front_directions(
 
     front_squares = []
 
-    # Find empty squares in front of enemy pawns
-    for coord, piece in cache.occupancy.iter_color(enemy_color):
+    # Find empty squares in front of enemy pawns using public API
+    for coord, piece in cache_manager.get_pieces_of_color(enemy_color):
         if piece.ptype != PieceType.PAWN:
             continue
 
@@ -76,7 +74,7 @@ def _get_pawn_front_directions(
         dz = 1 if enemy_color == Color.BLACK else -1
         front = (coord[0], coord[1], coord[2] + dz)
 
-        if in_bounds(front) and cache.occupancy.get(front) is None:
+        if in_bounds(front) and cache_manager.get_piece(front) is None:
             front_squares.append(front)
 
     if not front_squares:
@@ -90,6 +88,6 @@ def _get_pawn_front_directions(
 @register(PieceType.INFILTRATOR)
 def infiltrator_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_infiltrator_moves(state.cache, state.color, x, y, z)
+    return generate_infiltrator_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_infiltrator_moves"]

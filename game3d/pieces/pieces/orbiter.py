@@ -1,4 +1,4 @@
-# game3d/movement/piecemoves/orbitalmoves.py
+# game3d/movement/piecemoves/orbitalmoves.py - FIXED
 """Orbiter – Manhattan-distance 4 jumps – self-contained."""
 from __future__ import annotations
 
@@ -24,9 +24,14 @@ _ORBITAL_DIRS = np.array([
     if abs(dx) + abs(dy) + abs(dz) == 4
 ], dtype=np.int8)
 
-def generate_orbital_moves(cache: 'OptimizedCacheManager', color: Color, x: int, y: int, z: int) -> List[Move]:
+def generate_orbital_moves(
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    color: Color,
+    x: int, y: int, z: int
+) -> List[Move]:
     """Orbiter jumps to any square exactly 4 Manhattan away."""
     x, y, z = ensure_int_coords(x, y, z)
+    # FIXED: Use parameter name
     return get_integrated_jump_movement_generator(cache_manager).generate_jump_moves(
         color=color, pos=(x, y, z), directions=_ORBITAL_DIRS
     )
@@ -34,6 +39,7 @@ def generate_orbital_moves(cache: 'OptimizedCacheManager', color: Color, x: int,
 @register(PieceType.ORBITER)
 def orbital_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    return generate_orbital_moves(state.cache, state.color, x, y, z)
+    # FIXED: Use cache_manager property
+    return generate_orbital_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_orbital_moves"]
