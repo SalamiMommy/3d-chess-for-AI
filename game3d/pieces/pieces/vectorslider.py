@@ -8,7 +8,7 @@ import numpy as np
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.slidermovement import generate_moves
+from game3d.movement.movetypes.slidermovement import generate_moves
 from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:

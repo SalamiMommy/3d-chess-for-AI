@@ -88,16 +88,16 @@ def _build_jump_moves(
 
 # ----------  main generator class  ----------
 class IntegratedJumpMovementGenerator:
-    __slots__ = ("mgr", "_jumptables", "_priest_cache")
+    __slots__ = ("cache_manager", "_jumptables", "_priest_cache")
 
-    def __init__(self, manager: 'OptimizedCacheManager') -> None:
-        self.mgr = manager
+    def __init__(self, cache_manager: 'OptimizedCacheManager') -> None:
+        self.cache_manager = cache_manager
         self._jumptables: dict = {}
         self._priest_cache: dict = {}
 
     def _get_occ_array(self) -> np.ndarray:
         """Get occupancy array through public API only."""
-        return self.mgr.get_occupancy_array_readonly()
+        return self.cache_manager.get_occupancy_array_readonly()
 
     def generate_jump_moves(
         self,
@@ -113,7 +113,7 @@ class IntegratedJumpMovementGenerator:
 
         # Use public API only
         occ = self._get_occ_array()
-        is_buffed = self.mgr.is_movement_buffed(pos, color)
+        is_buffed = self.cache_manager.is_movement_buffed(pos, color)
         own_code = color_to_code(color)
         enemy_code = 1 if color == Color.BLACK else 2
 
@@ -161,7 +161,7 @@ class IntegratedJumpMovementGenerator:
         return standard_moves + extended_moves
 
     def _enemy_still_has_priests_fast(self, color: Color) -> bool:
-        return self.mgr.has_priest(color.opposite())
+        return self.cache_manager.has_priest(color.opposite())
 
 # ----------  factory with proper caching  ----------
 _jump_generators = {}  # cache_id -> generator

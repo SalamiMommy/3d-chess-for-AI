@@ -1,4 +1,4 @@
-# game3d/movement/movetypes/wall.py - FIXED
+# game3d/movement/movetypes/wall.py - UPDATED
 """
 Unified Wall movement + behind-capture logic.
 """
@@ -49,6 +49,27 @@ def _build_behind_mask(anchor: Tuple[int, int, int]) -> Set[Tuple[int, int, int]
             behind.add(sq)
     return behind
 
+# Batch version for multiple attacker squares
+def can_capture_wall_batch(attacker_sqs: List, wall_anchor: Tuple[int, int, int]) -> List[bool]:
+    """
+    Batch version of can_capture_wall for multiple attacker squares.
+    Returns a list of booleans indicating if each attacker square can capture the wall.
+
+    Handles both list of tuples and list of lists as input.
+    """
+    behind_mask = _build_behind_mask(wall_anchor)
+
+    results = []
+    for attacker_sq in attacker_sqs:
+        # Convert to tuple if it's a list or numpy array
+        if isinstance(attacker_sq, (list, np.ndarray)):
+            attacker_tuple = tuple(attacker_sq)
+        else:
+            attacker_tuple = attacker_sq
+        results.append(attacker_tuple in behind_mask)
+
+    return results
+
 # Public generator – king steps for the whole block
 def generate_wall_moves(
     cache_manager: 'OptimizedCacheManager',  # FIXED: Added parameter
@@ -79,4 +100,4 @@ def wall_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Mov
     # FIXED: Use cache_manager property and pass to generator
     return generate_wall_moves(state.cache_manager, state.color, x, y, z)
 
-__all__ = ["generate_wall_moves", "can_capture_wall"]
+__all__ = ["generate_wall_moves", "can_capture_wall", "can_capture_wall_batch"]

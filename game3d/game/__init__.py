@@ -47,14 +47,16 @@ GameState.outcome = outcome
 
 # Move generation and execution methods - imported on demand
 def _import_turnmove_functions():
-    """Import turnmove functions on demand to avoid circular imports."""
+    """Import turn-move functions on demand to avoid circular imports."""
     from .turnmove import (
         legal_moves,
-        pseudo_legal_moves,
         make_move,
         undo_move,
-        validate_legal_moves
+        validate_legal_moves,
     )
+    # add the missing name here
+    from game3d.movement.pseudo_legal import generate_pseudo_legal_moves as pseudo_legal_moves
+
     return legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves
 
 legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves = _import_turnmove_functions()

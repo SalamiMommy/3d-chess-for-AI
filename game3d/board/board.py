@@ -5,16 +5,17 @@
 from __future__ import annotations
 import torch
 import numpy as np
-from typing import Optional, Tuple, Iterable, List
+from typing import Optional, Tuple, Iterable, List, TYPE_CHECKING
 
 from game3d.common.coord_utils import Coord, in_bounds
 from game3d.common.tensor_utils import hash_board_tensor
 from game3d.common.piece_utils import iterate_occupied
-from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_PIECE_TYPES, PIECE_SLICE
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_PIECE_TYPES, PIECE_SLICE, N_TOTAL_PLANES
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.board.symmetry import SymmetryManager
-from game3d.movement.movepiece import Move
+if TYPE_CHECKING:
+    from game3d.movement.movepiece import Move
 
 class Board:
     __slots__ = (
@@ -161,6 +162,7 @@ class Board:
         return iterate_occupied(self)
 
     def clone(self) -> "Board":
+        """Clone board - cache manager will be set by caller."""
         clone = Board.__new__(Board)
         clone._tensor = self._tensor.clone().detach()
         clone._hash = self._hash
@@ -168,7 +170,7 @@ class Board:
         clone._symmetry_manager = None
         clone._occupancy_mask = None
         clone._occupied_list = None
-        clone.cache_manager = None  # Avoid stale cache; reinitialize if needed
+        clone.cache_manager = None  # Will be set by caller
         return clone
 
     def share_memory_(self) -> Board:
@@ -182,19 +184,20 @@ class Board:
         """Apply move with proper cache synchronization."""
         if self.cache_manager is None:
             raise RuntimeError("Board has no cache_manager – cannot apply_move.")
-
+        self._gen += 1
         from_coord = mv.from_coord
         to_coord   = mv.to_coord
 
-        piece = self.cache_manager.occupancy.get(from_coord)
+        piece = self.cache_manager.occupancy_cache.get(from_coord)
         if piece is None:
             raise ValueError(f"apply_move: empty from-square {from_coord}")
 
         # Increment generation BEFORE making changes
-        self._gen += 1
+
 
         if mv.is_capture:
-            self.set_piece(to_coord, None)
+            # Just mark as needing update
+            pass
 
         # Handle special moves
         if mv.metadata.get("is_swap", False):
@@ -204,17 +207,15 @@ class Board:
             from game3d.common.move_utils import apply_promotion_move
             apply_promotion_move(self, mv, piece)
         else:
-            # Standard move
-            self.set_piece(from_coord, None)
-            self.set_piece(to_coord, piece)
+            # Standard move - cache manager already updated board
+            pass
 
         self._hash = None
         self._occupancy_mask = None
         self._occupied_list = None
 
-        # Sync with cache manager
-        self.cache_manager.set_piece(from_coord, None)
-        self.cache_manager.set_piece(to_coord, piece)
+        if self.cache_manager is not None:
+            self.cache_manager._move_cache._gen = self._gen
 
         return True
 

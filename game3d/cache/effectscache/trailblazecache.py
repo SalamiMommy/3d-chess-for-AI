@@ -54,3 +54,7 @@ class TrailblazeCache:
     def clear(self) -> None:
         self._recorders.clear()
         self._counters.clear()
+
+    def set_cache_manager(self, cache_manager: 'OptimizedCacheManager') -> None:
+        """Set the cache manager reference - ensures single instance usage"""
+        self._cache_manager = cache_manager

@@ -66,7 +66,8 @@ def generate_pawn_moves(
     for mv in push_moves:
         tz = mv.to_coord[2]
         flags = MOVE_FLAGS["PROMOTION"] if _is_promotion_rank(tz, color) else 0
-        moves.append(Move(start, mv.to_coord, flags=flags))
+        # FIXED: Use flags parameter in create_simple
+        moves.append(Move.create_simple(start, mv.to_coord, flags=flags))
 
     # Two-step push from start rank
     if _is_on_start_rank(z, color):
@@ -74,7 +75,8 @@ def generate_pawn_moves(
         db = (x, y, z + 2 * dz)
         if in_bounds(db) and cache_manager.get_piece(db) is None:
             flags = MOVE_FLAGS["PROMOTION"] if _is_promotion_rank(db[2], color) else 0
-            moves.append(Move(start, db, flags=flags))
+            # FIXED: Use flags parameter in create_simple
+            moves.append(Move.create_simple(start, db, flags=flags))
 
     # CAPTURE moves
     cap_moves = jump_gen.generate_jump_moves(
@@ -90,6 +92,7 @@ def generate_pawn_moves(
         flags = MOVE_FLAGS["CAPTURE"]
         if _is_promotion_rank(mv.to_coord[2], color):
             flags |= MOVE_FLAGS["PROMOTION"]
+        # For capture moves with potential promotion, use the full constructor
         moves.append(
             Move(start, mv.to_coord, flags=flags, captured_piece=victim.ptype.value)
         )

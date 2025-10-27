@@ -1,9 +1,9 @@
 # game3d/common/piece_utils.py
 # ------------------------------------------------------------------
-# Piece-related utilities
+# Piece-related utilities - OPTIMIZED VERSION
 # ------------------------------------------------------------------
 from __future__ import annotations
-from typing import List, Tuple, Optional, Iterable, TYPE_CHECKING
+from typing import List, Tuple, Optional, Iterable, TYPE_CHECKING, Union
 import torch
 
 from game3d.common.constants import PIECE_SLICE
@@ -22,8 +22,14 @@ def color_to_code(color: "Color") -> int:
     """Return the occupancy-array code (1 or 2) for the given Color enum."""
     return 1 if color.value == 1 else 2
 
-def find_king(state: "GameState", color: Color) -> Optional[Coord]:
-    """Vectorised, lock-free search for the king of *color*."""
+def find_king(state: "GameState", color: Union[Color, torch.Tensor]) -> Union[Optional[Coord], List[Optional[Coord]]]:
+    """Vectorised, lock-free search for the king - supports scalar and batch mode."""
+    if isinstance(color, torch.Tensor) and color.ndim > 0:
+        # Batch mode
+        return [find_king(state, Color(c.item())) for c in color]
+
+    # Scalar mode
+    # Direct iteration with early termination
     for coord, piece in state.cache_manager.get_pieces_of_color(color):
         if piece.ptype == PieceType.KING:
             return coord
@@ -31,54 +37,71 @@ def find_king(state: "GameState", color: Color) -> Optional[Coord]:
 
 def infer_piece_from_cache(
     cache_manager: "OptimizedCacheManager",
-    coord: Coord,
+    coord: Union[Coord, torch.Tensor],
     fallback_type: PieceType = PieceType.PAWN
-) -> Piece:
+) -> Union[Piece, List[Piece]]:
     """
-    Infer piece from cache, fallback to given type.
-    FIXED: Handles Piece objects correctly.
+    Infer piece from cache, fallback to given type - supports scalar and batch mode.
+    FIXED: Handles Piece objects correctly - optimized with direct cache access.
     """
-    piece = cache_manager.get_piece(coord)
-    if piece:
-        return piece
-    # Fallback - need to know the color
-    # This is a limitation of the current API
-    return Piece(Color.WHITE, fallback_type)
-
-def get_player_pieces(state: GameState, color: Color) -> List[Tuple[Coord, Piece]]:
-    """Get all pieces of a given color using standardized cache access."""
-    result = []
-    for coord, piece in state.cache_manager.get_pieces_of_color(color):
-        result.append((coord, piece))
-    return result
-
-def iterate_occupied(board: "Board", color: Optional[Color] = None, cache_manager: Optional["OptimizedCacheManager"] = None):
-    """
-    Iterate through occupied squares with standardized cache access.
-
-    Args:
-        board: The board instance
-        color: Optional color filter
-        cache_manager: Optional cache manager (uses board.cache_manager if not provided)
-    """
-    if cache_manager is None:
-        cache_manager = board.cache_manager
-
-    # Fast path - cache is available
-    if cache_manager:
-        if color is None:
-            # Iterate all pieces of both colors
-            for c in [Color.WHITE, Color.BLACK]:
-                for coord, piece in cache_manager.get_pieces_of_color(c):
-                    yield coord, piece
-        else:
-            # Iterate pieces of specific color
-            for coord, piece in cache_manager.get_pieces_of_color(color):
-                yield coord, piece
+    if isinstance(coord, torch.Tensor) and coord.ndim > 1:
+        # Batch mode
+        pieces = []
+        for i in range(coord.shape[0]):
+            single_coord = tuple(coord[i].tolist())
+            piece = cache_manager.get_piece(single_coord)
+            pieces.append(piece if piece else Piece(Color.WHITE, fallback_type))
+        return pieces
     else:
-        # Slow path - tensor scan (fallback)
+        # Scalar mode
+        if isinstance(coord, torch.Tensor):
+            coord = tuple(coord.tolist())
+        piece = cache_manager.get_piece(coord)
+        return piece if piece else Piece(Color.WHITE, fallback_type)
+
+def get_player_pieces(state: GameState, color: Union[Color, torch.Tensor]) -> Union[List[Tuple[Coord, Piece]], List[List[Tuple[Coord, Piece]]]]:
+    """Get all pieces of a given color - supports scalar and batch mode."""
+    if isinstance(color, torch.Tensor) and color.ndim > 0:
+        # Batch mode
+        return [get_player_pieces(state, Color(c.item())) for c in color]
+
+    # Scalar mode
+    # Convert generator to list directly for better performance
+    return list(state.cache_manager.get_pieces_of_color(color))
+
+def iterate_occupied(board: "Board", color: Optional[Union[Color, torch.Tensor]] = None, cache_manager: Optional["OptimizedCacheManager"] = None) -> Union[Iterable[Tuple[Coord, Piece]], List[Iterable[Tuple[Coord, Piece]]]]:
+    """
+    Iterate through occupied squares with standardized cache access - optimized color handling.
+    Supports scalar and batch mode.
+    """
+    if isinstance(color, torch.Tensor) and color.ndim > 0:
+        # Batch mode
+        results = []
+        for c in color:
+            results.append(list(iterate_occupied(board, Color(c.item()), cache_manager)))
+        return results
+
+    # Scalar mode
+    cache_mgr = cache_manager or getattr(board, 'cache_manager', None)
+
+    if cache_mgr:
+        # Fast path - cache is available
+        if color is None:
+            # Single loop for both colors
+            for c in (Color.WHITE, Color.BLACK):
+                yield from cache_mgr.get_pieces_of_color(c)
+        else:
+            yield from cache_mgr.get_pieces_of_color(color)
+    else:
+        # Slow path - tensor scan (fallback) - optimized tensor operations
         occ = board._tensor[PIECE_SLICE].sum(dim=0) > 0
         indices = torch.nonzero(occ, as_tuple=False)
+
+        # Pre-compute color plane if needed
+        color_plane = None
+        if color is not None:
+            color_plane = board._tensor[80]  # Assuming color plane at index 80
+
         for z, y, x in indices.tolist():
             piece = board.piece_at((x, y, z))
             if piece and (color is None or piece.color == color):
@@ -86,73 +109,90 @@ def iterate_occupied(board: "Board", color: Optional[Color] = None, cache_manage
 
 def get_pieces_by_type(
     board: "Board",
-    ptype: PieceType,
-    color: Optional[Color] = None,
+    ptype: Union[PieceType, torch.Tensor],
+    color: Optional[Union[Color, torch.Tensor]] = None,
     cache_manager: Optional["OptimizedCacheManager"] = None
-) -> List[Tuple[Coord, Piece]]:
+) -> Union[List[Tuple[Coord, Piece]], List[List[Tuple[Coord, Piece]]]]:
     """
     Return every (coord, piece) on *board* whose type == *ptype*
-    (and optionally colour == *color*).
-
-    Uses the provided cache_manager or board.cache_manager if available,
-    otherwise falls back to a direct tensor scan.
-
-    Args:
-        board: The board instance
-        ptype: The piece type to search for
-        color: Optional color filter
-        cache_manager: Optional cache manager (uses board.cache_manager if not provided)
+    (and optionally colour == *color*) - optimized cache usage.
+    Supports scalar and batch mode.
     """
-    if cache_manager is None:
-        cache_manager = getattr(board, 'cache_manager', None)
+    # Handle batch mode for ptype
+    if isinstance(ptype, torch.Tensor) and ptype.ndim > 0:
+        # Batch mode
+        results = []
+        for single_ptype in ptype:
+            single_color = color[0] if isinstance(color, torch.Tensor) and color.ndim > 0 else color
+            results.append(get_pieces_by_type(board, PieceType(single_ptype.item()), single_color, cache_manager))
+        return results
 
-    # Fast path – cache is available
-    if cache_manager is not None:
+    # Handle batch mode for color
+    if isinstance(color, torch.Tensor) and color.ndim > 0:
+        # Batch mode
+        results = []
+        for single_color in color:
+            results.append(get_pieces_by_type(board, ptype, Color(single_color.item()), cache_manager))
+        return results
+
+    # Scalar mode
+    cache_mgr = cache_manager or getattr(board, 'cache_manager', None)
+
+    if cache_mgr:
+        # Fast path – cache is available
         result = []
-        # If color is specified, only search that color, otherwise search both
         colors_to_search = [color] if color is not None else [Color.WHITE, Color.BLACK]
 
         for search_color in colors_to_search:
-            for coord, piece in cache_manager.get_pieces_of_color(search_color):
+            for coord, piece in cache_mgr.get_pieces_of_color(search_color):
                 if piece.ptype == ptype:
                     result.append((coord, piece))
         return result
 
-    # Slow path – cache not yet attached (e.g., during initial aura rebuild)
-    # Note: You'll need to define N_PIECE_TYPES or adjust this fallback
+    # Slow path – fallback to tensor operations
     tensor = board._tensor
     piece_planes = tensor[PIECE_SLICE]
-    col_plane = tensor[80]  # Assuming color plane is at index 80 (adjust as needed)
 
-    wanted_type = ptype.value
-    wanted_color = 1 if color is Color.WHITE else 0
+    # Create mask for the wanted piece type
+    mask = piece_planes[ptype.value] > 0.5
 
-    mask = (piece_planes[wanted_type] > 0.5)
     if color is not None:
-        mask &= (col_plane > 0.5) if color is Color.WHITE else (col_plane <= 0.5)
+        color_plane = tensor[80]  # Assuming color plane at index 80
+        color_mask = (color_plane > 0.5) if color is Color.WHITE else (color_plane <= 0.5)
+        mask &= color_mask
 
     indices = torch.nonzero(mask, as_tuple=False)
-    return [
-        ((int(x), int(y), int(z)),
-         Piece(color if color is not None else Color.WHITE, ptype))
-        for z, y, x in indices.tolist()
-    ]
+    coord_color = color if color is not None else Color.WHITE
+
+    return [((int(x), int(y), int(z)), Piece(coord_color, ptype))
+            for z, y, x in indices.tolist()]
 
 def get_pieces_by_type_from_cache(
     cache_manager: "OptimizedCacheManager",
-    ptype: PieceType,
-    color: Color
-) -> List[Tuple[Coord, Piece]]:
+    ptype: Union[PieceType, torch.Tensor],
+    color: Union[Color, torch.Tensor]
+) -> Union[List[Tuple[Coord, Piece]], List[List[Tuple[Coord, Piece]]]]:
     """
-    Direct cache-based lookup for pieces by type and color.
-    More efficient when you already have the cache manager.
+    Direct cache-based lookup for pieces by type and color - optimized list comprehension.
+    Supports scalar and batch mode.
     """
-    result = []
-    for coord, piece in cache_manager.get_pieces_of_color(color):
-        if piece.ptype == ptype:
-            result.append((coord, piece))
-    return result
+    # Handle batch mode
+    if isinstance(ptype, torch.Tensor) and ptype.ndim > 0:
+        # Batch mode
+        results = []
+        for i, single_ptype in enumerate(ptype):
+            single_color = color[i] if isinstance(color, torch.Tensor) and color.ndim > 0 else color
+            results.append(get_pieces_by_type_from_cache(cache_manager, PieceType(single_ptype.item()), single_color))
+        return results
 
+    # Scalar mode
+    if isinstance(color, torch.Tensor):
+        color = Color(color.item())
+
+    return [(coord, piece) for coord, piece in cache_manager.get_pieces_of_color(color)
+            if piece.ptype == ptype]
+
+# Pre-computed effect mapping for faster lookups
 AURA_EFFECT_MAP = {
     PieceType.SPEEDER: "aura",
     PieceType.SLOWER: "aura",
@@ -163,13 +203,34 @@ AURA_EFFECT_MAP = {
     PieceType.GEOMANCER: "geomancy"
 }
 
-def get_piece_effect_type(piece_type: PieceType) -> Optional[str]:
-    """Get standardized effect type for piece."""
-    return AURA_EFFECT_MAP.get(piece_type)
+# Pre-computed set for membership testing
+EFFECT_PIECE_TYPES = set(AURA_EFFECT_MAP.keys())
 
-def is_effect_piece(piece_type: PieceType) -> bool:
-    """Check if piece type has special effects."""
-    return piece_type in AURA_EFFECT_MAP
+def get_piece_effect_type(piece_type: Union[PieceType, torch.Tensor]) -> Union[Optional[str], List[Optional[str]]]:
+    """Get standardized effect type for piece - optimized dict lookup. Supports scalar and batch mode."""
+    if isinstance(piece_type, torch.Tensor) and piece_type.ndim > 0:
+        # Batch mode
+        return [AURA_EFFECT_MAP.get(PieceType(pt.item())) for pt in piece_type]
+    else:
+        # Scalar mode
+        if isinstance(piece_type, torch.Tensor):
+            piece_type = PieceType(piece_type.item())
+        return AURA_EFFECT_MAP.get(piece_type)
+
+def is_effect_piece(piece_type: Union[PieceType, torch.Tensor]) -> Union[bool, torch.Tensor]:
+    """Check if piece type has special effects - optimized set membership. Supports scalar and batch mode."""
+    if isinstance(piece_type, torch.Tensor) and piece_type.ndim > 0:
+        # Batch mode
+        results = []
+        for pt in piece_type:
+            pt_enum = PieceType(pt.item())
+            results.append(pt_enum in EFFECT_PIECE_TYPES)
+        return torch.tensor(results, dtype=torch.bool)
+    else:
+        # Scalar mode
+        if isinstance(piece_type, torch.Tensor):
+            piece_type = PieceType(piece_type.item())
+        return piece_type in EFFECT_PIECE_TYPES
 
 # Backward compatibility alias
 list_occupied = iterate_occupied

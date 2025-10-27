@@ -34,10 +34,8 @@ class GeomancyCache:
         return True
 
     def apply_move(self, mv: Move, mover: Color, current_ply: int, board: Board) -> None:
-        if self._cache_manager:
-            candidates = block_candidates(board, mover, self._cache_manager)
-        else:
-            candidates = block_candidates(board, mover, None)
+        # FIXED: Use cache_manager instead of board
+        candidates = block_candidates(self._cache_manager, mover)
 
         for sq in candidates:
             if not self.is_blocked(sq, current_ply):
@@ -62,3 +60,7 @@ class GeomancyCache:
         return {
             'blocked_squares': len(self._blocks),
         }
+
+    def set_cache_manager(self, cache_manager: 'OptimizedCacheManager') -> None:
+        """Set the cache manager reference - ensures single instance usage"""
+        self._cache_manager = cache_manager

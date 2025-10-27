@@ -1,4 +1,4 @@
-# game3d/cache/caches/attackscache.py - UPDATED
+# game3d/cache/caches/attackscache.py - FIXED
 from __future__ import annotations
 from typing import Dict, Set, Tuple, Optional, TYPE_CHECKING, List
 from dataclasses import dataclass, field
@@ -26,9 +26,13 @@ class AttacksCache(CacheStatsMixin):
     is_valid: Dict[Color, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        super().__init__()
+        # FIX: Call the parent mixin's __init__ method explicitly
+        CacheStatsMixin.__init__(self)
+
+        # Ensure manager reference is set
         self._manager = getattr(self.board, "cache_manager", None)
 
+        # Initialize with proper structure
         self.attacked_squares[Color.WHITE] = set()
         self.attacked_squares[Color.BLACK] = set()
         self.last_positions[Color.WHITE] = set()
@@ -38,6 +42,8 @@ class AttacksCache(CacheStatsMixin):
 
     def get_for_color(self, color: Color) -> Optional[Set[Tuple[int, int, int]]]:
         """Get attacked squares for a color if cache is valid."""
+        if not self._manager:
+            return None
         if self._manager.has_priest(color.opposite()):
             return set()
         if not self.is_valid.get(color, False):
@@ -268,3 +274,7 @@ class AttacksCache(CacheStatsMixin):
             'black_valid': self.is_valid.get(Color.BLACK, False),
             'piece_attacks_tracked': len(self.piece_attacks),
         }
+
+    def set_cache_manager(self, manager: "OptimizedCacheManager") -> None:
+        """Allow the cache manager to set itself after creation."""
+        self._manager = manager

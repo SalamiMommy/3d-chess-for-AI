@@ -6,8 +6,8 @@ from numba import njit, prange
 from typing import List, TYPE_CHECKING
 
 from game3d.common.enums import Color
-from game3d.movement.movepiece import Move, convert_legacy_move_args
-from game3d.common.coord_utils import in_bounds_scalar
+from game3d.movement.movepiece import Move
+from game3d.common.coord_utils import in_bounds_scalar, in_bounds
 from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ def generate_moves(
     )
 
     return [
-        convert_legacy_move_args(
+        Move.create_simple(
             from_coord=pos,
             to_coord=(nx, ny, nz),
             is_capture=is_cap,

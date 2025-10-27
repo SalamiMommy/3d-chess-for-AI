@@ -35,7 +35,7 @@ def buffed_squares(  # debuffed_squares or buffed_squares
     # Use cache manager to get pieces
     effect_pieces = [
         coord for coord, piece in cache_manager.get_pieces_of_color(effect_color)
-        if piece.ptype == PieceType.[EFFECT_TYPE]  # SLOWER or SPEEDER
+        if piece.ptype == PieceType.SPEEDER
     ]
 
     for coord in effect_pieces:

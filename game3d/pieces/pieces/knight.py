@@ -12,7 +12,7 @@ from game3d.common.coord_utils import in_bounds
 from game3d.movement.registry import register
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.movement.movepiece import Move
-from game3d.common.cache_utils import get_occupancy_safe, ensure_int_coords
+from game3d.common.cache_utils import is_occupied_safe, ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
@@ -29,7 +29,7 @@ KNIGHT_OFFSETS = np.array([
 ], dtype=np.int8)
 
 def generate_knight_moves(
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Added parameter
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -42,12 +42,13 @@ def generate_knight_moves(
         tx, ty, tz = x + dx, y + dy, z + dz
         if not in_bounds((tx, ty, tz)):
             continue
-        # Use standardized occupancy check
-        occ = get_occupancy_safe(cache_manager, (tx, ty, tz))
-        if occ is None or occ.color != color:        # empty or enemy
+
+        # FIX: Get the piece at the target square to check if it's an enemy
+        target_piece = cache_manager.get_piece((tx, ty, tz))
+        if target_piece is None or target_piece.color != color:  # empty or enemy
             targets.append((tx, ty, tz))
 
-    if not targets:                                  # early exit
+    if not targets:  # early exit
         return []
 
     # 2. Vectorise and hand over to the integrated jump engine

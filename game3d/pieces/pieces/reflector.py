@@ -10,7 +10,7 @@ from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds
-from game3d.movement.movepiece import convert_legacy_move_args
+from game3d.movement.movepiece import Move
 from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
@@ -74,16 +74,15 @@ def _bounce_ray(
     return ptr
 
 class _ReflectingBishopGen:
-    __slots__ = ("cache_manager", "_buf")  # FIXED: Consistent naming
+    __slots__ = ("cache_manager", "_buf")
 
-    def __init__(self, cache_manager: 'OptimizedCacheManager'):  # FIXED: Parameter name
-        self.cache_manager = cache_manager  # FIXED: Consistent naming
+    def __init__(self, cache_manager: 'OptimizedCacheManager'):
+        self.cache_manager = cache_manager
         self._buf = np.empty(256, dtype=np.uint64)
 
     def generate(self, color: Color, pos: tuple[int, int, int]) -> List[Move]:
-        # FIXED: Use proper occupancy array access through public API
         occ_array = self.cache_manager.get_occupancy_array_readonly()
-        occ_flat = occ_array.reshape(-1)  # This should give us 729 elements
+        occ_flat = occ_array.reshape(-1)
         x, y, z = pos
         color_code = 1 if color == Color.WHITE else 2
         moves: List[Move] = []
@@ -99,14 +98,14 @@ class _ReflectingBishopGen:
                 from_coord = (fr_idx % 9, (fr_idx // 9) % 9, fr_idx // 81)
                 to_coord   = (to_idx % 9, (to_idx // 9) % 9, to_idx // 81)
 
-                moves.append(convert_legacy_move_args(
+                # FIX: Use Move.create_simple instead of direct Move constructor
+                moves.append(Move.create_simple(
                     from_coord=from_coord,
                     to_coord=to_coord,
                     is_capture=is_cap
                 ))
         return moves
 
-# FIXED: Consistent parameter naming
 def _get_gen(cache_manager: 'OptimizedCacheManager') -> _ReflectingBishopGen:
     """Use the cache manager's existing generator instead of creating new one."""
     if hasattr(cache_manager, '_reflecting_bishop_gen') and cache_manager._reflecting_bishop_gen is not None:
@@ -117,7 +116,7 @@ def _get_gen(cache_manager: 'OptimizedCacheManager') -> _ReflectingBishopGen:
     return cache_manager._reflecting_bishop_gen
 
 def generate_reflecting_bishop_moves(
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -127,7 +126,7 @@ def generate_reflecting_bishop_moves(
 @register(PieceType.REFLECTOR)
 def reflector_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    gen = _get_gen(state.cache_manager)  # FIXED: Use cache_manager property
+    gen = _get_gen(state.cache_manager)
     return gen.generate(state.color, (x, y, z))
 
 __all__ = ["generate_reflecting_bishop_moves"]

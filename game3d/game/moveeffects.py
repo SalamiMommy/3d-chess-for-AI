@@ -11,7 +11,7 @@ from game3d.movement.movepiece import MOVE_FLAGS
 
 # Common imports
 from game3d.common.move_utils import apply_special_effects, create_enriched_move
-from game3d.common.move_validation import validate_move_basic
+from game3d.common.validation import validate_move_basic
 
 if TYPE_CHECKING:
     from .gamestate import GameState
@@ -25,7 +25,7 @@ def apply_archery_attack(game_state: 'GameState', target_sq: Tuple[int, int, int
         new_board = game_state.board.clone()
 
         # Remove piece at target square if exists
-        piece = game_state.cache_manager.occupancy.get(target_sq)
+        piece = game_state.cache_manager.occupancy_cache.get(target_sq)
         if piece is not None:
             new_board.set_piece(target_sq, None)
 

@@ -12,7 +12,7 @@ import numpy as np
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.slidermovement import generate_moves
-from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
+from game3d.movement.movepiece import Move, MOVE_FLAGS, Move
 from game3d.common.coord_utils import reconstruct_path
 from game3d.attacks.check import _any_priest_alive
 
@@ -97,7 +97,7 @@ def apply_trailblaze_step(
     # 2. Increment counter
     if cache_manager.trailblaze_cache.increment_counter(enemy_sq, enemy_color, board):
         # 3. Remove if limit reached (king spared if priests alive)
-        victim = cache_manager.occupancy.get(enemy_sq)
+        victim = cache_manager.occupancy_cache.get(enemy_sq)
         if victim is not None:
             if victim.ptype is PieceType.KING and _any_priest_alive(board, victim.color):
                 return removed  # king spared

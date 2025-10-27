@@ -26,7 +26,7 @@ def is_check(game_state) -> bool:
         game_state.board,
         game_state.color,  # Current player (about to move)
         game_state.color,  # King color to check
-        game_state.cache
+        game_state.cache_manager
     )
 
     # Cache result

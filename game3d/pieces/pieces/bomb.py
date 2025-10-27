@@ -8,7 +8,7 @@ import numpy as np
 from typing import List, Tuple, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movepiece import Move, convert_legacy_move_args, MOVE_FLAGS
+from game3d.movement.movepiece import Move, Move, MOVE_FLAGS
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.common.cache_utils import ensure_int_coords
 from game3d.common.coord_utils import get_aura_squares
@@ -46,7 +46,7 @@ def generate_bomb_moves(
 
     # 2. Self-detonation move (if it would affect enemies)
     if _detonate_would_affect_enemies(cache_manager, pos, color):
-        detonate_move = convert_legacy_move_args(
+        detonate_move = Move(
             from_coord=pos,
             to_coord=pos,
             flags=MOVE_FLAGS['SELF_DETONATE']

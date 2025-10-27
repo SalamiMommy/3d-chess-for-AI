@@ -36,24 +36,16 @@ def _get_cache_from_board(board) -> Optional[Any]:
         return board.cache_manager
     return None
 
-def _any_priest_alive(
-    board,
-    king_color: Color | None = None,
-    cache: Any | None = None,
-) -> bool:
-    """
-    Return True if *king_color* still has at least one priest on the board.
-    If *king_color* is None -> True if ANY priest exists.
-    Delegates to the manager's occupancy cache counters.
-    """
+def _any_priest_alive(board, king_color: Color | None = None, cache: Any | None = None) -> bool:
     if cache is None:
-        cache = _get_cache_from_board(board)
+        # Try to get from board first
+        if hasattr(board, 'cache_manager') and board.cache_manager is not None:
+            cache = board.cache_manager
+        else:
+            # Fallback to global function
+            from game3d.cache.manager import get_cache_manager
+            cache = get_cache_manager(board, king_color or Color.WHITE)
 
-    if cache is None:
-        # Ultra-defensive fallback
-        return False
-
-    # CORRECTED: Use manager method
     if king_color is None:
         return cache.any_priest_alive()
     return cache.has_priest(king_color)

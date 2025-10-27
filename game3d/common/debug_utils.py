@@ -124,8 +124,10 @@ class GeneratorBase:
         self.default_mode = default_mode
         self.stats = stats_tracker
 
-    def generate(self, state: GameState) -> List[Move]:
-        return self._impl(state, mode=self.default_mode.value)
+    def generate(self, state: GameState, *, mode: str | None = None) -> List[Move]:
+        # if caller supplied mode use it, otherwise fall back to default
+        effective_mode = mode if mode is not None else self.default_mode.value
+        return self._impl(state, mode=effective_mode)
 
     def _impl(self, state: GameState, mode: str) -> List[Move]:
         raise NotImplementedError
@@ -145,6 +147,10 @@ class UndoSnapshot:
     original_zkey: int
     moving_piece: Piece
     captured_piece: Optional[Piece] = None
+    # ADD the missing fields that are being used in turnmove.py
+    original_aura_state: Any = None
+    original_trailblaze_state: Any = None
+    original_geomancy_state: Any = None
 
 
 @dataclass(slots=True)

@@ -1,4 +1,4 @@
-# zobrist.py - FIXED VERSION with aggressive caching
+# zobrist.py - FIXED VERSION with consistent instance usage
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, TYPE_CHECKING
 from functools import lru_cache
@@ -12,11 +12,8 @@ if TYPE_CHECKING:
 
 from game3d.common.enums import Color, PieceType
 from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z
-from game3d.common.piece_utils import iterate_occupied
 
 _PIECE_KEYS: Dict[Tuple[PieceType, Color, Tuple[int, int, int]], int] = {}
-_EN_PASSANT_KEYS: Dict[Tuple[int, int, int], int] = {}
-_CASTLE_KEYS: Dict[str, int] = {}
 _SIDE_KEY: int = 0
 _INITIALIZED: bool = False
 _INIT_LOCK = RLock()
@@ -24,7 +21,7 @@ _INIT_LOCK = RLock()
 
 def _init_zobrist(width: int = 9, height: int = 9, depth: int = 9) -> None:
     """Thread-safe Zobrist key initialization."""
-    global _INITIALIZED, _PIECE_KEYS, _EN_PASSANT_KEYS, _CASTLE_KEYS, _SIDE_KEY
+    global _INITIALIZED, _PIECE_KEYS, _SIDE_KEY
 
     if _INITIALIZED:
         return
@@ -41,14 +38,6 @@ def _init_zobrist(width: int = 9, height: int = 9, depth: int = 9) -> None:
                     for y in range(height):
                         for z in range(depth):
                             _PIECE_KEYS[(ptype, color, (x, y, z))] = rng.getrandbits(64)
-
-        for x in range(width):
-            for y in range(height):
-                for z in range(depth):
-                    _EN_PASSANT_KEYS[(x, y, z)] = rng.getrandbits(64)
-
-        for cr in range(16):
-            _CASTLE_KEYS[f"{cr}"] = rng.getrandbits(64)
 
         _SIDE_KEY = rng.getrandbits(64)
         _INITIALIZED = True
@@ -69,10 +58,6 @@ def _evict_old_entries() -> None:
 
 
 def compute_zobrist(board: Optional["Board"], color: Color) -> int:
-    """
-    Compute Zobrist hash with aggressive caching.
-    Cache key: (board_hash, color, generation)
-    """
     _init_zobrist()
 
     if board is None:
@@ -86,32 +71,40 @@ def compute_zobrist(board: Optional["Board"], color: Color) -> int:
         if cache_key in _BOARD_HASH_CACHE:
             return _BOARD_HASH_CACHE[cache_key]
 
-    zkey = 0
-    for coord, piece in iterate_occupied(board):
+        # Compute under lock to prevent duplicate work
+        zkey = 0
+
+    # Compute outside lock using board's occupancy cache
+    # Use the board's method to iterate occupied positions
+    for coord, piece in board.list_occupied():
         zkey ^= _PIECE_KEYS[(piece.ptype, piece.color, coord)]
 
     if color == Color.BLACK:
         zkey ^= _SIDE_KEY
 
     with _CACHE_LOCK:
-        _BOARD_HASH_CACHE[cache_key] = zkey
-        _evict_old_entries()
-
-    return zkey
-
+        # Double-check pattern
+        if cache_key not in _BOARD_HASH_CACHE:
+            _BOARD_HASH_CACHE[cache_key] = zkey
+            _evict_old_entries()
+        return _BOARD_HASH_CACHE[cache_key]
 
 class ZobristHash:
     """Zobrist hashing with incremental updates and smart caching."""
 
-    __slots__ = ('_hash_cache', '_cache_lock')
+    __slots__ = ('_hash_cache', '_cache_lock', '_piece_keys', '_side_key')
 
     def __init__(self):
         _init_zobrist()
         self._hash_cache: Dict[int, int] = {}
         self._cache_lock = RLock()
+        # Store references to the global keys for instance access
+        self._piece_keys = _PIECE_KEYS
+        self._side_key = _SIDE_KEY
+
 
     def compute_from_scratch(self, board: "Board", color: Color) -> int:
-        """Compute Zobrist hash from scratch (uses global cache)."""
+        """Compute Zobrist hash from scratch using instance methods."""
         return compute_zobrist(board, color)
 
     def update_hash_move(
@@ -122,36 +115,23 @@ class ZobristHash:
         captured_piece: Optional["Piece"] = None,
         **kwargs,
     ) -> int:
-        """
-        Incrementally update Zobrist hash for a move.
-        This is the main optimization - avoids full recomputation.
-        """
-        transform_key = hash((current_hash, mv.from_coord, mv.to_coord,
-                             from_piece.ptype, from_piece.color,
-                             captured_piece.ptype if captured_piece else None,
-                             captured_piece.color if captured_piece else None))
-
-        with self._cache_lock:
-            if transform_key in self._hash_cache:
-                return self._hash_cache[transform_key]
-
+        """Incremental update using instance references."""
+        # Use instance references to all keys
         new_hash = current_hash
 
-        new_hash ^= _PIECE_KEYS[(from_piece.ptype, from_piece.color, mv.from_coord)]
+        # Remove piece from source
+        new_hash ^= self._piece_keys[(from_piece.ptype, from_piece.color, mv.from_coord)]
 
-        if captured_piece is not None:
-            new_hash ^= _PIECE_KEYS[(captured_piece.ptype, captured_piece.color, mv.to_coord)]
+        # Remove captured piece if any
+        if captured_piece:
+            new_hash ^= self._piece_keys[(captured_piece.ptype, captured_piece.color, mv.to_coord)]
 
-        final_ptype = mv.promotion_type if mv.is_promotion else from_piece.ptype
-        new_hash ^= _PIECE_KEYS[(final_ptype, from_piece.color, mv.to_coord)]
+        # Add piece to destination (handle promotion)
+        final_ptype = getattr(mv, 'promotion_type', from_piece.ptype)
+        new_hash ^= self._piece_keys[(final_ptype, from_piece.color, mv.to_coord)]
 
-        new_hash ^= _SIDE_KEY
-
-        with self._cache_lock:
-            if len(self._hash_cache) > 5000:
-                items = list(self._hash_cache.items())
-                self._hash_cache = dict(items[-2500:])
-            self._hash_cache[transform_key] = new_hash
+        # Toggle side to move
+        new_hash ^= self._side_key
 
         return new_hash
 
@@ -166,21 +146,30 @@ class ZobristHash:
         new_hash = current_hash
 
         if old_piece:
-            new_hash ^= _PIECE_KEYS[(old_piece.ptype, old_piece.color, coord)]
+            new_hash ^= self._piece_keys[(old_piece.ptype, old_piece.color, coord)]
 
         if new_piece:
-            new_hash ^= _PIECE_KEYS[(new_piece.ptype, new_piece.color, coord)]
+            new_hash ^= self._piece_keys[(new_piece.ptype, new_piece.color, coord)]
 
         return new_hash
 
     def flip_side(self, current_hash: int) -> int:
         """Flip the side to move in the hash."""
-        return current_hash ^ _SIDE_KEY
+        return current_hash ^ self._side_key
 
     def clear_cache(self) -> None:
         """Clear the incremental update cache."""
         with self._cache_lock:
             self._hash_cache.clear()
+
+    # Add getters for external access if needed
+    def get_piece_key(self, ptype: PieceType, color: Color, coord: Tuple[int, int, int]) -> int:
+        """Get piece key for external use (avoid direct global access)."""
+        return self._piece_keys[(ptype, color, coord)]
+
+    def get_side_key(self) -> int:
+        """Get side key for external use."""
+        return self._side_key
 
 
 def clear_global_zobrist_cache() -> None:

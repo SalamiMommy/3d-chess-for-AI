@@ -1,74 +1,178 @@
-# game3d/common/move_utils.py - OPTIMIZED VERSION
-# ------------------------------------------------------------------
-# Move-related utilities with consolidated validation
-# ------------------------------------------------------------------
+# game3d/common/move_utils.py - ENHANCED VECTORIZED VERSION
 from __future__ import annotations
 import numpy as np
-from typing import List, Tuple, Set, Optional, TYPE_CHECKING
+import torch
+from typing import List, Tuple, Set, Optional, Union, TYPE_CHECKING
 
 from game3d.common.constants import SIZE, VOLUME
-from game3d.common.coord_utils import in_bounds_vectorised, filter_valid_coords, add_coords
+from game3d.common.coord_utils import in_bounds_vectorised, filter_valid_coords, add_coords, reconstruct_path, get_path_squares
 from game3d.common.piece_utils import get_player_pieces
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:
-    from game3d.board.board import Board
-    from game3d.pieces.piece import Piece
-    from game3d.movement.movepiece import Move
-    from game3d.common.enums import Color, PieceType
-    from game3d.cache.manager import OptimizedCacheManager
-
-from game3d.pieces.pieces.bomb import detonate
-from game3d.attacks.check import _any_priest_alive
-from game3d.common.coord_utils import reconstruct_path
-if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
 
 Coord = Tuple[int, int, int]
 
-def extract_directions_and_steps_vectorized(start: Coord, to_coords: np.ndarray) -> Tuple[np.ndarray, int]:
-    if to_coords.size == 0:                      # empty request
+def extract_directions_and_steps_vectorized(start: Union[Coord, torch.Tensor], to_coords: Union[np.ndarray, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
+    """Fully vectorized direction extraction - supports scalar and batch mode."""
+    if torch.is_tensor(to_coords) and to_coords.ndim > 2:
+        # Batch mode: multiple starts and multiple to_coords
+        batch_size = to_coords.shape[0] if to_coords.ndim == 3 else 1
+        if torch.is_tensor(start) and start.ndim > 1:
+            # Multiple starts
+            starts = start
+        else:
+            # Single start repeated for batch
+            starts = torch.tensor(start).unsqueeze(0).repeat(batch_size, 1)
+
+        batch_directions = []
+        batch_max_steps = []
+
+        for i in range(batch_size):
+            single_start = starts[i] if starts.shape[0] > 1 else starts[0]
+            single_to_coords = to_coords[i] if to_coords.ndim == 3 else to_coords
+            dirs, steps = extract_directions_and_steps_vectorized(single_start, single_to_coords)
+            batch_directions.append(dirs)
+            batch_max_steps.append(steps)
+
+        return batch_directions, batch_max_steps
+
+    elif torch.is_tensor(to_coords):
+        # Convert tensor to numpy for processing
+        to_coords_np = to_coords.cpu().numpy() if to_coords.is_cuda else to_coords.numpy()
+    else:
+        to_coords_np = to_coords
+
+    if to_coords_np.size == 0:
         return np.empty((0, 3), dtype=np.int8), 0
 
-    start_arr = np.asarray(start, dtype=np.int32)
-    deltas = to_coords.astype(np.int32) - start_arr
+    if torch.is_tensor(start):
+        start_arr = start.cpu().numpy() if start.is_cuda else start.numpy()
+    else:
+        start_arr = np.asarray(start, dtype=np.int32)
 
-    # Chebyshev norm along each row
-    norms = np.max(np.abs(deltas), axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)       # avoid div-by-zero
+    deltas = to_coords_np.astype(np.int32) - start_arr
 
-    unit_dirs = (deltas // norms).astype(np.int8)
-    uniq_dirs = np.unique(unit_dirs, axis=0)
+    # Vectorized Chebyshev norm
+    abs_deltas = np.abs(deltas)
+    norms = np.max(abs_deltas, axis=1, keepdims=True)
 
-    max_steps = int(norms.max())
+    # Avoid division by zero and convert to int8
+    norms_no_zero = np.where(norms == 0, 1, norms)
+    unit_dirs = (deltas // norms_no_zero).astype(np.int8)
+
+    # Get unique directions efficiently
+    uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
+    max_steps = int(np.max(norms)) if len(norms) > 0 else 0
+
     return uniq_dirs, max_steps
 
-def extract_directions_and_steps(to_coords: np.ndarray, start: Coord) -> Tuple[np.ndarray, int]:
+def extract_directions_and_steps(to_coords: Union[np.ndarray, torch.Tensor], start: Union[Coord, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
     return extract_directions_and_steps_vectorized(start, to_coords)
 
-def rebuild_moves_from_directions(start: Coord, directions: np.ndarray, max_steps: int, capture_set: Set[Coord]) -> List[Move]:
-    """Batch-rebuild moves from directions and steps."""
+def rebuild_moves_from_directions(
+    starts: Union[np.ndarray, torch.Tensor, List[Coord]],
+    directions_batch: Union[List[np.ndarray], List[List[np.ndarray]]],
+    max_steps_batch: Union[List[int], List[List[int]]],
+    capture_sets: Union[List[Set[Coord]], List[List[Set[Coord]]]]
+) -> Union[List[Move], List[List[Move]]]:
+    """Batch rebuild moves from directions for multiple pieces - supports scalar and batch mode."""
     from game3d.movement.movepiece import Move
-    if len(directions) == 0 or max_steps <= 0:
-        return []
-    sx, sy, sz = start
-    rebuilt = []
-    for dx, dy, dz in directions:
-        for step in range(1, max_steps + 1):
-            to = (sx + step * dx, sy + step * dy, sz + step * dz)
-            rebuilt.append(Move.create_simple(start, to, to in capture_set))
-    return rebuilt
 
-def extend_move_range(move: Move, start: Coord, max_steps: int = 1, debuffed: bool = False) -> List[Move]:
-    """Extend move range for buffed/debuffed pieces."""
+    # Handle scalar input
+    if not isinstance(starts, (list, np.ndarray, torch.Tensor)) or (torch.is_tensor(starts) and starts.ndim == 1):
+        # Scalar mode
+        if not isinstance(directions_batch, list) or not directions_batch:
+            return []
+
+        directions = directions_batch[0] if isinstance(directions_batch[0], (list, np.ndarray)) else directions_batch
+        max_steps = max_steps_batch[0] if isinstance(max_steps_batch, list) else max_steps_batch
+        capture_set = capture_sets[0] if isinstance(capture_sets, list) else capture_sets
+
+        if len(directions) == 0 or max_steps <= 0:
+            return []
+
+        if torch.is_tensor(starts):
+            sx, sy, sz = starts.tolist()
+        else:
+            sx, sy, sz = starts
+
+        rebuilt = []
+        capture_frozen = frozenset(capture_set)
+
+        for dx, dy, dz in directions:
+            for step in range(1, max_steps + 1):
+                to = (sx + step * dx, sy + step * dy, sz + step * dz)
+                if all(0 <= c < SIZE for c in to):
+                    rebuilt.append(Move.create_simple((sx, sy, sz), to, to in capture_frozen))
+
+        return rebuilt
+    else:
+        # Batch mode
+        all_moves = []
+
+        # Convert to list for consistent processing
+        if torch.is_tensor(starts):
+            starts_list = [tuple(starts[i].tolist()) for i in range(starts.shape[0])]
+        elif isinstance(starts, np.ndarray):
+            starts_list = [tuple(starts[i]) for i in range(starts.shape[0])]
+        else:
+            starts_list = starts
+
+        for i, (start, directions, max_steps, capture_set) in enumerate(
+            zip(starts_list, directions_batch, max_steps_batch, capture_sets)
+        ):
+            if len(directions) == 0 or max_steps <= 0:
+                all_moves.append([])
+                continue
+
+            sx, sy, sz = start
+            rebuilt = []
+            capture_frozen = frozenset(capture_set)
+
+            for dx, dy, dz in directions:
+                for step in range(1, max_steps + 1):
+                    to = (sx + step * dx, sy + step * dy, sz + step * dz)
+                    if all(0 <= c < SIZE for c in to):
+                        rebuilt.append(Move.create_simple(start, to, to in capture_frozen))
+
+            all_moves.append(rebuilt)
+
+        return all_moves
+
+def extend_move_range(move: Union[Move, List[Move]], start: Union[Coord, List[Coord]], max_steps: Union[int, List[int]] = 1, debuffed: Union[bool, List[bool]] = False) -> Union[List[Move], List[List[Move]]]:
+    """Extend move range for buffed/debuffed pieces - supports scalar and batch mode."""
+    from game3d.movement.movepiece import Move
+
+    # Handle batch mode
+    if isinstance(move, list):
+        # Batch mode
+        if isinstance(start, list) and isinstance(max_steps, list) and isinstance(debuffed, list):
+            # Full batch with all parameters as lists
+            results = []
+            for m, s, ms, d in zip(move, start, max_steps, debuffed):
+                results.append(extend_move_range(m, s, ms, d))
+            return results
+        else:
+            # Mixed batch - use scalar parameters for all
+            results = []
+            for m in move:
+                results.append(extend_move_range(m, start, max_steps, debuffed))
+            return results
+
+    # Scalar mode
     direction = tuple((b - a) for a, b in zip(start, move.to_coord))
     norm = max(abs(d) for d in direction) if direction else 0
     if norm == 0:
         return [move]
+
     unit_dir = tuple(d // norm for d in direction)
     extended_moves = [move]
+
+    # Precompute bounds check values
     for step in range(1, max_steps + 1):
         next_step = tuple(a + step * b for a, b in zip(move.to_coord, unit_dir))
         if all(0 <= c < SIZE for c in next_step):
@@ -77,154 +181,127 @@ def extend_move_range(move: Move, start: Coord, max_steps: int = 1, debuffed: bo
             break
     return extended_moves
 
-def validate_moves_batch(
-    moves: List["Move"],
-    state: "GameState",
-    piece: Optional[Piece] = None
-) -> List["Move"]:
-    """
-    Consolidated single-pass validation of moves.
-    Combines bounds checking, occupancy validation, and effect filtering.
-    """
-    if not moves:
-        return []
-
-    # DEFENSIVE: Filter out None moves immediately
-    moves = filter_none_moves(moves)
-    if not moves:
-        return []
-
-    # Extract coordinates for vectorized processing
-    from_coords = np.array([m.from_coord for m in moves])
-    to_coords = np.array([m.to_coord for m in moves])
-
-    # Single-pass bounds validation
-    from_valid = in_bounds_vectorised(from_coords)
-    to_valid = in_bounds_vectorised(to_coords)
-    bounds_valid = from_valid & to_valid
-
-    if not np.any(bounds_valid):
-        return []
-
-    # Get piece info for validation
-    if piece is not None:
-        expected_color = piece.color
-    else:
-        expected_color = state.color
-
-    # Single-pass occupancy and effect validation
-    valid_moves = []
-    cache_manager = state.cache_manager
-
-    for i, move in enumerate(moves):
-        if not bounds_valid[i]:
-            continue
-
-        # Check piece exists and is correct color
-        from_piece = cache_manager.occupancy.get(move.from_coord)
-        if not from_piece or from_piece.color != expected_color:
-            continue
-
-        # Check frozen status
-        if cache_manager.is_frozen(move.from_coord, expected_color):
-            continue
-
-        # Check destination is not friendly
-        to_piece = cache_manager.occupancy.get(move.to_coord)
-        if to_piece and to_piece.color == expected_color:
-            continue
-
-        valid_moves.append(move)
-
-    return valid_moves
-
-# Alias for backward compatibility
-validate_moves = validate_moves_batch
-
 def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType], List[int]]:
     """
     Prepare coords, types, debuffed indices for batch dispatch.
     FIXED: Properly handles Piece objects.
     """
     coords, types, debuffed = [], [], []
+    cache = state.cache_manager
+
     for idx, (coord, piece) in enumerate(get_player_pieces(state, state.color)):
         if not isinstance(piece, Piece):
-            print(f"[ERROR] Non-Piece in prepare_batch_data: {type(piece)}")
+            # Skip logging in optimized version
             continue
 
         coords.append(coord)
         types.append(piece.ptype)
 
-        if state.cache_manager.is_movement_debuffed(coord, state.color) and piece.ptype != PieceType.PAWN:
+        if cache.is_movement_debuffed(coord, state.color) and piece.ptype != PieceType.PAWN:
             debuffed.append(idx)
 
     return coords, types, debuffed
 
-def filter_none_moves(moves: List["Move"]) -> List["Move"]:
-    """
-    Defensive filter to remove None values from move lists.
-
-    This is a safety measure to prevent None values from propagating through
-    the move generation pipeline. If None moves are found, logs a warning.
-
-    Args:
-        moves: List of moves that may contain None values
-
-    Returns:
-        List of moves with all None values removed
-    """
+def filter_none_moves(moves: Union[List["Move"], List[List["Move"]]]) -> Union[List["Move"], List[List["Move"]]]:
+    """Filter None values from move lists - handles both single and batch."""
     if not moves:
-        return []
+        return moves
 
-    # Count None values for debugging
-    none_count = sum(1 for m in moves if m is None)
+    # Check if it's a batch (list of lists)
+    if isinstance(moves[0], list):
+        return [
+            [m for m in move_list if m is not None and hasattr(m, 'from_coord') and hasattr(m, 'to_coord')]
+            for move_list in moves
+        ]
+    else:
+        # Single list
+        return [m for m in moves if m is not None and hasattr(m, 'from_coord') and hasattr(m, 'to_coord')]
 
-    if none_count > 0:
-        print(f"[WARNING] filter_none_moves: Filtered {none_count} None values from {len(moves)} moves")
-        import traceback
-        traceback.print_stack(limit=5)  # Show where the None came from
+def apply_special_effects(
+    game_state: "GameState",
+    moves: Union[List["Move"], List[List["Move"]]],
+    moving_pieces: Union[List["Piece"], List[List["Piece"]]],
+    captured_pieces: Union[List[Optional["Piece"]], List[List[Optional["Piece"]]]]
+) -> Tuple[Union[List[List[Tuple[Coord, Piece]]], List[List[List[Tuple[Coord, Piece]]]]],
+           Union[List[List[Tuple[Coord, Coord, Piece]]], List[List[List[Tuple[Coord, Coord, Piece]]]]],
+           Union[List[bool], List[List[bool]]]]:
+    """Batch apply special effects to multiple moves - supports scalar and batch mode."""
+    # Handle scalar mode
+    if not isinstance(moves, list) or (moves and not isinstance(moves[0], list)):
+        # Scalar mode - convert to batch of size 1
+        moves_batch = [moves] if moves else [[]]
+        moving_pieces_batch = [moving_pieces] if moving_pieces else [[]]
+        captured_pieces_batch = [captured_pieces] if captured_pieces else [[]]
 
-    # Filter out None values
-    filtered = [m for m in moves if m is not None]
+        all_removed_pieces, all_moved_pieces, all_self_detonate = apply_special_effects(
+            game_state, moves_batch, moving_pieces_batch, captured_pieces_batch
+        )
 
-    # Extra validation: check that remaining moves have required attributes
-    valid = []
-    for m in filtered:
-        if not hasattr(m, 'from_coord') or not hasattr(m, 'to_coord'):
-            print(f"[WARNING] filter_none_moves: Move missing required attributes: {m}")
-            continue
-        valid.append(m)
+        # Return scalar results
+        return (all_removed_pieces[0] if all_removed_pieces else [],
+                all_moved_pieces[0] if all_moved_pieces else [],
+                all_self_detonate[0] if all_self_detonate else False)
 
-    if len(valid) < len(filtered):
-        print(f"[WARNING] filter_none_moves: Removed {len(filtered) - len(valid)} invalid move objects")
+    # Batch mode
+    if not moves:
+        return [], [], []
 
-    return valid
+    cache = game_state.cache_manager
+    all_removed_pieces = []
+    all_moved_pieces = []
+    all_self_detonate = []
 
-def apply_special_effects(game_state, move, moving_piece, captured_piece):
-    """Unified special effects application."""
-    cache = get_cache_manager(game_state)
-    removed_pieces = []
-    moved_pieces = []
+    # Pre-compute common data
+    colors = []
+    for piece_batch in moving_pieces:
+        batch_colors = [piece.color for piece in piece_batch]
+        colors.append(batch_colors)
 
-    # Apply all effects in sequence
-    apply_hole_effects(game_state.board, cache, moving_piece.color, moved_pieces)
-    is_self_detonate = apply_bomb_effects(
-        game_state.board, cache, move, moving_piece,
-        captured_piece, removed_pieces, False
-    )
-    apply_trailblaze_effect(game_state.board, cache, move, moving_piece.color, removed_pieces)
+    # Batch apply hole effects by color
+    for i, (move_batch, piece_batch, color_batch) in enumerate(zip(moves, moving_pieces, colors)):
+        batch_removed_pieces = []
+        batch_moved_pieces = []
+        batch_self_detonate = []
 
-    return removed_pieces, moved_pieces, is_self_detonate
+        unique_colors = set(color_batch)
+        for color in unique_colors:
+            color_indices = [j for j, c in enumerate(color_batch) if c == color]
+            if color_indices:
+                moved_pieces = []
+                apply_hole_effects_batch(game_state.board, cache, color, moved_pieces)
+                for idx in color_indices:
+                    batch_moved_pieces.extend(moved_pieces)
+
+        # Batch apply bomb effects
+        for j, (move, moving_piece, captured_piece) in enumerate(zip(move_batch, piece_batch, captured_pieces[i])):
+            removed_pieces = []
+            is_self_detonate = apply_bomb_effects(
+                game_state.board, cache, move, moving_piece,
+                captured_piece, removed_pieces, False
+            )
+            batch_removed_pieces.append(removed_pieces)
+            batch_self_detonate.append(is_self_detonate)
+
+        # Batch apply trailblaze effects
+        for j, (move, moving_piece) in enumerate(zip(move_batch, piece_batch)):
+            removed_pieces = batch_removed_pieces[j]
+            apply_trailblaze_effect(game_state.board, cache, move, moving_piece.color, removed_pieces)
+
+        all_removed_pieces.append(batch_removed_pieces)
+        all_moved_pieces.append(batch_moved_pieces)
+        all_self_detonate.append(batch_self_detonate)
+
+    return all_removed_pieces, all_moved_pieces, all_self_detonate
 
 def create_enriched_move(game_state, move, removed_pieces, moved_pieces,
                         is_self_detonate, captured_piece=None):
-    """Unified enriched move creation."""
-    from game3d.movement.movepiece import convert_legacy_move_args
+    """Unified enriched move creation - scalar mode only."""
+    from game3d.movement.movepiece import Move
 
     is_capture_flag = move.is_capture or (captured_piece is not None)
     is_pawn = (captured_piece and captured_piece.ptype == PieceType.PAWN) if captured_piece else False
 
-    core_move = convert_legacy_move_args(
+    core_move = Move(
         from_coord=move.from_coord,
         to_coord=move.to_coord,
         is_capture=is_capture_flag,
@@ -235,6 +312,8 @@ def create_enriched_move(game_state, move, removed_pieces, moved_pieces,
         is_castle=False,
     )
 
+    # Import here to avoid circular imports
+    from game3d.movement.movepiece import EnrichedMove
     return EnrichedMove(
         core_move=core_move,
         removed_pieces=removed_pieces,
@@ -245,38 +324,63 @@ def create_enriched_move(game_state, move, removed_pieces, moved_pieces,
     )
 
 def apply_hole_effects(
-    board: Board,
-    cache: 'OptimizedCacheManager',  # CORRECTED: Type hint shows it's the manager
-    color: Color,
-    moved_pieces: List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]],
-    _is_self_detonate: bool = False,
+    board: "Board",
+    cache: 'OptimizedCacheManager',
+    color: Union[Color, List[Color]],
+    moved_pieces: Union[List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]], List[List[Tuple[Tuple[int, int, int], Tuple[int, int, int], Piece]]]]
 ) -> None:
-    """Apply black-hole pulls & white-hole pushes."""
+    """Batch apply black-hole pulls & white-hole pushes - supports scalar and batch mode."""
+    # Handle batch mode
+    if isinstance(color, list):
+        for c in color:
+            apply_hole_effects(board, cache, c, moved_pieces)
+        return
+
+    # Scalar mode
     enemy_color = color.opposite()
 
-    # CORRECTED: Use manager methods
+    # Get maps directly
     pull_map = cache.black_hole_pull_map(color)
     push_map = cache.white_hole_push_map(color)
 
-    combined_map = {**pull_map, **push_map}
-    for from_sq, to_sq in combined_map.items():
-        # CORRECTED: Access through manager
+    # Combine operations and process in batch
+    all_updates = []
+    for from_sq, to_sq in {**pull_map, **push_map}.items():
         piece = cache.occupancy.get(from_sq)
         if piece and piece.color == enemy_color:
-            moved_pieces.append((from_sq, to_sq, piece))
-            board.set_piece(to_sq, piece)
-            board.set_piece(from_sq, None)
+            all_updates.append((from_sq, to_sq, piece))
+
+    # Apply all updates at once
+    if all_updates:
+        cache.batch_set_pieces([
+            (from_sq, None) for from_sq, _, _ in all_updates
+        ] + [
+            (to_sq, piece) for _, to_sq, piece in all_updates
+        ])
+
+        moved_pieces.extend(all_updates)
 
 def apply_bomb_effects(
     board: 'Board',
-    cache: 'OptimizedCacheManager',  # CORRECTED: Type hint shows it's the manager
-    mv: 'Move',
-    moving_piece: 'Piece',
-    captured_piece: Optional['Piece'],
-    removed_pieces: List[Tuple[Tuple[int, int, int], Piece]],
-    is_self_detonate: bool
-) -> bool:
-    """Apply bomb detonation effects efficiently."""
+    cache: 'OptimizedCacheManager',
+    mv: Union['Move', List['Move']],
+    moving_piece: Union['Piece', List['Piece']],
+    captured_piece: Union[Optional['Piece'], List[Optional['Piece']]],
+    removed_pieces: Union[List[Tuple[Tuple[int, int, int], Piece]], List[List[Tuple[Tuple[int, int, int], Piece]]]],
+    is_self_detonate: Union[bool, List[bool]]
+) -> Union[bool, List[bool]]:
+    """Apply bomb detonation effects efficiently - supports scalar and batch mode."""
+    # Handle batch mode
+    if isinstance(mv, list):
+        results = []
+        for i, (single_mv, single_piece, single_captured) in enumerate(zip(mv, moving_piece, captured_piece)):
+            single_removed = removed_pieces[i] if isinstance(removed_pieces, list) and i < len(removed_pieces) else []
+            single_detonate = is_self_detonate[i] if isinstance(is_self_detonate, list) and i < len(is_self_detonate) else False
+            result = apply_bomb_effects(board, cache, single_mv, single_piece, single_captured, single_removed, single_detonate)
+            results.append(result)
+        return results
+
+    # Scalar mode
     from game3d.common.enums import PieceType
 
     enemy_color = moving_piece.color.opposite()
@@ -284,7 +388,6 @@ def apply_bomb_effects(
     # Handle captured bomb explosion
     if captured_piece and captured_piece.ptype == PieceType.BOMB and captured_piece.color == enemy_color:
         for sq in detonate(board, mv.to_coord, moving_piece.color):
-            # CORRECTED: Access through manager
             piece = cache.occupancy.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
@@ -294,7 +397,6 @@ def apply_bomb_effects(
     if (moving_piece.ptype == PieceType.BOMB and
         getattr(mv, 'is_self_detonate', False)):
         for sq in detonate(board, mv.to_coord, moving_piece.color):
-            # CORRECTED: Access through manager
             piece = cache.occupancy.get(sq)
             if piece:
                 removed_pieces.append((sq, piece))
@@ -305,28 +407,34 @@ def apply_bomb_effects(
 
 def apply_trailblaze_effect(
     board: 'Board',
-    cache: 'OptimizedCacheManager',  # CORRECTED: Type hint shows it's the manager
-    mv: 'Move',  # FIXED: was target, now mv
-    color: 'Color',
-    removed_pieces: List[Tuple[Tuple[int, int, int], Piece]]
+    cache: 'OptimizedCacheManager',
+    mv: Union['Move', List['Move']],
+    color: Union['Color', List['Color']],
+    removed_pieces: Union[List[Tuple[Tuple[int, int, int], Piece]], List[List[Tuple[Tuple[int, int, int], Piece]]]]
 ) -> None:
-    """Apply trailblaze effect efficiently."""
+    """Apply trailblaze effect efficiently - supports scalar and batch mode."""
+    # Handle batch mode
+    if isinstance(mv, list):
+        for i, (single_mv, single_color) in enumerate(zip(mv, color)):
+            single_removed = removed_pieces[i] if isinstance(removed_pieces, list) and i < len(removed_pieces) else []
+            apply_trailblaze_effect(board, cache, single_mv, single_color, single_removed)
+        return
+
+    # Scalar mode
     from game3d.common.enums import PieceType
 
-    # CORRECTED: Access effect cache through manager
-    trail_cache = cache.trailblaze_cache
+    # Get enemy sliding path
     enemy_color = color.opposite()
     enemy_slid = extract_enemy_slid_path(mv)
     squares_to_check = set(enemy_slid) | {mv.to_coord}
 
     for sq in squares_to_check:
-        if trail_cache.increment_counter(sq, enemy_color, board):
-            # CORRECTED: Access through manager
+        if cache.trailblaze_cache.increment_counter(sq, enemy_color, board):
             victim = cache.occupancy.get(sq)
             if victim:
                 # Kings only removed if no priest alive
                 if victim.ptype == PieceType.KING:
-                    if not _any_priest_alive(board, victim.color):  # FIXED: Use victim.color
+                    if not _any_priest_alive(board, victim.color):
                         removed_pieces.append((sq, victim))
                         board.set_piece(sq, None)
                 else:
@@ -334,16 +442,31 @@ def apply_trailblaze_effect(
                     board.set_piece(sq, None)
 
 def reconstruct_trailblazer_path(
-    from_coord: Tuple[int, int, int],
-    to_coord: Tuple[int, int, int],
+    from_coord: Union[Tuple[int, int, int], torch.Tensor],
+    to_coord: Union[Tuple[int, int, int], torch.Tensor],
     include_start: bool = False,
     include_end: bool = True
-) -> Set[Tuple[int, int, int]]:
-    """Reconstruct the path of a trailblazer move."""
+) -> Union[Set[Tuple[int, int, int]], List[Set[Tuple[int, int, int]]]]:
+    """Reconstruct the path of a trailblazer move - supports scalar and batch mode."""
+    if torch.is_tensor(from_coord) and from_coord.ndim > 1:
+        # Batch mode
+        results = []
+        for i in range(from_coord.shape[0]):
+            single_from = tuple(from_coord[i].tolist())
+            single_to = tuple(to_coord[i].tolist()) if torch.is_tensor(to_coord) and to_coord.ndim > 1 else to_coord
+            results.append(reconstruct_trailblazer_path(single_from, single_to, include_start, include_end))
+        return results
+
+    # Scalar mode
     return reconstruct_path(from_coord, to_coord, include_start=include_start, include_end=include_end, as_set=True)
 
-def extract_enemy_slid_path(mv: 'Move') -> List[Tuple[int, int, int]]:
-    """Extract enemy sliding path for trailblaze effect."""
+def extract_enemy_slid_path(mv: Union['Move', List['Move']]) -> Union[List[Tuple[int, int, int]], List[List[Tuple[int, int, int]]]]:
+    """Extract enemy sliding path for trailblaze effect - supports scalar and batch mode."""
+    # Handle batch mode
+    if isinstance(mv, list):
+        return [extract_enemy_slid_path(single_mv) for single_mv in mv]
+
+    # Scalar mode
     # Check if move has metadata about enemy slide
     if hasattr(mv, 'metadata') and mv.metadata:
         enemy_path = mv.metadata.get('enemy_slide_path', [])
@@ -356,22 +479,131 @@ def extract_enemy_slid_path(mv: 'Move') -> List[Tuple[int, int, int]]:
 def apply_geomancy_effect(
     board: 'Board',
     cache: 'OptimizedCacheManager',
-    target: Tuple[int, int, int],
-    halfmove_clock: int
+    target: Union[Tuple[int, int, int], torch.Tensor],
+    halfmove_clock: Union[int, torch.Tensor]
 ) -> None:
-    """Block a square via the geomancy cache."""
-    cache.block_square(target, halfmove_clock)
+    """Block a square via the geomancy cache - supports scalar and batch mode."""
+    if torch.is_tensor(target) and target.ndim > 1:
+        # Batch mode
+        for i in range(target.shape[0]):
+            single_target = tuple(target[i].tolist())
+            single_clock = halfmove_clock[i] if torch.is_tensor(halfmove_clock) and halfmove_clock.numel() > 1 else halfmove_clock
+            apply_geomancy_effect(board, cache, single_target, single_clock)
+    else:
+        # Scalar mode
+        cache.block_square(target, halfmove_clock)
 
-def apply_swap_move(board: 'Board', mv: 'Move') -> None:
-    # CORRECT - cleaner through piece_cache
+def apply_swap_move(board: 'Board', mv: Union['Move', List['Move']]) -> None:
+    """Optimized swap move application - supports scalar and batch mode."""
+    if isinstance(mv, list):
+        for single_mv in mv:
+            apply_swap_move(board, single_mv)
+        return
+
+    # Scalar mode
     cache = board.cache_manager
-    target_piece = cache.occupancy.get(mv.to_coord)
-    board.set_piece(mv.to_coord, cache.occupancy.get(mv.from_coord))
-    board.set_piece(mv.from_coord, target_piece)
+    from_piece = cache.occupancy.get(mv.from_coord)
+    to_piece = cache.occupancy.get(mv.to_coord)
 
-def apply_promotion_move(board: 'Board', mv: 'Move', piece: 'Piece') -> None:
-    """Replace pawn with promoted piece."""
+    if from_piece:
+        board.set_piece(mv.to_coord, from_piece)
+    else:
+        board.set_piece(mv.to_coord, None)
+
+    if to_piece:
+        board.set_piece(mv.from_coord, to_piece)
+    else:
+        board.set_piece(mv.from_coord, None)
+
+def apply_promotion_move(board: 'Board', mv: Union['Move', List['Move']], piece: Union['Piece', List['Piece']]) -> None:
+    """Replace pawn with promoted piece - supports scalar and batch mode."""
     from game3d.pieces.piece import Piece
+
+    if isinstance(mv, list):
+        for i, single_mv in enumerate(mv):
+            single_piece = piece[i] if isinstance(piece, list) else piece
+            apply_promotion_move(board, single_mv, single_piece)
+        return
+
+    # Scalar mode
     promoted = Piece(piece.color, mv.promotion_type)
     board.set_piece(mv.from_coord, None)
     board.set_piece(mv.to_coord, promoted)
+
+def detonate(board: 'Board', center: Union[Coord, torch.Tensor], friendly_color: Union[Color, torch.Tensor]) -> Union[Set[Coord], List[Set[Coord]]]:
+    """
+    Get all squares in Manhattan distance 1 from center.
+    Returns coords of enemy pieces that would be destroyed - supports scalar and batch mode.
+    """
+    from game3d.common.coord_utils import manhattan_distance, in_bounds
+
+    # Handle batch mode
+    if torch.is_tensor(center) and center.ndim > 1:
+        results = []
+        for i in range(center.shape[0]):
+            single_center = tuple(center[i].tolist())
+            single_color = friendly_color[i] if torch.is_tensor(friendly_color) and friendly_color.numel() > 1 else friendly_color
+            results.append(detonate(board, single_center, single_color))
+        return results
+
+    # Scalar mode
+    destroyed = set()
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == dy == dz == 0:
+                    continue
+
+                coord = (center[0] + dx, center[1] + dy, center[2] + dz)
+                if not in_bounds(coord):
+                    continue
+
+                piece = board.cache_manager.occupancy.get(coord)
+                if piece and piece.color != friendly_color:
+                    destroyed.add(coord)
+
+    return destroyed
+
+def get_processing_mode(item_count: int, threshold: Optional[int] = None, breakpoints: Tuple[int, int] = (30, 100)) -> str:
+    """
+    Autodetect or force processing mode based on count/threshold.
+    - breakpoints: (batch_threshold, mega_threshold)
+    Returns: 'scalar', 'batch', or 'mega'
+    """
+    low, high = breakpoints
+    if threshold is None:
+        if item_count > high:
+            return 'mega'
+        elif item_count > low:
+            return 'batch'
+        else:
+            return 'scalar'
+    else:
+        if threshold == 0:
+            return 'mega'
+        elif threshold <= low:
+            return 'scalar'
+        elif threshold <= high:
+            return 'batch'
+        else:
+            return 'mega'
+
+def create_filtered_moves_batch(
+    from_coord: Tuple[int, int, int],
+    to_coords: np.ndarray,
+    captures: np.ndarray,
+    state: 'GameState',
+    apply_effects: bool = True
+) -> List[Move]:
+    """
+    Filter coords/captures by bounds/effects, then create batch.
+    """
+    valid_mask = in_bounds_vectorised(to_coords)  # From coord_utils
+    if apply_effects:
+        cache = state.cache_manager
+        geomancy_mask = ~cache.batch_get_geomancy_blocked(to_coords, state.ply)
+        valid_mask &= geomancy_mask
+        # Add debuff distance filter if needed
+    filtered_to = to_coords[valid_mask]
+    filtered_caps = captures[valid_mask]
+    return Move.create_batch(from_coord, filtered_to, filtered_caps)

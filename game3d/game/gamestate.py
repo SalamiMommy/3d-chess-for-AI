@@ -5,7 +5,7 @@ Optimized 9×9×9 game state with incremental updates, caching, and performance 
 """
 
 from dataclasses import dataclass, field, replace
-from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING
+from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING, Set
 from enum import Enum
 
 import torch
@@ -19,9 +19,10 @@ from game3d.game.performance import PerformanceMetrics
 from game3d.pieces.piece import Piece
 
 # Common imports for standardized access
-from game3d.common.cache_utils import get_cache_manager, validate_cache_integrity
+from game3d.common.cache_utils import get_cache_manager
 from game3d.common.piece_utils import find_king, get_player_pieces
 from game3d.common.state_utils import create_new_state
+from game3d.common.validation import validate_cache_integrity
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -51,7 +52,8 @@ class GameState:
     _is_check_cache: Optional[bool] = field(default=None, repr=False)
     _is_check_cache_key: Optional[int] = field(default=None, repr=False)
     _metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics, repr=False)
-    _undo_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    _undo_stack: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+    _undo_info: Optional[Any] = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.cache_manager is None:
@@ -62,9 +64,9 @@ class GameState:
         self._clear_caches()
 
     @property
-    def cache(self):
-        """Legacy compatibility - returns cache manager"""
-        return self.cache_manager
+    def cache_manager(self):
+        """Primary cache manager access."""
+        return self._cache_manager
 
     @property
     def zkey(self) -> int:
@@ -174,21 +176,21 @@ class GameState:
         self._is_check_cache_key = None
 
     def clone(self, deep_cache: bool = False) -> GameState:
-        """Clone game state with intelligent cache manager reuse."""
-        if not deep_cache and hasattr(self.cache_manager, '_can_reuse'):
-            # Reuse existing cache manager with board reference update
-            self.cache_manager.board = self.board.clone()
-            self.cache_manager.board.cache_manager = self.cache_manager
-            new_cache_manager = self.cache_manager
-        else:
-            # Only create new cache manager when absolutely necessary
-            from game3d.cache.manager import get_cache_manager
-            new_cache_manager = get_cache_manager(self.board.clone(), self.color)
+        """Clone game state - ALWAYS reuse cache manager."""
+        # CRITICAL: ALWAYS reuse existing cache manager
+        # Just update the board reference
+        new_board = self.board.clone()
+
+        self.cache_manager.board = new_board
+        new_board.cache_manager = self.cache_manager
+
+        # Update cache manager state for new board
+        self.cache_manager.rebuild(new_board, self.color)
 
         return GameState(
-            board=new_cache_manager.board,
+            board=new_board,
             color=self.color,
-            cache_manager=new_cache_manager,
+            cache_manager=self.cache_manager,  # REUSE same manager
             history=self.history,
             halfmove_clock=self.halfmove_clock,
             game_mode=self.game_mode,
@@ -211,6 +213,55 @@ class GameState:
             game_mode=self.game_mode,
             turn_number=self.turn_number,
         )
+
+    def push_move(self, mv: Move) -> None:
+        """Apply move in-place using incremental updates to the single cache manager."""
+        from game3d.common.move_validation import validate_move_basic
+        from game3d.game.turnmove import _compute_undo_info
+
+        if not validate_move_basic(self, mv, self.color):
+            raise ValueError(f"Invalid move: {mv}")
+
+        moving_piece = self.cache_manager.get_piece(mv.from_coord)
+        captured_piece = self.cache_manager.get_piece(mv.to_coord) if mv.is_capture else None
+
+        undo_info = _compute_undo_info(self, mv, moving_piece, captured_piece)
+        self._undo_stack.append(undo_info)
+
+        if not self.cache_manager.apply_move(mv, self.color):
+            self._undo_stack.pop()
+            raise ValueError(f"Failed to apply move: {mv}")
+
+        self.history += (mv,)
+        self.color = self.color.opposite()
+        self.halfmove_clock += 1
+        self.turn_number += 1
+        self._zkey = self.cache_manager._current_zobrist_hash
+        self._clear_caches()
+
+        # Update halfmove clock logic
+        is_pawn = moving_piece.ptype == PieceType.PAWN if moving_piece else False
+        is_capture = mv.is_capture or captured_piece is not None
+        if is_pawn or is_capture:
+            self.halfmove_clock = 0
+
+    def pop_move(self) -> None:
+        """Undo last move in-place using incremental undo on the single cache manager."""
+        if not self.history or not self._undo_stack:
+            raise ValueError("No move to undo")
+
+        mv = self.history[-1]
+        undo_info = self._undo_stack.pop()
+
+        if not self.cache_manager.undo_move(mv, self.color.opposite()):
+            raise RuntimeError("Failed to undo move")
+
+        self.history = self.history[:-1]
+        self.color = self.color.opposite()
+        self.halfmove_clock = undo_info['original_halfmove_clock']
+        self.turn_number = undo_info['original_turn_number']
+        self._zkey = undo_info['original_zkey']
+        self._clear_caches()
 
     # GAME LOGIC (delegate to other modules)
     def legal_moves(self) -> List[Move]:

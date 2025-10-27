@@ -4,6 +4,7 @@
 # ------------------------------------------------------------------
 from __future__ import annotations
 from typing import Dict, Tuple, List
+import numpy as np
 
 Coord = Tuple[int, int, int]
 
@@ -47,3 +48,13 @@ _COORD_TO_IDX = {
     for x in range(9) for y in range(9) for z in range(9)
 }
 _IDX_TO_COORD = {v: k for k, v in _COORD_TO_IDX.items()}
+
+# Batch processing constants optimized for 462 pieces
+MEGA_BATCH_SIZE = 462  # Maximum pieces on board
+VECTORIZED_CHUNK_SIZE = 64  # Optimal for CPU cache
+MAX_CONCURRENT_BATCHES = 8
+
+# Memory optimized arrays
+OPTIMAL_DTYPE = np.int32  # Balance between memory and performance
+COORD_ARRAY_SHAPE = (MEGA_BATCH_SIZE, 3)
+OCCUPANCY_ARRAY_SHAPE = (SIZE_Z, SIZE_Y, SIZE_X)

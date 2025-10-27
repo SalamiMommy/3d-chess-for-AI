@@ -10,13 +10,14 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movepiece import Move, convert_legacy_move_args, MOVE_FLAGS
+from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
+    from game3d.movement.movepiece import Move
 
 # King directions (1-step moves)
 _KING_DIRECTIONS = np.array([
@@ -37,7 +38,7 @@ _ARCHERY_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_archer_moves(
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -49,8 +50,8 @@ def generate_archer_moves(
 
     moves = []
 
-    # 1. King walks using jump movement - FIXED: Use parameter name
-    jump_gen = get_integrated_jump_movement_generator(cache_manager)  # FIXED: cache_manager
+    # 1. King walks using jump movement
+    jump_gen = get_integrated_jump_movement_generator(cache_manager)
     king_moves = jump_gen.generate_jump_moves(
         color=color,
         pos=(x, y, z),
@@ -71,11 +72,12 @@ def generate_archer_moves(
         victim = cache_manager.get_piece((tx, ty, tz))
         if victim is not None and victim.color != color:
             # Create archery move (archer doesn't move, just captures)
-            archery_move = convert_legacy_move_args(
+            # FIX: Use flags parameter instead of is_capture
+            flags = MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
+            archery_move = Move(
                 from_coord=(x, y, z),
                 to_coord=(x, y, z),  # Archer stays in place
-                is_capture=True,
-                flags=MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
+                flags=flags
             )
             archery_move.metadata["target_square"] = (tx, ty, tz)
             archery_move.metadata["archery_shot"] = True

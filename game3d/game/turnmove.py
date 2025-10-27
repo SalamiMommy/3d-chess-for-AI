@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
 from game3d.board.board import Board
-from game3d.movement.movepiece import Move, convert_legacy_move_args
+from game3d.movement.movepiece import Move, Move
 from game3d.movement.generator import generate_legal_moves
 from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
 from game3d.common.enums import Color, PieceType
@@ -16,10 +16,9 @@ from game3d.cache.caches.zobrist import compute_zobrist
 from game3d.movement.movepiece import MOVE_FLAGS
 
 # Common imports
-from game3d.common.move_utils import validate_moves, apply_special_effects, create_enriched_move
-from game3d.common.cache_utils import validate_cache_integrity
+from game3d.common.move_utils import apply_special_effects, create_enriched_move
+from game3d.common.validation import validate_moves, validate_cache_integrity, validate_move_basic, validate_move_destination
 from game3d.common.debug_utils import UndoSnapshot
-from game3d.common.move_validation import validate_move_basic, validate_move_destination
 
 if TYPE_CHECKING:
     from .gamestate import GameState
@@ -78,43 +77,39 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
 
         return moves
 
-def pseudo_legal_moves(game_state: 'GameState') -> List[Move]:
-    return generate_pseudo_legal_moves(game_state)
-
 # ------------------------------------------------------------------
 # OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     from .gamestate import GameState
 
-    # Use common validation
     if not validate_move_basic(game_state, mv, game_state.color):
         raise ValueError(f"make_move: invalid move {mv}")
 
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1
 
-        # --- clone board but REUSE cache manager ----------------------------
+        # Clone board but REUSE cache manager
         new_board = Board(game_state.board.tensor().clone())
 
-        # KEY FIX: Update existing cache manager to use new board
-        existing_cache_manager = game_state.cache_manager
-        existing_cache_manager.board = new_board
-        new_board.cache_manager = existing_cache_manager
+        # CRITICAL: Reuse existing cache manager with new board
+        cache_manager = game_state.cache_manager
+        cache_manager.board = new_board
+        new_board.cache_manager = cache_manager
 
-        moving_piece = existing_cache_manager.occupancy.get(mv.from_coord)
-        captured_piece = existing_cache_manager.occupancy.get(mv.to_coord)
+        moving_piece = cache_manager.occupancy_cache.get(mv.from_coord)
+        captured_piece = cache_manager.occupancy_cache.get(mv.to_coord)
         undo_info = _compute_undo_info(game_state, mv, moving_piece, captured_piece)
 
-        # --- apply raw move using cache manager's incremental update -------
-        if not existing_cache_manager.apply_move(mv, game_state.color):
+        # Apply move using cache manager's incremental update
+        if not cache_manager.apply_move(mv, game_state.color):
             raise ValueError(f"Board refused move: {mv}")
 
-        # --- build next state REUSING the same cache manager ----------------
+        # Build next state REUSING the same cache manager
         new_state = GameState(
             board=new_board,
             color=game_state.color.opposite(),
-            cache_manager=existing_cache_manager,  # REUSE same manager
+            cache_manager=cache_manager,  # REUSE
             history=game_state.history + (mv,),
             halfmove_clock=game_state.halfmove_clock + 1,
             game_mode=game_state.game_mode,
@@ -122,19 +117,13 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         )
         new_state._undo_info = undo_info
 
-        # --- update halfmove clock -----------------------------------------
+        # Update halfmove clock
         is_pawn = moving_piece.ptype == PieceType.PAWN
         is_capture = mv.is_capture or captured_piece is not None
         if is_pawn or is_capture:
             new_state.halfmove_clock = 0
 
-        if not validate_cache_integrity(new_state):
-            print("WARNING: Cache desync detected after move")
-            # Optionally force rebuild
-            new_state.cache_manager.rebuild(new_state.board, new_state.color)
-
         return new_state
-
 # ------------------------------------------------------------------
 # UNDO MOVE IMPLEMENTATION
 # ------------------------------------------------------------------

@@ -27,22 +27,21 @@ class OptimizedGame3D:
         self,
         *,
         board: Board | None = None,
-        cache: OptimizedCacheManager | None = None,
+        cache: OptimizedCacheManager | None = None,  # Parameter is 'cache'
         game_mode: GameMode = GameMode.STANDARD,
         debug_turn_info: bool = True,
     ) -> None:
         if board is None:
-            board = Board.startpos()  # still empty
+            board = Board.startpos()
         if cache is None:
             raise RuntimeError("OptimizedGame3D must be given an external cache")
 
-        # Store cache manager reference for reuse
-        self._cache_manager = cache
+        self._cache_manager = cache  # Store reference
 
         self._state = GameState(
             board=board,
             color=Color.WHITE,
-            cache_manager=cache_manager,  # Use standardized parameter name
+            cache_manager=cache,  # FIX: Use 'cache', not 'cache_manager'
             game_mode=game_mode,
         )
         self._game_mode = game_mode
@@ -89,7 +88,7 @@ class OptimizedGame3D:
                 f"{self.current_player.name} submits {move}")
 
         # ----- fast reject -------------------------------------------------
-        piece = self._state.cache_manager.occupancy.get(move.from_coord)
+        piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)
         if piece is None or piece.color != self.current_player:
             return self._create_error_receipt("No own piece on from-square",
                                             start_time)
@@ -142,7 +141,7 @@ class OptimizedGame3D:
         """The original submit_move body (colour flips automatically)."""
         try:
             # Validate move before applying
-            piece = self._state.cache_manager.occupancy.get(mv.from_coord)
+            piece = self._state.cache_manager.occupancy_cache.get(mv.from_coord)
             if piece is None:
                 return self._create_error_receipt(f"No piece at {mv.from_coord}", start_time)
             if piece.color != self._state.color:

@@ -1,6 +1,6 @@
-# auracache.py (updated with common modules)
+# auracache.py (updated with unified scalar/batch query functions)
 from __future__ import annotations
-from typing import Set, Tuple, Optional, Dict, Any, List
+from typing import Set, Tuple, Optional, Dict, Any, List, Union, Sequence
 from dataclasses import dataclass
 from enum import Enum
 import weakref
@@ -8,7 +8,7 @@ import numpy as np
 
 from game3d.common.enums import Color, PieceType
 from game3d.common.coord_utils import get_aura_squares, Coord, in_bounds, filter_valid_coords
-from game3d.common.piece_utils import get_pieces_by_type, get_piece_effect_type
+from game3d.common.piece_utils import get_piece_effect_type
 from game3d.common.cache_utils import get_piece, is_occupied
 from game3d.common.debug_utils import CacheStatsMixin
 from game3d.pieces.pieces.speeder import buffed_squares
@@ -17,6 +17,9 @@ from game3d.pieces.pieces.whitehole import push_candidates
 from game3d.pieces.pieces.blackhole import suck_candidates
 from game3d.movement.movepiece import Move
 from game3d.pieces.piece import Piece
+
+# Type alias for clarity
+CoordLike = Union[Coord, Sequence[Coord], np.ndarray]
 
 @dataclass
 class AuraEffect:
@@ -59,8 +62,17 @@ class UnifiedAuraCache(CacheStatsMixin):
         "_frozen_bitmap", "_source_tracking", "_buff_types"
     )
 
+    _AURA_SQUARES_CACHE: Dict[Coord, List[Coord]] = {}  # Class-level precomputed cache
+
     def __init__(self, board: Optional["Board"] = None, cache_manager=None) -> None:
         super().__init__()
+        if not self._AURA_SQUARES_CACHE:  # Populate once on first instance
+            for x in range(9):
+                for y in range(9):
+                    for z in range(9):
+                        sq = (x, y, z)
+                        self._AURA_SQUARES_CACHE[sq] = [coord for coord in get_aura_squares(sq) if in_bounds(coord)]
+
         self._sources: Dict[AuraType, Dict[Color, Set[Coord]]] = {
             aura: {Color.WHITE: set(), Color.BLACK: set()} for aura in AuraType
         }
@@ -106,43 +118,76 @@ class UnifiedAuraCache(CacheStatsMixin):
         if board:
             self._full_rebuild(board)
 
-    def is_buffed(self, sq: Coord, friendly_color: Color) -> bool:
+    def _normalize_coords(self, sq: CoordLike) -> Tuple[np.ndarray, bool]:
+        """Returns (array of shape (N,3), is_scalar)."""
+        arr = np.asarray(sq, dtype=int)
+        if arr.ndim == 1:
+            if arr.shape[0] != 3:
+                raise ValueError("Single coordinate must be length 3.")
+            return arr[np.newaxis, :], True
+        elif arr.ndim == 2:
+            if arr.shape[1] != 3:
+                raise ValueError("Each coordinate must have 3 elements (x,y,z).")
+            return arr, False
+        else:
+            raise ValueError("Input must be a single Coord or sequence of Coords.")
+
+    def is_buffed(self, sq: CoordLike, friendly_color: Color) -> Union[bool, np.ndarray]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
-        x, y, z = sq
-        return self._coverage[AuraType.BUFF][friendly_color][z, y, x] > 0
+        coords, is_scalar = self._normalize_coords(sq)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        valid = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+        result = np.zeros(coords.shape[0], dtype=bool)
+        if np.any(valid):
+            result[valid] = self._coverage[AuraType.BUFF][friendly_color][z[valid], y[valid], x[valid]] > 0
+        return bool(result[0]) if is_scalar else result
 
     def get_buffed_squares(self, controller: Color) -> Set[Coord]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
         return self._affected_sets[AuraType.BUFF][controller].copy()
 
-    def get_buff_type(self, sq: Coord, friendly_color: Color) -> Optional[str]:
+    def get_buff_type(self, sq: CoordLike, friendly_color: Color) -> Union[Optional[str], List[Optional[str]]]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
-        return self._buff_types[friendly_color].get(sq)
+        coords, is_scalar = self._normalize_coords(sq)
+        results = [self._buff_types[friendly_color].get(tuple(c)) for c in coords]
+        return results[0] if is_scalar else results
 
-    def get_buff_sources(self, sq: Coord, friendly_color: Color) -> Set[Coord]:
+    def get_buff_sources(self, sq: CoordLike, friendly_color: Color) -> Union[Set[Coord], List[Set[Coord]]]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
-        return self._source_tracking[friendly_color].get(sq, set())
+        coords, is_scalar = self._normalize_coords(sq)
+        results = [self._source_tracking[friendly_color].get(tuple(c), set()) for c in coords]
+        return results[0] if is_scalar else results
 
-    def is_debuffed(self, sq: Coord, victim_color: Color) -> bool:
+    def is_debuffed(self, sq: CoordLike, victim_color: Color) -> Union[bool, np.ndarray]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
-        x, y, z = sq
-        return self._coverage[AuraType.DEBUFF][victim_color][z, y, x] > 0
+        coords, is_scalar = self._normalize_coords(sq)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        valid = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+        result = np.zeros(coords.shape[0], dtype=bool)
+        if np.any(valid):
+            result[valid] = self._coverage[AuraType.DEBUFF][victim_color][z[valid], y[valid], x[valid]] > 0
+        return bool(result[0]) if is_scalar else result
 
     def get_debuffed_squares(self, controller: Color) -> Set[Coord]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
         return self._affected_sets[AuraType.DEBUFF][controller].copy()
 
-    def is_frozen(self, sq: Coord, victim: Color) -> bool:
+    def is_frozen(self, sq: CoordLike, victim: Color) -> Union[bool, np.ndarray]:
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
-        x, y, z = sq
-        return self._coverage[AuraType.FREEZE][victim][z, y, x] > 0
+        coords, is_scalar = self._normalize_coords(sq)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        valid = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+        result = np.zeros(coords.shape[0], dtype=bool)
+        if np.any(valid):
+            result[valid] = self._coverage[AuraType.FREEZE][victim][z[valid], y[valid], x[valid]] > 0
+        return bool(result[0]) if is_scalar else result
 
     def get_frozen_squares(self, victim: Color) -> Set[Coord]:
         if self._dirty_flags['coverage']:
@@ -174,7 +219,7 @@ class UnifiedAuraCache(CacheStatsMixin):
     def is_affected_by_white_hole(self, square: Coord, controller: Color) -> bool:
         if self._dirty_flags["maps"]:
             self._incremental_rebuild()
-        return square in self._affected_sets[AuraType.PUSH][controller]
+        return square in self._affected_sets.get(AuraType.PUSH, {controller: set()})[controller]
 
     def pull_map(self, controller: Color) -> Dict[Coord, Coord]:
         if self._dirty_flags["maps"]:
@@ -195,7 +240,10 @@ class UnifiedAuraCache(CacheStatsMixin):
     def is_affected_by_black_hole(self, square: Coord, controller: Color) -> bool:
         if self._dirty_flags["maps"]:
             self._incremental_rebuild()
-        return square in self._affected_sets[AuraType.PULL][controller]
+        return square in self._affected_sets.get(AuraType.PULL, {controller: set()})[controller]
+
+    # --- Rest of the class unchanged below this line ---
+    # (All methods from apply_move down remain exactly as in your original code)
 
     def apply_move(self, mv: Move, mover: Color, current_ply: int, board: "Board") -> None:
         if mv is None:
@@ -203,7 +251,8 @@ class UnifiedAuraCache(CacheStatsMixin):
             self._dirty_flags['maps'] = True
             return
 
-        updated = False
+        updated_coverage = False
+        updated_maps = False
         from_piece = get_piece(self._cache_manager, mv.from_coord)
         captured_piece = get_piece(self._cache_manager, mv.to_coord) if mv.is_capture else None
 
@@ -216,11 +265,11 @@ class UnifiedAuraCache(CacheStatsMixin):
                         self._record_undo_snapshot(mover, board, aura)
                         self._apply_map_effects(aura, mover, board)
                         self._incremental_update_map(aura, mv, mover, board)
-                        updated = True
+                        updated_maps = True
                 else:
                     victim = mover if affect == "friendly" else mover.opposite()
                     self._incremental_update_coverage(aura, victim, old_sq=mv.from_coord, new_sq=mv.to_coord)
-                    updated = True
+                    updated_coverage = True
                     self._sources[aura][mover].discard(mv.from_coord)
                     self._sources[aura][mover].add(mv.to_coord)
 
@@ -231,16 +280,18 @@ class UnifiedAuraCache(CacheStatsMixin):
                         self._record_undo_snapshot(mover, board, aura)
                         self._apply_map_effects(aura, mover, board)
                         self._incremental_update_map(aura, mv, mover, board)
-                        updated = True
+                        updated_maps = True
                 else:
                     victim = captured_color if affect == "friendly" else captured_color.opposite()
                     self._incremental_update_coverage(aura, victim, old_sq=mv.to_coord)
-                    updated = True
+                    updated_coverage = True
                     self._sources[aura][captured_color].discard(mv.to_coord)
 
-        if updated:
+        if updated_coverage:
             self._dirty_flags['coverage'] = True
+        if updated_maps:
             self._dirty_flags['maps'] = True
+        if updated_coverage or updated_maps:
             self._update_frozen_bitmap()
 
     def undo_move(self, mv: Move, mover: Color, board: "Board") -> None:
@@ -252,15 +303,21 @@ class UnifiedAuraCache(CacheStatsMixin):
     def _update_coverage(self, aura: AuraType, color: Color, old_sq: Optional[Coord] = None, new_sq: Optional[Coord] = None) -> None:
         coverage = self._coverage[aura][color]
         if old_sq:
-            for sq in get_aura_squares(old_sq):
-                x, y, z = sq
-                if in_bounds(sq):
-                    coverage[z, y, x] = max(0, coverage[z, y, x] - 1)
+            aura_coords = self._AURA_SQUARES_CACHE.get(old_sq, [])
+            if aura_coords:
+                aura_array = np.array(aura_coords, dtype=int)
+                ax, ay, az = aura_array.T
+                valid_mask = (ax >= 0) & (ax < 9) & (ay >= 0) & (ay < 9) & (az >= 0) & (az < 9)
+                ax, ay, az = ax[valid_mask], ay[valid_mask], az[valid_mask]
+                coverage[az, ay, ax] = np.maximum(0, coverage[az, ay, ax] - 1)
         if new_sq:
-            for sq in get_aura_squares(new_sq):
-                x, y, z = sq
-                if in_bounds(sq):
-                    coverage[z, y, x] += 1
+            aura_coords = self._AURA_SQUARES_CACHE.get(new_sq, [])
+            if aura_coords:
+                aura_array = np.array(aura_coords, dtype=int)
+                ax, ay, az = aura_array.T
+                valid_mask = (ax >= 0) & (ax < 9) & (ay >= 0) & (ay < 9) & (az >= 0) & (az < 9)
+                ax, ay, az = ax[valid_mask], ay[valid_mask], az[valid_mask]
+                coverage[az, ay, ax] += 1
 
     def _update_affected_set(self, aura: AuraType, color: Color, old_aura: Set[Coord] = set(), new_aura: Set[Coord] = set()) -> None:
         affected = self._affected_sets[aura][color]
@@ -268,7 +325,7 @@ class UnifiedAuraCache(CacheStatsMixin):
         changed = old_aura | new_aura
         is_freeze = aura == AuraType.FREEZE
         for sq in changed:
-            if in_bounds(sq):
+            if 0 <= sq[0] < 9 and 0 <= sq[1] < 9 and 0 <= sq[2] < 9:
                 x, y, z = sq
                 count = coverage[z, y, x]
                 if count > 0:
@@ -282,12 +339,10 @@ class UnifiedAuraCache(CacheStatsMixin):
                     affected.discard(sq)
 
     def _update_frozen_bitmap(self) -> None:
-        self._frozen_bitmap.fill(False)
-        for color in [Color.WHITE, Color.BLACK]:
-            for sq in self._affected_sets[AuraType.FREEZE][color]:
-                x, y, z = sq
-                if in_bounds(sq):
-                    self._frozen_bitmap[z, y, x] = True
+        self._frozen_bitmap = np.logical_or(
+            self._coverage[AuraType.FREEZE][Color.WHITE] > 0,
+            self._coverage[AuraType.FREEZE][Color.BLACK] > 0
+        )
 
     def _move_affects_aura(self, aura: AuraType, mv: Move, board: "Board") -> bool:
         moved_piece = get_piece(self._cache_manager, mv.from_coord)
@@ -317,8 +372,9 @@ class UnifiedAuraCache(CacheStatsMixin):
         ptype = AURA_PIECE_MAP[aura]
         for color in (Color.WHITE, Color.BLACK):
             self._sources[aura][color].clear()
-            for sq, _ in get_pieces_by_type(board, ptype, color):
-                self._sources[aura][color].add(sq)
+            positions = self._cache_manager.occupancy.get_positions_by_type(color, ptype)
+            for sq in positions:
+                self._sources[aura][color].add(tuple(sq))  # Ensure Coord is tuple
 
     def _rebuild_map_for_color(self, aura: AuraType, board: "Board", color: Color) -> None:
         self._maps[aura][color].clear()
@@ -326,9 +382,9 @@ class UnifiedAuraCache(CacheStatsMixin):
         self._chains.setdefault(aura, {Color.WHITE: [], Color.BLACK: []})[color].clear()
 
         if aura == AuraType.PUSH:
-            candidates = push_candidates(board, color, self._cache_manager)
+            candidates = push_candidates(self._cache_manager, color)
         else:
-            candidates = suck_candidates(board, color, self._cache_manager)
+            candidates = suck_candidates(self._cache_manager, color)
 
         for fr, to in candidates.items():
             self._maps[aura][color][fr] = to
@@ -346,19 +402,9 @@ class UnifiedAuraCache(CacheStatsMixin):
                     self._coverage[aura][victim].fill(0)
                     self._affected_sets[aura][victim].clear()
                     controller = victim if affect == "friendly" else victim.opposite()
-                    sources = get_pieces_by_type(board, AURA_PIECE_MAP[aura], controller)
-                    for sq, _ in sources:
-                        for raw in get_aura_squares(sq):
-                            ax, ay, az = raw
-                            if in_bounds(raw):
-                                self._coverage[aura][victim][az, ay, ax] += 1
-                                if self._coverage[aura][victim][az, ay, ax] > 0:
-                                    if aura == AuraType.FREEZE:
-                                        target = get_piece(self._cache_manager, raw)
-                                        if target and target.color == victim:
-                                            self._affected_sets[aura][victim].add(raw)
-                                    else:
-                                        self._affected_sets[aura][victim].add(raw)
+                    positions = self._cache_manager.occupancy.get_positions_by_type(controller, AURA_PIECE_MAP[aura])
+                    for sq in positions:
+                        self._update_coverage(aura, victim, new_sq=tuple(sq))  # Ensure Coord is tuple
         self._update_frozen_bitmap()
         for flag in self._dirty_flags:
             self._dirty_flags[flag] = False
@@ -388,30 +434,34 @@ class UnifiedAuraCache(CacheStatsMixin):
         self._coverage[aura][victim].fill(0)
         self._affected_sets[aura][victim].clear()
         ptype = AURA_PIECE_MAP[aura]
-        sources = [sq for sq, _ in get_pieces_by_type(board, ptype, controller)]
+        sources = np.array(self._cache_manager.occupancy.get_positions_by_type(controller, ptype), dtype=int)  # Nx3 array
 
-        all_aura = []
-        for sq in sources:
-            all_aura.extend(get_aura_squares(sq))
+        if len(sources) == 0:
+            return
 
-        if all_aura:
-            aura_array = np.array(all_aura, dtype=int)
-            ax, ay, az = aura_array.T
+        # Batch compute all auras using precomputed cache
+        all_aura_list = [self._AURA_SQUARES_CACHE[tuple(src)] for src in sources]
+        if all_aura_list:
+            all_aura = np.concatenate(all_aura_list)  # Big array of all aura coords (M x 3)
+
+            ax, ay, az = all_aura.T
             valid_mask = (ax >= 0) & (ax < 9) & (ay >= 0) & (ay < 9) & (az >= 0) & (az < 9)
             ax, ay, az = ax[valid_mask], ay[valid_mask], az[valid_mask]
             np.add.at(self._coverage[aura][victim], (az, ay, ax), 1)
 
-        positive_indices = np.argwhere(self._coverage[aura][victim] > 0)
-        if len(positive_indices):
-            az, ay, ax = positive_indices.T
-            if aura == AuraType.FREEZE:
-                victim_code = 1 if victim == Color.WHITE else 2
-                occ = self._cache_manager.occupancy._occ
-                mask = occ[az, ay, ax] == victim_code
-                valid_az, valid_ay, valid_ax = az[mask], ay[mask], ax[mask]
-                self._affected_sets[aura][victim].update(zip(valid_ax, valid_ay, valid_az))
-            else:
-                self._affected_sets[aura][victim].update(zip(ax, ay, az))
+        # Get positive indices vectorized
+        positive_mask = self._coverage[aura][victim] > 0
+        az, ay, ax = np.indices((9, 9, 9))
+        positive_coords = list(zip(ax[positive_mask], ay[positive_mask], az[positive_mask]))
+
+        if aura == AuraType.FREEZE:
+            victim_code = 1 if victim == Color.WHITE else 2
+            occ = self._cache_manager.occupancy._occ
+            mask = occ[positive_mask] == victim_code
+            valid_coords = [coord for i, coord in enumerate(positive_coords) if mask[i]]
+            self._affected_sets[aura][victim].update(valid_coords)
+        else:
+            self._affected_sets[aura][victim].update(positive_coords)
 
     def _get_board(self) -> Optional["Board"]:
         if self._board_ref is None:
@@ -454,24 +504,22 @@ class UnifiedAuraCache(CacheStatsMixin):
         affected = self._affected_sets[aura][victim]
 
         def adjust_aura(sq: Coord, delta: int):
-            if not in_bounds(sq):
+            if sq is None or not (0 <= sq[0] < 9 and 0 <= sq[1] < 9 and 0 <= sq[2] < 9):
                 return set()
-            aura_coords = list(get_aura_squares(sq))
+            aura_coords = self._AURA_SQUARES_CACHE.get(sq, [])
             if not aura_coords:
                 return set()
-            aura_array = np.array(aura_coords, dtype=int)
-            ax, ay, az = aura_array.T
-            valid_mask = (ax >= 0) & (ax < 9) & (ay >= 0) & (ay < 9) & (az >= 0) & (az < 9)
-            ax, ay, az = ax[valid_mask], ay[valid_mask], az[valid_mask]
-            if len(ax) == 0:
+            aura_array = np.array(aura_coords, dtype=int)  # Shape: (N, 3)
+            valid_mask = np.all((aura_array >= 0) & (aura_array < 9), axis=1)
+            if not np.any(valid_mask):
                 return set()
-
+            valid_coords = aura_array[valid_mask]  # Nx3
+            az, ay, ax = valid_coords.T  # Transpose for indexing
             old_values = coverage[az, ay, ax].copy()
-            np.add.at(coverage, (az, ay, ax), delta)
-            changed = set(zip(ax[old_values != coverage[az, ay, ax]],
-                            ay[old_values != coverage[az, ay, ax]],
-                            az[old_values != coverage[az, ay, ax]]))
-            return changed
+            coverage[az, ay, ax] += delta  # Vectorized add
+            changed_mask = old_values != coverage[az, ay, ax]
+            changed_coords = set(zip(ax[changed_mask], ay[changed_mask], az[changed_mask]))
+            return changed_coords
 
         changed = set()
         if old_sq:
@@ -480,19 +528,18 @@ class UnifiedAuraCache(CacheStatsMixin):
             changed.update(adjust_aura(new_sq, 1))
 
         for sq in changed:
-            if not in_bounds(sq):
-                continue
-            x, y, z = sq
-            count = coverage[z, y, x]
-            if count > 0:
-                if aura == AuraType.FREEZE:
-                    target = get_piece(self._cache_manager, sq)
-                    if target and target.color == victim:
+            if 0 <= sq[0] < 9 and 0 <= sq[1] < 9 and 0 <= sq[2] < 9:
+                x, y, z = sq
+                count = coverage[z, y, x]
+                if count > 0:
+                    if aura == AuraType.FREEZE:
+                        target = get_piece(self._cache_manager, sq)
+                        if target and target.color == victim:
+                            affected.add(sq)
+                    else:
                         affected.add(sq)
                 else:
-                    affected.add(sq)
-            else:
-                affected.discard(sq)
+                    affected.discard(sq)
 
     def _ensure_built(self) -> None:
         if any(self._dirty_flags.values()):
@@ -562,6 +609,10 @@ class UnifiedAuraCache(CacheStatsMixin):
             else:
                 board.set_piece(coord, None)
                 self._cache_manager.occupancy.set_position(coord, None)
+
+    def set_cache_manager(self, cache_manager: 'OptimizedCacheManager') -> None:
+        """Set the cache manager reference - ensures single instance usage"""
+        self._cache_manager = cache_manager
 
 def create_unified_aura_cache(board: Optional["Board"] = None, cache_manager=None) -> UnifiedAuraCache:
     return UnifiedAuraCache(board, cache_manager)
