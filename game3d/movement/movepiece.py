@@ -7,6 +7,7 @@ import numpy as np
 import logging
 from game3d.common.coord_utils import _COORD_TO_IDX, filter_valid_coords
 from game3d.common.enums import PieceType
+import numba as nb
 
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,
@@ -169,56 +170,43 @@ class Move:
         return move
 
     @classmethod
-    def create_batch(
-        cls,
-        from_coord: Tuple[int, int, int],
-        to_coords: np.ndarray,
-        captures: np.ndarray,
-        debuffed: bool = False,
-    ) -> List['Move']:
+    def create_batch(cls, from_coord: Tuple[int, int, int], to_coords: np.ndarray, captures: np.ndarray, debuffed: bool = False) -> List['Move']:
         n = len(to_coords)
         if n == 0:
             return []
 
-        # CRITICAL: Validate from_coord
-        if not all(0 <= c < 9 for c in from_coord):
-            logging.error(f"[ERROR] create_batch: Invalid from_coord: {from_coord}")
-            return []
-
-        # CRITICAL: Validate from_coord is in index dict
-        if from_coord not in _COORD_TO_IDX:
-            logging.error(f"[ERROR] create_batch: from_coord {from_coord} not in index dict")
-            return []
-
-        # Filter invalid to_coords BEFORE indexing
+        # Validate and filter (existing)
         valid_mask = np.all((to_coords >= 0) & (to_coords < 9), axis=1)
-        if not np.all(valid_mask):
-            invalid_coords = to_coords[~valid_mask]
-            logging.warning(f"[WARNING] create_batch: Filtered {len(invalid_coords)} invalid coords")
-            to_coords = to_coords[valid_mask]
-            captures = captures[valid_mask]
-            n = len(to_coords)
+        to_coords = to_coords[valid_mask]
+        captures = captures[valid_mask]
+        n = len(to_coords)
 
         if n == 0:
             return []
+
+        # Vectorized idx computation
+        from_idx = from_coord[2] * 81 + from_coord[1] * 9 + from_coord[0]
+        to_idxs = to_coords[:, 2] * 81 + to_coords[:, 1] * 9 + to_coords[:, 0]
+
+        flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
+        flags = np.full(n, flags_base, dtype=np.int64)
+        flags[captures] |= MOVE_FLAGS['CAPTURE']
 
         moves = _get_move_pool().acquire_batch(n)
-        from_idx = _COORD_TO_IDX[from_coord]
-        flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
-        valid_moves = []
-        n = len(to_coords)
-        if n == 0:
-            return []
-        for i in range(n):
-            to_tuple = tuple(to_coords[i])
-            # Assuming after valid_mask, all are in _COORD_TO_IDX; skip redundant check
-            to_idx = _COORD_TO_IDX[to_tuple]
-            flags = flags_base | (MOVE_FLAGS['CAPTURE'] if captures[i] else 0)
-            moves[i]._data = from_idx | (to_idx << 10) | (flags << 20)
-            moves[i]._cached_hash = None
-            valid_moves.append(moves[i])
-        return valid_moves
 
+        # Numba-accelerated loop for assignment
+        # @nb.jit(nopython=True)
+        def assign_data(moves_data, from_idx, to_idxs, flags):  # Note: Can't pass objects to numba, so pass a temp array
+            for i in range(n):
+                moves_data[i] = from_idx | (to_idxs[i] << 10) | (flags[i] << 20)
+
+        moves_data = np.array([0] * n, dtype=np.int64)  # Temp array
+        assign_data(moves_data, from_idx, to_idxs, flags)
+        for i in range(n):
+            moves[i]._data = moves_data[i]
+            moves[i]._cached_hash = None
+
+        return moves
     # ----------------------------------------------------------
     # introspection
     # ----------------------------------------------------------

@@ -524,3 +524,16 @@ class OccupancyCache:
                     self._white_pieces[coord_tuple] = piece.ptype
                 else:
                     self._black_pieces[coord_tuple] = piece.ptype
+
+    def get_batch_raw(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:  # colors, types, valid_mask
+        if coords.size == 0:
+            return np.array([]), np.array([]), np.array([])
+
+        valid_mask = in_bounds_vectorised(coords)
+        valid_coords = coords[valid_mask]
+        x, y, z = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x, y, z = clip_coords(x, y, z)  # Assuming clip_coords vectorized
+
+        colors = self._occ[z, y, x]
+        types = self._ptype[z, y, x]
+        return colors, types, valid_mask

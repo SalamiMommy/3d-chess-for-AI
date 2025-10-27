@@ -156,61 +156,53 @@ def _filter_wall_capture_restrictions_batch(
 # ================================
 # UNIFIED MODIFIER ENTRY POINT
 # ================================
-
 def modify_raw_moves_unified(
     from_coords: Union[Tuple[int, int, int], np.ndarray],
     to_coords_or_batch: Union[np.ndarray, List[np.ndarray]],
     captures_or_batch: Union[np.ndarray, List[np.ndarray]],
     color_or_colors: Union[Color, np.ndarray],
     cache_manager,
-    debuffed_or_mask: Union[bool, np.ndarray] = False,
-    *,
+    debuffed_or_mask: Union[bool, np.ndarray],
     current_ply: int,
 ) -> Union[List[Move], List[List[Move]]]:
-    """
-    Unified movement modifier that autodetects scalar vs batch mode.
-
-    Scalar mode (single piece):
-        from_coords: (x, y, z)
-        to_coords_or_batch: np.ndarray of shape (N, 3)
-        captures_or_batch: np.ndarray of shape (N,)
-        color_or_colors: Color
-        debuffed_or_mask: bool
-
-    Batch mode (multiple pieces):
-        from_coords: np.ndarray of shape (B, 3)
-        to_coords_or_batch: List[np.ndarray] (length B)
-        captures_or_batch: List[np.ndarray] (length B)
-        color_or_colors: np.ndarray of shape (B,) — assumed same color
-        debuffed_or_mask: np.ndarray of shape (B,)
-
-    Returns:
-        Scalar: List[Move]
-        Batch: List[List[Move]]
-    """
-    # Autodetect mode
-    if isinstance(from_coords, tuple):
-        # Scalar mode
-        return _modify_scalar(
-            from_coord=from_coords,
-            to_coords=to_coords_or_batch,
-            captures=captures_or_batch,
-            color=color_or_colors,
-            cache_manager=cache_manager,
-            debuffed=debuffed_or_mask,
-            current_ply=current_ply,
-        )
+    # Autodetect and convert single to batch-of-1
+    if isinstance(from_coords, tuple) or (isinstance(from_coords, np.ndarray) and from_coords.ndim == 1 and from_coords.shape[0] == 3):
+        is_single = True
+        from_coords = np.array([from_coords]) if isinstance(from_coords, tuple) else from_coords.reshape(1, 3)
+        to_coords_batch = [to_coords_or_batch] if isinstance(to_coords_or_batch, np.ndarray) else to_coords_or_batch
+        captures_batch = [captures_or_batch] if isinstance(captures_or_batch, np.ndarray) else captures_or_batch
+        colors = np.full(1, color_or_colors.value) if isinstance(color_or_colors, Color) else np.array([color_or_colors])
+        debuffed_mask = np.array([debuffed_or_mask])
     else:
-        # Batch mode
-        return _modify_batch(
-            from_coords=from_coords,
-            to_coords_batch=to_coords_or_batch,
-            captures_batch=captures_or_batch,
-            colors=color_or_colors,
-            cache_manager=cache_manager,
-            debuffed_mask=debuffed_or_mask,
-            current_ply=current_ply,
+        is_single = False
+        to_coords_batch = to_coords_or_batch
+        captures_batch = captures_or_batch
+        colors = color_or_colors.value if isinstance(color_or_colors, Color) else color_or_colors  # Handle scalar Color
+        debuffed_mask = debuffed_or_mask
+
+    # Always use batch path, favoring _modify_batch
+    try:
+        modified = _modify_batch(
+            from_coords,
+            to_coords_batch,
+            captures_batch,
+            colors,
+            cache_manager,
+            debuffed_mask,
+            current_ply
         )
+    except Exception:
+        modified = _modify_batch_fallback(
+            from_coords,
+            to_coords_batch,
+            captures_batch,
+            colors,
+            cache_manager,
+            debuffed_mask,
+            current_ply
+        )
+
+    return modified[0] if is_single else modified
 
 def _modify_scalar(
     from_coord: Tuple[int, int, int],
@@ -221,6 +213,7 @@ def _modify_scalar(
     debuffed: bool,
     current_ply: int,
 ) -> List[Move]:
+    from_arr = np.array(from_coord)
     if len(to_coords) == 0:
         return []
 

@@ -498,13 +498,43 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         }
 
     def rebuild(self, board: Board, color: Color) -> None:
+        """FULL reset of cache manager for new game."""
         if self.board is board and self._current == color and not self._needs_rebuild:
             return
+
         self.board = board
         self._current = color
-        if self.board is not board:
-            self.occupancy.rebuild(board)
-        # Use ZobristHash instance for scratch computation - FIXED
+
+        # FULL RESET of all caches
+        self.occupancy.rebuild(board)
+
+        # REBUILD effect caches using appropriate methods
+        # Aura cache has _full_rebuild method
+        if hasattr(self.aura_cache, '_full_rebuild'):
+            self.aura_cache._full_rebuild(board)
+        else:
+            self.aura_cache.clear()
+
+        # Trailblaze cache only has clear
+        self.trailblaze_cache.clear()
+
+        # Geomancy cache only has clear
+        self.geomancy_cache.clear()
+
+        # Attacks cache has force_rebuild method
+        if hasattr(self.attacks_cache, 'force_rebuild'):
+            self.attacks_cache.force_rebuild()
+        else:
+            self.attacks_cache.clear()
+
+        # Reset move cache
+        if self._move_cache:
+            if hasattr(self._move_cache, '_full_rebuild'):
+                self._move_cache._full_rebuild()
+            else:
+                self._move_cache.clear()
+
+        # Reset Zobrist hash
         self._current_zobrist_hash = self._zobrist.compute_from_scratch(board, color)
         self._needs_rebuild = False
 
@@ -776,6 +806,20 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             if board is not None:
                 return board
         return self.board if hasattr(self, 'board') else None
+
+    def get_piece_attributes_vectorized(self, coords: Union[Coord, np.ndarray, List[Coord]]) -> Union[Tuple[int, int], Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Get piece colors and types - autodetects single vs batch. Returns (color_code, ptype_value) or arrays thereof.
+        color_code: 0=empty, 1=white, 2=black
+        For batch, returns colors, types, valid_mask"""
+        input_type = self._detect_input_type(coords)
+        if input_type == "single":
+            piece = self.occupancy.get(tuple(coords))
+            if piece is None:
+                return 0, 0
+            color_code = 1 if piece.color == Color.WHITE else 2
+            return color_code, piece.ptype.value
+        else:
+            return self.occupancy.batch_get_colors_and_types(coords)
 
 def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
     """Global factory function - ENSURES single cache manager per board"""

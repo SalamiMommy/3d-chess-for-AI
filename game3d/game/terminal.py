@@ -36,8 +36,30 @@ def is_check(game_state) -> bool:
     return result
 
 def is_stalemate(game_state) -> bool:
-    """Fast stalemate detection."""
-    return not is_check(game_state) and len(game_state.legal_moves()) == 0
+    """More robust stalemate detection for complex 3D chess."""
+    # Must not be in check
+    if is_check(game_state):
+        return False
+
+    # Get legal moves
+    legal_moves = game_state.legal_moves()
+
+    # If there are any legal moves, it's not stalemate
+    if legal_moves:
+        return False
+
+    # Additional checks for complex game states
+    cache_manager = game_state.cache_manager
+
+    # Check if any non-frozen pieces exist that could theoretically move
+    active_pieces_exist = False
+    for coord, piece in cache_manager.occupancy.iter_color(game_state.color):
+        if not cache_manager.is_frozen(coord, piece.color):
+            active_pieces_exist = True
+            break
+
+    # If no active pieces exist and no legal moves, it's stalemate
+    return not active_pieces_exist
 
 def is_insufficient_material(game_state) -> bool:
     """Cached insufficient material detection."""
@@ -56,17 +78,22 @@ def is_insufficient_material(game_state) -> bool:
     return result
 
 def _check_insufficient_material(game_state) -> bool:
-    """Check for insufficient material with early exits."""
-    # Optimization: Precompute counts if not cached
+    """More conservative insufficient material check for 462-piece game."""
     piece_counts = {
         Color.WHITE: {ptype: 0 for ptype in PieceType},
         Color.BLACK: {ptype: 0 for ptype in PieceType}
     }
 
+    # Count all pieces
+    total_pieces = 0
     for _, piece in game_state.board.list_occupied():
         piece_counts[piece.color][piece.ptype] += 1
+        total_pieces += 1
 
-    # Check common insufficient material patterns (optimized with short-circuit)
+    # With 462 starting pieces, insufficient material is extremely unlikely
+    # Only consider it when very few pieces remain
+    if total_pieces > 10:  # Much higher threshold
+        return False
 
     # 1. King vs King
     if (piece_counts[Color.WHITE][PieceType.KING] == 1 and
@@ -118,9 +145,8 @@ def _check_insufficient_material(game_state) -> bool:
     return False
 
 def is_fifty_move_draw(game_state) -> bool:
-    """Correct fifty-move rule implementation without debug."""
-    # Rely strictly on halfmove_clock for efficiency
-    return game_state.halfmove_clock >= 100
+    """Correct fifty-move rule implementation."""
+    return game_state.halfmove_clock >= 200
 
 def is_threefold_repetition(game_state) -> bool:
     """Check for threefold repetition using Zobrist hashes."""
@@ -131,20 +157,30 @@ def is_threefold_repetition(game_state) -> bool:
     return False  # Implement fully with hash list
 
 def is_game_over(game_state) -> bool:
-    """Fast terminal detection with early exits."""
-    # Check fastest conditions first
-    if is_fifty_move_draw(game_state):
-        return True
-
-    if is_insufficient_material(game_state):
-        return True
-
-    # Check for checkmate or stalemate
+    """More conservative game over detection."""
+    # Only check terminal conditions if we have reasonable evidence
     legal_moves = game_state.legal_moves()
-    if len(legal_moves) == 0:
-        return True
 
-    return False
+    # If there are legal moves, game continues
+    if legal_moves:
+        return False
+
+    # No legal moves - check why
+    if is_check(game_state):
+        return True  # Checkmate
+
+    # For stalemate, be more conservative in complex games
+    # Use occupancy cache to count pieces efficiently
+    total_pieces = game_state.cache_manager.occupancy.count
+
+    if total_pieces > 20:  # With many pieces, stalemate is unlikely
+        # Double-check by generating moves from scratch
+        from game3d.movement.generator import generate_legal_moves
+        fresh_moves = generate_legal_moves(game_state)
+        if fresh_moves:
+            return False
+
+    return True  # True stalemate
 
 def result(game_state) -> Optional[Result]:
     """Fast game result determination."""

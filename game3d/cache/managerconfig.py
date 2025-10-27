@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 @dataclass
 class ManagerConfig:
     """Configuration for cache manager resources and thresholds."""
-    total_ram_budget_gb: int = 45
+    total_ram_budget_gb: int = 55
     main_tt_size_mb_fraction: float = 0.5  # Main TT fraction (sums to 1.0 with sym)
     sym_tt_size_mb_fraction: float = 0.5   # Symmetry TT fraction
-    mem_threshold_gb: int = 50
+    mem_threshold_gb: int = 55
     mem_check_interval: int = 1800  # Seconds
     gc_cooldown: int = 300  # Seconds
     max_workers: int | None = field(default=None)  # None to use auto-fallback

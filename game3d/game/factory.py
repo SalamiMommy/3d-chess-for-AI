@@ -13,21 +13,18 @@ if TYPE_CHECKING:
 from .gamestate import GameState, GameMode
 
 def start_game_state(cache_manager: Optional['OptimizedCacheManager'] = None) -> GameState:
-    """
-    Create a new game state from start position.
-    If cache_manager is provided, reuse it. Otherwise create singleton.
-    """
+    """Create a new game state from start position."""
     from game3d.cache.manager import get_cache_manager
 
+    board = Board.empty()
+    board.init_startpos()
+
     if cache_manager is not None:
-        # Reuse provided manager
-        board = cache_manager.board
-        if cache_manager._move_cache is None:
-            cache_manager.initialise(Color.WHITE)
+        # Reuse and FULLY reset provided manager
+        cache_manager.rebuild(board, Color.WHITE)
+        board.cache_manager = cache_manager
     else:
-        # Create new board and get/create singleton manager
-        board = Board.empty()
-        board.init_startpos()
+        # Create new manager
         cache_manager = get_cache_manager(board, Color.WHITE)
 
     return GameState(

@@ -129,23 +129,42 @@ class SelfPlayGenerator:
         return legal_moves[best_idx]
 
     def generate_game(self, max_moves: int = 1_000_000) -> List[TrainingExample]:
-        """Generate ONE game reusing the shared cache manager."""
+        """Generate ONE game with proper reset."""
 
-        # CRITICAL: Create NEW board but REUSE the shared cache manager
+        # CRITICAL: Create COMPLETELY NEW board for each game
         board = Board.empty()
         board.init_startpos()
 
-        # Rebuild the shared cache manager for this new board
+        # Verify board is in correct starting state
+        start_pieces = len(list(board.list_occupied()))
+        print(f"[GAME START] Fresh board ID: {id(board)}")
+        print(f"[GAME START] Starting pieces: {start_pieces} (should be 462)")
+
+        if start_pieces != 462:
+            print(f"[ERROR] Board not properly initialized! Expected 462 pieces, got {start_pieces}")
+            # Force recreate board
+            board = Board.empty()
+            board.init_startpos()
+            print(f"[RECREATED] New board pieces: {len(list(board.list_occupied()))}")
+
+        # Rebuild the shared cache manager for this NEW board
         self._shared_cache_manager.rebuild(board, Color.WHITE)
         board.cache_manager = self._shared_cache_manager
-
-        print(f"[GAME START] Reusing cache manager ID: {id(self._shared_cache_manager)}")
-        print(f"[GAME START] Board ID: {id(board)}")
-        print(f"[GAME START] Board pieces: {len(list(board.list_occupied()))}")
 
         # Create game with the shared cache manager
         game = OptimizedGame3D(board=board, cache=self._shared_cache_manager)
         game.toggle_debug_turn_info(False)
+
+        # Add validation at game start
+        try:
+            legal_moves = game.state.legal_moves()
+            print(f"[VALIDATION] Initial legal moves: {len(legal_moves)}")
+            if len(legal_moves) == 0:
+                print("[ERROR] No legal moves at game start!")
+                return []
+        except Exception as e:
+            print(f"[ERROR] Failed to get initial legal moves: {e}")
+            return []
 
         examples = []
         move_count = 0
@@ -272,6 +291,21 @@ class SelfPlayGenerator:
         # Assign final outcomes
         if game.is_game_over():
             result = game.result()
+            print(f"[GAME OVER] Move {move_count}, Result: {result}")
+
+            # Debug why game ended
+            if is_stalemate(game.state):
+                print("  - Reason: Stalemate")
+            if is_check(game.state):
+                print("  - Reason: Check")
+            if is_insufficient_material(game.state):
+                print("  - Reason: Insufficient material")
+            if is_fifty_move_draw(game.state):
+                print(f"  - Reason: 50-move rule (halfmove_clock: {game.state.halfmove_clock})")
+
+            legal_moves = game.state.legal_moves()
+            print(f"  - Legal moves available: {len(legal_moves)}")
+
             if result == Result.WHITE_WON:
                 final_outcome = 1.0
                 print("Game result: WHITE wins")
