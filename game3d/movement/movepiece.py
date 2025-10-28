@@ -126,8 +126,7 @@ def _get_move_pool() -> MovePool:
 # Move
 # ------------------------------------------------------------------
 class Move:
-    """Immutable, tightly-packed move descriptor."""
-    __slots__ = ('_data', '_cached_hash', 'metadata', '_cached_coords')
+    __slots__ = ('_data', '_cached_hash', 'metadata', '_cached_from', '_cached_to')
 
     def __init__(
         self,
@@ -143,11 +142,14 @@ class Move:
             from_idx
             | (to_idx << 10)
             | (flags << 20)
-            | (captured_piece << 32)  # Shifted to 32 for 12-bit flags
-            | (promotion_type << 38)  # Shifted to 38
+            | (captured_piece << 32)
+            | (promotion_type << 38)
         )
         self._cached_hash: Optional[int] = None
         self.metadata: Dict[str, Any] = {}
+        # PRE-CACHE COORDINATES to avoid expensive computation
+        self._cached_from = from_coord
+        self._cached_to = to_coord
 
     @classmethod
     def create_simple(
@@ -172,45 +174,50 @@ class Move:
         captures: np.ndarray,
         debuffed: bool = False,
     ) -> List['Move']:
-        """Optimized batch creation with minimal allocations."""
+        """OPTIMIZED batch creation with reduced validation overhead."""
         n = len(to_coords)
         if n == 0:
             return []
 
-        # Single validation pass
-        valid_mask = (to_coords >= 0) & (to_coords < 9)
-        valid_mask = valid_mask.all(axis=1)
+        # FAST bounds checking using numpy
+        valid_mask = np.all((to_coords >= 0) & (to_coords < 9), axis=1)
 
-        valid_count = valid_mask.sum()
+        # FAST same-square check
+        from_arr = np.array(from_coord)
+        same_square_mask = ~np.all(to_coords == from_arr, axis=1)
+        valid_mask = valid_mask & same_square_mask
+
+        valid_count = np.sum(valid_mask)
         if valid_count == 0:
             return []
 
-        # Vectorized index computation (no intermediate arrays)
-        from_idx = from_coord[0] + from_coord[1] * 9 + from_coord[2] * 81
-
-        # Use numpy's advanced indexing - faster than loop
+        # Use precomputed indices for valid moves only
         to_valid = to_coords[valid_mask]
         cap_valid = captures[valid_mask]
 
+        # VECTORIZED index computation
+        from_idx = _COORD_TO_IDX[from_coord]
         to_idxs = to_valid[:, 0] + to_valid[:, 1] * 9 + to_valid[:, 2] * 81
 
-        # Pre-compute flags
+        # VECTORIZED flag computation
         flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
         capture_flag = MOVE_FLAGS['CAPTURE']
-
-        # Vectorized flag computation
         flags = np.where(cap_valid, flags_base | capture_flag, flags_base)
 
-        # Vectorized _data computation
+        # VECTORIZED data computation
         datas = from_idx | (to_idxs << 10) | (flags << 20)
 
         # Batch acquire moves
         moves = _get_move_pool().acquire_batch(valid_count)
 
-        # Single loop for assignment (unavoidable in Python)
+        # FAST assignment with pre-cached coordinates
         for i in range(valid_count):
-            moves[i]._data = int(datas[i])
-            moves[i]._cached_hash = None
+            move = moves[i]
+            move._data = int(datas[i])
+            move._cached_hash = None
+            move._cached_from = from_coord
+            move._cached_to = tuple(to_valid[i])
+            move.metadata = {}  # Reset metadata
 
         return moves
     # ----------------------------------------------------------
@@ -238,22 +245,29 @@ class Move:
 
     @property
     def from_coord(self) -> Tuple[int, int, int]:
-        # Cache coordinate extraction
-        if not hasattr(self, '_cached_coords'):
-            idx = self._data & 0x3FF
-            z, rem = divmod(idx, 81)
-            y, x = divmod(rem, 9)
-            to_idx = (self._data >> 10) & 0x3FF
-            to_z, to_rem = divmod(to_idx, 81)
-            to_y, to_x = divmod(to_rem, 9)
-            self._cached_coords = ((x, y, z), (to_x, to_y, to_z))
-        return self._cached_coords[0]
+        # Use pre-cached coordinate if available
+        if hasattr(self, '_cached_from'):
+            return self._cached_from
+
+        # Fallback to computation only when needed
+        idx = self._data & 0x3FF
+        z, rem = divmod(idx, 81)
+        y, x = divmod(rem, 9)
+        coord = (x, y, z)
+        self._cached_from = coord
+        return coord
 
     @property
     def to_coord(self) -> Tuple[int, int, int]:
-        if not hasattr(self, '_cached_coords'):
-            _ = self.from_coord  # Trigger cache
-        return self._cached_coords[1]
+        if hasattr(self, '_cached_to'):
+            return self._cached_to
+
+        to_idx = (self._data >> 10) & 0x3FF
+        z, rem = divmod(to_idx, 81)
+        y, x = divmod(rem, 9)
+        coord = (x, y, z)
+        self._cached_to = coord
+        return coord
 
     # ----------------------------------------------------------
     # dunder + life-cycle

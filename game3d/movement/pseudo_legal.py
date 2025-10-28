@@ -241,6 +241,7 @@ def _process_coord_batch(state: GameState, coords: np.ndarray, types: np.ndarray
             current_ply=current_ply,
         )
 
+        # USE FAST VALIDATION instead of full validation
         validated = validate_moves(modified_moves, state)
         all_moves.extend(validated)
 

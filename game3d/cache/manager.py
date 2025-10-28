@@ -781,16 +781,31 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
 
     # Keep aliases for backward compatibility
     def batch_get_frozen_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
-        """Alias for batch processing - maintained for backward compatibility."""
-        return self.get_frozen_status(coords, color)
+        """Optimized batch frozen status check."""
+        if len(coords) == 0:
+            return np.array([], dtype=bool)
+
+        # Convert to tuple coordinates efficiently
+        coord_tuples = [tuple(coord) for coord in coords]
+
+        # Use vectorized approach if available in aura cache
+        if hasattr(self.aura_cache, 'batch_is_frozen'):
+            return self.aura_cache.batch_is_frozen(coord_tuples, color)
+
+        # Fallback to list comprehension but with pre-check
+        return np.array([self.aura_cache.is_frozen(coord, color) for coord in coord_tuples])
 
     def batch_get_debuffed_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
         """Alias for batch processing - maintained for backward compatibility."""
         return self.get_debuffed_status(coords, color)
 
     def batch_get_geomancy_blocked(self, coords: np.ndarray, current_ply: int) -> np.ndarray:
-        """Alias for batch processing - maintained for backward compatibility."""
-        return self.get_geomancy_blocked_status(coords, current_ply)
+        """Optimized batch geomancy check."""
+        if len(coords) == 0:
+            return np.array([], dtype=bool)
+
+        coord_tuples = [tuple(coord) for coord in coords]
+        return np.array([self.geomancy_cache.is_blocked(coord, current_ply) for coord in coord_tuples])
 
     def batch_apply_effects_to_moves(self, moves: List[Move], mover: Color, current_ply: int) -> List[Move]:
         """Alias for batch processing - maintained for backward compatibility."""

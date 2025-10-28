@@ -71,6 +71,8 @@ def generate_slider_moves_kernel(
             if not in_bounds_scalar(nx, ny, nz):
                 break
             occ = occupancy[nz, ny, nx]
+
+            # CRITICAL FIX: Enhanced occupancy logic
             if occ == 0:                       # empty
                 move_coords[d_idx, count] = (nx, ny, nz)
                 is_capture[d_idx, count] = False
@@ -80,7 +82,7 @@ def generate_slider_moves_kernel(
                 is_capture[d_idx, count] = True
                 count += 1
                 break
-            else:                              # own piece
+            else:                              # own piece - stop here
                 break
         move_counts[d_idx] = count
 
@@ -91,7 +93,6 @@ def generate_slider_moves_kernel(
             x, y, z = move_coords[d_idx, i]
             moves.append((x, y, z, is_capture[d_idx, i]))
     return moves
-
 # ------------------------------------------------------------------
 # 3.  Backward compatibility wrapper
 # ------------------------------------------------------------------

@@ -84,8 +84,13 @@ class OptimizedGame3D:
         start_time = time.perf_counter()
 
         if self._debug_turn_info:
+            # Check if this is a capture move
+            target_piece = self._state.cache_manager.occupancy_cache.get(move.to_coord)
+            is_capture = target_piece is not None and target_piece.color != self.current_player
+
+            capture_info = " (CAPTURE)" if is_capture else ""
             print(f"[Turn {self._state.turn_number}] "
-                f"{self.current_player.name} submits {move}")
+                f"{self.current_player.name} submits {move}{capture_info}")
 
         # ----- fast reject -------------------------------------------------
         piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)

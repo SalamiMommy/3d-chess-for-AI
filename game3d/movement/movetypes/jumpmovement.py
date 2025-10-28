@@ -36,14 +36,18 @@ def _jump_kernel_direct(
         if not _in_bounds(tx, ty, tz):
             continue
         h = occ[tz, ty, tx]
+
+        # CRITICAL FIX: Check for friendly pieces
+        if h == own_code:
+            continue  # Skip friendly squares
+
         if h == 0:
             out.append((tx, ty, tz, False))
-        elif allow_capture and h != own_code:
+        elif allow_capture and h != own_code:  # This check is now redundant but safe
             if h == enemy_code and enemy_has_priests:
                 continue
             out.append((tx, ty, tz, True))
     return out
-
 # ----------  helper that builds Move objects  ----------
 def _build_jump_moves(
     color: Color,

@@ -653,6 +653,18 @@ class UnifiedAuraCache(CacheStatsMixin):
         """Set the cache manager reference - ensures single instance usage"""
         self._cache_manager = cache_manager
 
+    def batch_is_frozen(self, coords: List[Coord], color: Color) -> np.ndarray:
+        """Batch version of is_frozen for performance."""
+        if self._dirty_flags['coverage']:
+            self._incremental_rebuild()
+
+        results = np.zeros(len(coords), dtype=bool)
+        for i, coord in enumerate(coords):
+            x, y, z = coord
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                results[i] = self._coverage[AuraType.FREEZE][color][z, y, x] > 0
+        return results
+
 def create_unified_aura_cache(board: Optional["Board"] = None, cache_manager=None) -> UnifiedAuraCache:
     return UnifiedAuraCache(board, cache_manager)
 

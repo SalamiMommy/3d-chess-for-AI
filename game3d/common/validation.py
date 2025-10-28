@@ -21,6 +21,37 @@ if TYPE_CHECKING:
 # =============================================================================
 # Core Validation Functions
 # =============================================================================
+def validate_moves_fast(
+    moves: List[Move],
+    state: GameState,
+    piece: Optional[Piece] = None
+) -> List[Move]:
+    """Ultra-fast validation for batch processing - minimal checks only."""
+    if not moves:
+        return []
+
+    cache = state.cache_manager
+    expected_color = piece.color if piece else state.color
+
+    # Extract coordinates in single batch
+    from_coords = np.array([m.from_coord for m in moves], dtype=np.int32)
+    to_coords = np.array([m.to_coord for m in moves], dtype=np.int32)
+
+    # Batch occupancy checks
+    from_colors, _ = cache.occupancy.batch_get_colors_and_types(from_coords)
+    to_colors, _ = cache.occupancy.batch_get_colors_and_types(to_coords)
+
+    expected_code = 1 if expected_color == Color.WHITE else 2
+
+    # Fast validation mask
+    valid = (
+        (from_colors == expected_code) &  # Correct color
+        ((to_colors == 0) | (to_colors != expected_code))  # Valid destination
+    )
+
+    # Return filtered moves (skip effect checks for performance)
+    return [moves[i] for i in range(len(moves)) if valid[i]]
+
 
 def validate_move_basic(
     game_state: GameState,
