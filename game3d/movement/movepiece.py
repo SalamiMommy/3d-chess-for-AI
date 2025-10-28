@@ -29,7 +29,7 @@ MOVE_FLAGS = {
 # ------------------------------------------------------------------
 class MovePool:
     __slots__ = ('_pool', '_in_use', '_total_created', '_max_in_use')
-    MAX_POOL_SIZE = 10000
+    MAX_POOL_SIZE = 100000  # Increased from 10000
 
     def __init__(self):
         self._pool = []
@@ -118,7 +118,7 @@ def _get_move_pool() -> MovePool:
     global _move_pool
     if _move_pool is None:
         _move_pool = MovePool()
-        _move_pool.populate(100_000)
+        _move_pool.populate(500_000)  # Increased from 100_000
     return _move_pool
 
 
@@ -127,7 +127,7 @@ def _get_move_pool() -> MovePool:
 # ------------------------------------------------------------------
 class Move:
     """Immutable, tightly-packed move descriptor."""
-    __slots__ = ('_data', '_cached_hash', 'metadata')
+    __slots__ = ('_data', '_cached_hash', 'metadata', '_cached_coords')
 
     def __init__(
         self,
@@ -161,49 +161,55 @@ class Move:
         move = _get_move_pool().acquire()
         from_idx = _COORD_TO_IDX[from_coord]
         to_idx = _COORD_TO_IDX[to_coord]
-        base_flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0
-        if debuffed:
-            base_flags |= MOVE_FLAGS['DEBUFFED']
-        base_flags |= flags  # ADDED: incorporate provided flags
-        move._data = from_idx | (to_idx << 10) | (base_flags << 20)
+        move._data = from_idx | (to_idx << 10) | (flags << 20)
         move._cached_hash = None
         return move
 
     @classmethod
-    def create_batch(cls, from_coord: Tuple[int, int, int], to_coords: np.ndarray, captures: np.ndarray, debuffed: bool = False) -> List['Move']:
+    def create_batch(
+        cls, from_coord: Tuple[int, int, int],
+        to_coords: np.ndarray,
+        captures: np.ndarray,
+        debuffed: bool = False,
+    ) -> List['Move']:
+        """Optimized batch creation with minimal allocations."""
         n = len(to_coords)
         if n == 0:
             return []
 
-        # Validate and filter (existing)
-        valid_mask = np.all((to_coords >= 0) & (to_coords < 9), axis=1)
-        to_coords = to_coords[valid_mask]
-        captures = captures[valid_mask]
-        n = len(to_coords)
+        # Single validation pass
+        valid_mask = (to_coords >= 0) & (to_coords < 9)
+        valid_mask = valid_mask.all(axis=1)
 
-        if n == 0:
+        valid_count = valid_mask.sum()
+        if valid_count == 0:
             return []
 
-        # Vectorized idx computation
-        from_idx = from_coord[2] * 81 + from_coord[1] * 9 + from_coord[0]
-        to_idxs = to_coords[:, 2] * 81 + to_coords[:, 1] * 9 + to_coords[:, 0]
+        # Vectorized index computation (no intermediate arrays)
+        from_idx = from_coord[0] + from_coord[1] * 9 + from_coord[2] * 81
 
+        # Use numpy's advanced indexing - faster than loop
+        to_valid = to_coords[valid_mask]
+        cap_valid = captures[valid_mask]
+
+        to_idxs = to_valid[:, 0] + to_valid[:, 1] * 9 + to_valid[:, 2] * 81
+
+        # Pre-compute flags
         flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
-        flags = np.full(n, flags_base, dtype=np.int64)
-        flags[captures] |= MOVE_FLAGS['CAPTURE']
+        capture_flag = MOVE_FLAGS['CAPTURE']
 
-        moves = _get_move_pool().acquire_batch(n)
+        # Vectorized flag computation
+        flags = np.where(cap_valid, flags_base | capture_flag, flags_base)
 
-        # Numba-accelerated loop for assignment
-        # @nb.jit(nopython=True)
-        def assign_data(moves_data, from_idx, to_idxs, flags):  # Note: Can't pass objects to numba, so pass a temp array
-            for i in range(n):
-                moves_data[i] = from_idx | (to_idxs[i] << 10) | (flags[i] << 20)
+        # Vectorized _data computation
+        datas = from_idx | (to_idxs << 10) | (flags << 20)
 
-        moves_data = np.array([0] * n, dtype=np.int64)  # Temp array
-        assign_data(moves_data, from_idx, to_idxs, flags)
-        for i in range(n):
-            moves[i]._data = moves_data[i]
+        # Batch acquire moves
+        moves = _get_move_pool().acquire_batch(valid_count)
+
+        # Single loop for assignment (unavoidable in Python)
+        for i in range(valid_count):
+            moves[i]._data = int(datas[i])
             moves[i]._cached_hash = None
 
         return moves
@@ -232,21 +238,22 @@ class Move:
 
     @property
     def from_coord(self) -> Tuple[int, int, int]:
-        idx = self._data & 0x3FF
-        z = idx // 81
-        r = idx % 81
-        y = r // 9
-        x = r % 9
-        return (x, y, z)
+        # Cache coordinate extraction
+        if not hasattr(self, '_cached_coords'):
+            idx = self._data & 0x3FF
+            z, rem = divmod(idx, 81)
+            y, x = divmod(rem, 9)
+            to_idx = (self._data >> 10) & 0x3FF
+            to_z, to_rem = divmod(to_idx, 81)
+            to_y, to_x = divmod(to_rem, 9)
+            self._cached_coords = ((x, y, z), (to_x, to_y, to_z))
+        return self._cached_coords[0]
 
     @property
     def to_coord(self) -> Tuple[int, int, int]:
-        idx = (self._data >> 10) & 0x3FF
-        z = idx // 81
-        r = idx % 81
-        y = r // 9
-        x = r % 9
-        return (x, y, z)
+        if not hasattr(self, '_cached_coords'):
+            _ = self.from_coord  # Trigger cache
+        return self._cached_coords[1]
 
     # ----------------------------------------------------------
     # dunder + life-cycle
@@ -274,6 +281,11 @@ class Move:
     def promotion_type(self) -> int:
         """Extract promotion piece type from packed data (6 bits sufficient for PieceType values)."""
         return (self._data >> 38) & 0x3F
+
+    @property
+    def captured_piece(self) -> int:
+        """Extract captured piece type from packed data."""
+        return (self._data >> 32) & 0x3F
 
 # ------------------------------------------------------------------
 # MoveReceipt (unchanged)

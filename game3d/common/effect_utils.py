@@ -1,4 +1,18 @@
 # effect_utils.py
+from __future__ import annotations
+from typing import Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.movement.movepiece import Move
+    from game3d.board.board import Board
+    from game3d.common.enums import Color
+else:
+    # Import at runtime
+    from game3d.common.enums import Color
+
+from game3d.common.piece_utils import get_piece_effect_type
+
 def apply_standard_effects(
     cache_manager: "OptimizedCacheManager",
     move: "Move",

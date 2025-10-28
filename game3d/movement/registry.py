@@ -1,12 +1,9 @@
-# registry.py - ENHANCED BATCH VERSION
+# registry.py - ENHANCED BATCH VERSION WITH CACHED LOOKUP
 from __future__ import annotations
 from typing import Callable, List, Dict, TYPE_CHECKING, Tuple
 from game3d.common.enums import PieceType, Color
 from game3d.movement.movepiece import Move
 import numpy as np
-from numba import njit
-from numba.typed import List as NbList
-from game3d.movement.movepiece import MOVE_FLAGS
 from collections import defaultdict
 
 if TYPE_CHECKING:
@@ -22,11 +19,16 @@ def register(pt: PieceType):
         return fn
     return _decorator
 
-def get_dispatcher(pt: PieceType):
-    try:
-        return _REGISTRY[pt]
-    except KeyError:
-        raise ValueError(f"No dispatcher registered for {pt}.") from None
+# OPTIMIZED: Cached lookup for faster repeated access (singleton-like)
+_dispatcher_cache: Dict[PieceType, Callable] = {}  # Thread-local if needed
+
+def get_dispatcher(pt: PieceType) -> Callable:
+    if pt not in _dispatcher_cache:
+        try:
+            _dispatcher_cache[pt] = _REGISTRY[pt]
+        except KeyError:
+            raise ValueError(f"No dispatcher registered for {pt}.") from None
+    return _dispatcher_cache[pt]
 
 def dispatch_batch_enhanced(
     state: "GameState",
@@ -47,9 +49,8 @@ def dispatch_batch_enhanced(
     all_moves = [[] for _ in range(len(piece_coords))]
 
     for ptype, group in type_groups.items():
+        # OPTIMIZED: Use cached dispatcher
         dispatcher = get_dispatcher(ptype)
-        if dispatcher is None:
-            continue
 
         orig_indices = [i for i, _ in group]
         coords = [c for _, c in group]

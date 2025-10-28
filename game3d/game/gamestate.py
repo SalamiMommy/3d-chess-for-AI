@@ -42,7 +42,7 @@ class GameState:
     game_mode: GameMode = GameMode.STANDARD
     turn_number: int = 1
 
-    _zkey: int = field(init=False)
+    # REMOVED: _zkey field - now managed by cache_manager only
     _legal_moves_cache: Optional[List[Move]] = field(default=None, repr=False)
     _legal_moves_cache_key: Optional[int] = field(default=None, repr=False)
     _tensor_cache: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -59,8 +59,7 @@ class GameState:
         if self.cache_manager is None:
             raise RuntimeError("GameState must be given an external cache_manager")
         self.board.cache_manager = self.cache_manager
-        # Use cache manager's Zobrist hash
-        self._zkey = self.cache_manager._current_zobrist_hash
+        # REMOVED: Zobrist hash initialization - now managed by cache_manager
         self._clear_caches()
 
     @property
@@ -70,7 +69,8 @@ class GameState:
 
     @property
     def zkey(self) -> int:
-        return self._zkey
+        """Delegate Zobrist hash access to cache manager - single source of truth."""
+        return self.cache_manager.zobrist_hash
 
     # CACHE ACCESS PROPERTIES - STANDARDIZED NAMES
     @property
@@ -236,7 +236,7 @@ class GameState:
         self.color = self.color.opposite()
         self.halfmove_clock += 1
         self.turn_number += 1
-        self._zkey = self.cache_manager._current_zobrist_hash
+        # REMOVED: Direct Zobrist hash update - now managed by cache_manager
         self._clear_caches()
 
         # Update halfmove clock logic
@@ -260,7 +260,7 @@ class GameState:
         self.color = self.color.opposite()
         self.halfmove_clock = undo_info['original_halfmove_clock']
         self.turn_number = undo_info['original_turn_number']
-        self._zkey = undo_info['original_zkey']
+        # REMOVED: Direct Zobrist hash restoration - now managed by cache_manager
         self._clear_caches()
 
     # GAME LOGIC (delegate to other modules)
@@ -323,7 +323,7 @@ class GameState:
         debug_info.append("=" * 80)
         debug_info.append(f"GAME STATE DEBUG")
         debug_info.append(f"Color: {self.color}")
-        debug_info.append(f"Zobrist: {self.zkey:#016x}")
+        debug_info.append(f"Zobrist: {self.zkey:#016x}")  # Uses delegated property
         debug_info.append(f"Board Hash: {self.board.byte_hash():#016x}")
         debug_info.append(f"History Length: {len(self.history)}")
         debug_info.append(f"Halfmove Clock: {self.halfmove_clock}")

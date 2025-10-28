@@ -59,7 +59,7 @@ def _build_jump_moves(
 
     to_coords = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
     to_coords = [tuple(int(c) for c in row) for row in
-                filter_valid_coords(to_coords, log_oob=True)]
+                filter_valid_coords(to_coords)]
     valid_raw = [
         (int(x), int(y), int(z), is_cap)
         for (x, y, z), (_, _, _, is_cap) in zip(to_coords, raw)

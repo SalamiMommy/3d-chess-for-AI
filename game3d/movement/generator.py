@@ -48,8 +48,7 @@ class LegalMoveGenerator(GeneratorBase):
         else:
             threshold = None  # autodetect
 
-        moves = _generate_legal_moves(state, threshold=threshold)
-        moves = filter_none_moves(moves)
+        moves = filter_none_moves(_generate_legal_moves(state, threshold=threshold))
         _STATS.total_moves_filtered += len(moves)
         return moves
 

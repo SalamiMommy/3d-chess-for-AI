@@ -219,79 +219,47 @@ def filter_none_moves(moves: Union[List["Move"], List[List["Move"]]]) -> Union[L
 
 def apply_special_effects(
     game_state: "GameState",
-    moves: Union[List["Move"], List[List["Move"]]],
-    moving_pieces: Union[List["Piece"], List[List["Piece"]]],
-    captured_pieces: Union[List[Optional["Piece"]], List[List[Optional["Piece"]]]]
-) -> Tuple[Union[List[List[Tuple[Coord, Piece]]], List[List[List[Tuple[Coord, Piece]]]]],
-           Union[List[List[Tuple[Coord, Coord, Piece]]], List[List[List[Tuple[Coord, Coord, Piece]]]]],
-           Union[List[bool], List[List[bool]]]]:
-    """Batch apply special effects to multiple moves - supports scalar and batch mode."""
-    # Handle scalar mode
-    if not isinstance(moves, list) or (moves and not isinstance(moves[0], list)):
-        # Scalar mode - convert to batch of size 1
-        moves_batch = [moves] if moves else [[]]
-        moving_pieces_batch = [moving_pieces] if moving_pieces else [[]]
-        captured_pieces_batch = [captured_pieces] if captured_pieces else [[]]
-
-        all_removed_pieces, all_moved_pieces, all_self_detonate = apply_special_effects(
-            game_state, moves_batch, moving_pieces_batch, captured_pieces_batch
-        )
-
-        # Return scalar results
-        return (all_removed_pieces[0] if all_removed_pieces else [],
-                all_moved_pieces[0] if all_moved_pieces else [],
-                all_self_detonate[0] if all_self_detonate else False)
-
-    # Batch mode
+    moves: List["Move"],
+    moving_pieces: List["Piece"],
+    captured_pieces: List[Optional["Piece"]]
+) -> Tuple[List[List[Tuple]], List[List[Tuple]], List[bool]]:
+    """Optimized special effects with batched operations."""
     if not moves:
         return [], [], []
 
     cache = game_state.cache_manager
-    all_removed_pieces = []
-    all_moved_pieces = []
-    all_self_detonate = []
 
-    # Pre-compute common data
-    colors = []
-    for piece_batch in moving_pieces:
-        batch_colors = [piece.color for piece in piece_batch]
-        colors.append(batch_colors)
+    # Group moves by effect type to process in batches
+    bomb_moves = []
+    trail_moves = []
 
-    # Batch apply hole effects by color
-    for i, (move_batch, piece_batch, color_batch) in enumerate(zip(moves, moving_pieces, colors)):
-        batch_removed_pieces = []
-        batch_moved_pieces = []
-        batch_self_detonate = []
+    for i, (move, piece) in enumerate(zip(moves, moving_pieces)):
+        if piece.ptype == PieceType.BOMB:
+            bomb_moves.append((i, move, piece, captured_pieces[i]))
+        if piece.color in cache.trailblaze_cache._active_colors:
+            trail_moves.append((i, move, piece))
 
-        unique_colors = set(color_batch)
-        for color in unique_colors:
-            color_indices = [j for j, c in enumerate(color_batch) if c == color]
-            if color_indices:
-                moved_pieces = []
-                apply_hole_effects_batch(game_state.board, cache, color, moved_pieces)
-                for idx in color_indices:
-                    batch_moved_pieces.extend(moved_pieces)
+    # Process each effect type in batch
+    all_removed = [[] for _ in moves]
+    all_moved = [[] for _ in moves]
+    all_detonate = [False] * len(moves)
 
-        # Batch apply bomb effects
-        for j, (move, moving_piece, captured_piece) in enumerate(zip(move_batch, piece_batch, captured_pieces[i])):
-            removed_pieces = []
-            is_self_detonate = apply_bomb_effects(
-                game_state.board, cache, move, moving_piece,
-                captured_piece, removed_pieces, False
-            )
-            batch_removed_pieces.append(removed_pieces)
-            batch_self_detonate.append(is_self_detonate)
+    # Batch process bombs
+    for i, move, piece, captured in bomb_moves:
+        removed = []
+        detonate = apply_bomb_effects(
+            game_state.board, cache, move, piece, captured, removed, False
+        )
+        all_removed[i] = removed
+        all_detonate[i] = detonate
 
-        # Batch apply trailblaze effects
-        for j, (move, moving_piece) in enumerate(zip(move_batch, piece_batch)):
-            removed_pieces = batch_removed_pieces[j]
-            apply_trailblaze_effect(game_state.board, cache, move, moving_piece.color, removed_pieces)
+    # Batch process trailblaze
+    for i, move, piece in trail_moves:
+        apply_trailblaze_effect(
+            game_state.board, cache, move, piece.color, all_removed[i]
+        )
 
-        all_removed_pieces.append(batch_removed_pieces)
-        all_moved_pieces.append(batch_moved_pieces)
-        all_self_detonate.append(batch_self_detonate)
-
-    return all_removed_pieces, all_moved_pieces, all_self_detonate
+    return all_removed, all_moved, all_detonate
 
 def create_enriched_move(game_state, move, removed_pieces, moved_pieces,
                         is_self_detonate, captured_piece=None):

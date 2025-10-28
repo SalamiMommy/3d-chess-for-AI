@@ -9,6 +9,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     from game3d.board.board import Board
+    from game3d.game.gamestate import GameState
+    from game3d.cache.manager import OptimizedCacheManager
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move
@@ -27,8 +29,7 @@ from game3d.common.validation import validate_move_comprehensive  # UPDATED: Use
 from game3d.game.gamestate import GameState
 from game3d.movement.generator import generate_legal_moves_for_piece
 from game3d.common.cache_utils import get_piece, is_occupied
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
+
 # ------------------------------------------------------------------
 # Compact move representation for TT entries
 # ------------------------------------------------------------------
@@ -336,8 +337,8 @@ class OptimizedMoveCache(CacheStatsMixin):
         if len(coords_array) == 0:
             return
 
-        # Batch processing for all cases
-        pieces_data = self._cache_manager.occupancy.batch_get_pieces_vectorized(coords_array)
+        # Batch processing for all cases - FIXED: Use batch_get_pieces instead of batch_get_pieces_vectorized
+        pieces_data = self._cache_manager.occupancy.get_batch(coords_array)
         frozen_mask = self._cache_manager.batch_get_frozen_status(coords_array, color)
 
         # Filter pieces that belong to the color and need updating
@@ -430,15 +431,22 @@ class OptimizedMoveCache(CacheStatsMixin):
             self._legal_by_color[Color.BLACK] = black_moves
             return
 
-        # Batch get piece colors for all coordinates
-        coords = np.array(list(self._legal_per_piece.keys()))
-        pieces = self._cache_manager.occupancy.batch_get_pieces_vectorized(coords)
+        # Convert keys to numpy array safely
+        coords_list = list(self._legal_per_piece.keys())
+        if not coords_list:
+            self._legal_by_color[Color.WHITE] = []
+            self._legal_by_color[Color.BLACK] = []
+            return
 
-        for i, (coord, piece) in enumerate(zip(coords, pieces)):
+        coords = np.array(coords_list)
+        pieces = self._cache_manager.occupancy.get_batch(coords)
+
+        for i, coord in enumerate(coords_list):
+            piece = pieces[i]
             if not piece:
                 continue
 
-            moves = self._legal_per_piece[tuple(coord)]
+            moves = self._legal_per_piece[coord]
             moves = filter_none_moves(moves)
 
             if not moves:

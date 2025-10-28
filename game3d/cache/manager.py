@@ -104,15 +104,16 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         self.board = board
         self._board_ref = weakref.ref(board)  # Add weak reference
         self._current = current
-        self.occupancy = OccupancyCache(board)
+
         self.performance_monitor = CachePerformanceMonitor()
         self._memory_manager = MemoryManager(self.config, lambda: self._move_cache)
         self.parallel = ParallelManager(self.config)
 
         # Initialize Zobrist hash instance
         self._zobrist = ZobristHash()
-        self._current_zobrist_hash = self._zobrist.compute_from_scratch(board, current)
+        self._current_zobrist_hash = self._zobrist.compute_from_scratch(self.board, current)
 
+        self.occupancy = OccupancyCache(self)
         self._move_cache: Optional[OptimizedMoveCache] = None
         self.attacks_cache = AttacksCache(board)
         self._initialize_effect_caches()
@@ -149,7 +150,7 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         """Initialize the move cache and other components."""
         self._current = current
         self._move_cache = create_optimized_move_cache(self.board, current, self)
-        self._current_zobrist_hash = compute_zobrist(self.board, current)
+        self._current_zobrist_hash = self._zobrist.compute_from_scratch(self.board, current)
         self._needs_rebuild = False
 
     def _initialize_effect_caches(self) -> None:
@@ -280,7 +281,7 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         elif name == "attacks":
             return self.attacks_cache
         elif name == "occupancy":
-            return self.occupancy_cache
+            return self.occupancy
         elif name == "moves":
             return self.move_cache
         return None
@@ -820,6 +821,15 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             return color_code, piece.ptype.value
         else:
             return self.occupancy.batch_get_colors_and_types(coords)
+
+    @property
+    def zobrist_hash(self) -> int:
+        """Get the current Zobrist hash - single source of truth."""
+        return self._current_zobrist_hash
+
+    def sync_zobrist(self, new_hash: int) -> None:
+        """Update the Zobrist hash - only method that should modify it."""
+        self._current_zobrist_hash = new_hash
 
 def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
     """Global factory function - ENSURES single cache manager per board"""

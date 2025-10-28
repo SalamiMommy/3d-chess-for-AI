@@ -421,7 +421,10 @@ class UnifiedAuraCache(CacheStatsMixin):
                     self._coverage[aura][victim].fill(0)
                     self._affected_sets[aura][victim].clear()
                     controller = victim if affect == "friendly" else victim.opposite()
-                    positions = self._cache_manager.occupancy.get_positions_by_type(controller, AURA_PIECE_MAP[aura])
+                    positions = [
+                        coord for coord, piece in self._cache_manager.occupancy.iter_color(controller)
+                        if piece.ptype == AURA_PIECE_MAP[aura]
+                    ]
                     for sq in positions:
                         self._update_coverage(aura, victim, new_sq=tuple(sq))  # Ensure Coord is tuple
         self._update_frozen_bitmap()
@@ -480,11 +483,7 @@ class UnifiedAuraCache(CacheStatsMixin):
         # Calculate linear indices in the coverage array (which is shape (9,9,9) indexed (z,y,x))
         linear_indices = z * 81 + y * 9 + x
 
-        # Use bincount to count the occurrences of each linear index
-        counts = np.bincount(linear_indices, minlength=9*9*9)
-
-        # Update the coverage array
-        self._coverage[aura][victim].flat = counts
+        np.add.at(self._coverage[aura][victim].flat, linear_indices, 1)
 
         # Now update the affected set
         positive_mask = self._coverage[aura][victim] > 0

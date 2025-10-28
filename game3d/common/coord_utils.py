@@ -9,19 +9,23 @@ from typing import Tuple, List, Optional, Union, Set
 import numpy as np
 from numba import njit
 
-from game3d.common.constants import SIZE, _COORD_TO_IDX, _IDX_TO_COORD, RADIUS_2_OFFSETS
+from game3d.common.constants import SIZE, _COORD_TO_IDX, _IDX_TO_COORD, RADIUS_2_OFFSETS, SIZE_SQUARED, SIZE_MINUS_1
 
 Coord = Tuple[int, int, int]
 
 # ------------------------------------------------------------------
 # Fast bounds check – split for numba compatibility
 # ------------------------------------------------------------------
-_UPPER = SIZE - 1  # 8
+_UPPER = SIZE_MINUS_1  # 8
 
-@njit(cache=True)
+@njit(cache=True, inline='always')
 def in_bounds_scalar(x: int, y: int, z: int) -> bool:
-    """Fast scalar bounds checking - numba compatible."""
-    return 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE
+    """Ultra-fast bounds check with early exits."""
+    if x < 0 or x >= SIZE:
+        return False
+    if y < 0 or y >= SIZE:
+        return False
+    return 0 <= z < SIZE
 
 @njit(cache=True)
 def in_bounds_numpy_batch(coords: np.ndarray) -> np.ndarray:
@@ -62,41 +66,19 @@ def in_bounds_vectorised(coords: Union[np.ndarray, torch.Tensor]) -> Union[np.nd
     else:
         return in_bounds_numpy_batch(coords)
 
-def filter_valid_coords(coords: Union[np.ndarray, torch.Tensor], log_oob: bool = True, clamp: bool = False) -> Union[np.ndarray, torch.Tensor]:
-    """Filter valid coordinates - supports scalar and batch mode."""
-    # Early return for empty arrays
-    if isinstance(coords, torch.Tensor):
-        if coords.numel() == 0:
-            return coords
-    elif coords.size == 0:
+def filter_valid_coords(coords: np.ndarray) -> np.ndarray:
+    """Optimized coordinate filtering."""
+    if coords.size == 0:
         return coords
 
-    # 1. optionally coerce edge values
-    if clamp:
-        if isinstance(coords, torch.Tensor):
-            coords = torch.clamp(coords, 0, SIZE - 1)
-        else:
-            coords = np.clip(coords, 0, SIZE - 1)
+    # Single bounds check - all operations vectorized
+    valid = ((coords >= 0) & (coords < SIZE)).all(axis=1)
 
-    # 2. build mask (True ⇒ keep)
-    valid_mask = in_bounds_vectorised(coords)
+    # Early return if all valid
+    if valid.all():
+        return coords
 
-    # 3. logging - only compute bad coords if needed
-    if log_oob:
-        if isinstance(valid_mask, torch.Tensor):
-            if not torch.all(valid_mask):
-                bad_count = torch.sum(~valid_mask).item()
-                # print(f"[WARNING] Filtered {bad_count} OOB coords.")
-        else:
-            if not np.all(valid_mask):
-                bad_count = np.sum(~valid_mask)
-                # print(f"[WARNING] Filtered {bad_count} OOB coords.")
-
-    # 4. return only valid rows
-    if isinstance(coords, torch.Tensor):
-        return coords[valid_mask]
-    else:
-        return coords[valid_mask]
+    return coords[valid]
 
 # NEW – real functions that the rest of the code can call
 def coord_to_idx(coord: Union[Coord, torch.Tensor]) -> Union[int, torch.Tensor]:
@@ -104,21 +86,21 @@ def coord_to_idx(coord: Union[Coord, torch.Tensor]) -> Union[int, torch.Tensor]:
     if isinstance(coord, torch.Tensor) and coord.ndim > 1:
         # Batch mode: [N, 3] -> [N]
         x, y, z = coord[:, 0], coord[:, 1], coord[:, 2]
-        return x + SIZE * y + SIZE * SIZE * z
+        return x + SIZE * y + SIZE_SQUARED * z
     else:
         # Scalar mode
         if isinstance(coord, torch.Tensor):
             x, y, z = coord.tolist()
         else:
             x, y, z = coord
-        return x + SIZE * y + SIZE * SIZE * z
+        return x + SIZE * y + SIZE_SQUARED * z
 
 def idx_to_coord(idx: Union[int, torch.Tensor]) -> Union[Coord, torch.Tensor]:
     """Inverse of the above - supports scalar and batch mode."""
     if isinstance(idx, torch.Tensor) and idx.ndim > 0:
         # Batch mode: [N] -> [N, 3]
-        z = idx // (SIZE * SIZE)
-        rem = idx % (SIZE * SIZE)
+        z = idx // (SIZE_SQUARED)
+        rem = idx % (SIZE_SQUARED)
         y = rem // SIZE
         x = rem % SIZE
         return torch.stack([x, y, z], dim=1)
@@ -126,7 +108,7 @@ def idx_to_coord(idx: Union[int, torch.Tensor]) -> Union[Coord, torch.Tensor]:
         # Scalar mode
         if isinstance(idx, torch.Tensor):
             idx = idx.item()
-        z, rem = divmod(idx, SIZE * SIZE)
+        z, rem = divmod(idx, SIZE_SQUARED)
         y, x = divmod(rem, SIZE)
         return (x, y, z)
 
@@ -710,7 +692,7 @@ def batch_validate_coords(coords: Union[List[Coord], torch.Tensor]) -> Union[Lis
         return coords[valid_mask]
     else:
         # List batch validation
-        SIZE_1 = SIZE - 1
+        SIZE_1 = SIZE_MINUS_1
         return [c for c in coords if isinstance(c, tuple) and len(c) == 3 and
                 all(isinstance(coord, int) for coord in c) and
                 0 <= c[0] <= SIZE_1 and 0 <= c[1] <= SIZE_1 and 0 <= c[2] <= SIZE_1]

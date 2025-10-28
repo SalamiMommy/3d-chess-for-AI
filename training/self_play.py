@@ -1,3 +1,4 @@
+# self_play.py
 """Self-play data generation - FIXED to reuse single cache manager."""
 import torch
 import numpy as np
@@ -12,7 +13,6 @@ from game3d.common.coord_utils import coord_to_idx, idx_to_coord, Coord
 from game3d.common.piece_utils import find_king
 from game3d.common.constants import SIZE, VOLUME
 from game3d.board.board import Board
-from game3d.cache.manager import get_cache_manager
 from game3d.game.terminal import (
     is_check,
     is_stalemate,
@@ -24,6 +24,11 @@ from training.opponents import (
     AVAILABLE_OPPONENTS,
     OpponentBase,
 )
+import multiprocessing as mp
+import gc
+
+# ADD THIS IMPORT
+from game3d.game.factory import start_game_state  # ADD THIS LINE
 
 class MoveEncoder:
     def coord_to_index(self, coord: Coord) -> int:
@@ -55,11 +60,10 @@ class SelfPlayGenerator:
         self._cache_hits = 0
         self._cache_misses = 0
 
-        # CRITICAL: Create ONE cache manager for ALL games
-        initial_board = Board.empty()
-        initial_board.init_startpos()
-        self._shared_cache_manager = get_cache_manager(initial_board, Color.WHITE)
-        print(f"[CACHE MANAGER] Created singleton ID: {id(self._shared_cache_manager)}")
+        # CRITICAL: Use factory to create initial game state with cache manager
+        initial_game_state = start_game_state()  # This creates the cache manager via factory
+        self._shared_cache_manager = initial_game_state.cache_manager
+        print(f"[CACHE MANAGER] Using factory-created cache manager ID: {id(self._shared_cache_manager)}")
 
         # Opponent setup
         self.opponent_types = opponent_types or ["adversarial", "center_control"]
@@ -128,95 +132,47 @@ class SelfPlayGenerator:
         best_idx = int(np.argmax(scores))
         return legal_moves[best_idx]
 
-    def generate_game(self, max_moves: int = 1_000_000) -> List[TrainingExample]:
+    def generate_game(self, max_moves: int = 100_000) -> List[TrainingExample]:
         """Generate ONE game with proper reset."""
 
-        # CRITICAL: Create COMPLETELY NEW board for each game
+        # CRITICAL: Use factory pattern to create new board with shared cache manager
         board = Board.empty()
         board.init_startpos()
 
-        # Verify board is in correct starting state
-        start_pieces = len(list(board.list_occupied()))
-        print(f"[GAME START] Fresh board ID: {id(board)}")
-        print(f"[GAME START] Starting pieces: {start_pieces} (should be 462)")
-
-        if start_pieces != 462:
-            print(f"[ERROR] Board not properly initialized! Expected 462 pieces, got {start_pieces}")
-            # Force recreate board
-            board = Board.empty()
-            board.init_startpos()
-            print(f"[RECREATED] New board pieces: {len(list(board.list_occupied()))}")
-
-        # Rebuild the shared cache manager for this NEW board
+        # Rebuild the shared cache manager for this new board
         self._shared_cache_manager.rebuild(board, Color.WHITE)
-        board.cache_manager = self._shared_cache_manager
 
-        # Create game with the shared cache manager
         game = OptimizedGame3D(board=board, cache=self._shared_cache_manager)
-        game.toggle_debug_turn_info(False)
-
-        # Add validation at game start
-        try:
-            legal_moves = game.state.legal_moves()
-            print(f"[VALIDATION] Initial legal moves: {len(legal_moves)}")
-            if len(legal_moves) == 0:
-                print("[ERROR] No legal moves at game start!")
-                return []
-        except Exception as e:
-            print(f"[ERROR] Failed to get initial legal moves: {e}")
-            return []
-
         examples = []
         move_count = 0
-        consecutive_errors = 0
         max_consecutive_errors = 3
+        consecutive_errors = 0
 
-        print(f"[GAME] Starting new game with max_moves={max_moves}")
-
-        while not game.is_game_over() and move_count < max_moves:
+        while move_count < max_moves and not game.is_game_over():
             try:
                 state_tensor = self._get_state_tensor(game.state)
-
-                if game.state is None:
-                    print(f"[ERROR] Game state is None at move {move_count}")
-                    break
-
-                if move_count % 50 == 0:
-                    total_requests = self._cache_hits + self._cache_misses
-                    if total_requests > 0:
-                        hit_rate = self._cache_hits / total_requests
-                        print(f"[Cache] Hit rate: {hit_rate:.2%} ({self._cache_hits}/{total_requests})")
-
                 with torch.no_grad():
                     from_logits, to_logits, value_pred = self.model(state_tensor)
-                    from_logits = from_logits / self.temperature
-                    to_logits = to_logits / self.temperature
+                    policy_logits = (from_logits, to_logits)
 
                 legal_moves = game.state.legal_moves()
                 if not legal_moves:
-                    print(f"[GAME END] No legal moves at move {move_count}")
+                    print(f"[WARNING] No legal moves at move {move_count}, ending game")
                     break
 
-                legal_moves = [mv for mv in legal_moves if mv is not None]
-                if not legal_moves:
-                    print(f"[ERROR] No valid moves after filtering None values")
-                    break
+                chosen_move = self._choose_move_with_opponent(game, policy_logits, legal_moves)
 
-                chosen_move = self._choose_move_with_opponent(game, (from_logits, to_logits), legal_moves)
-                if chosen_move is None:
-                    print(f"[ERROR] chosen_move is None at move {move_count}")
-                    break
-
-                # Compute training targets
-                move_encoder = self.move_encoder
+                # Prepare targets
                 from_indices = []
                 to_indices = []
                 move_probs = []
 
                 for mv in legal_moves:
-                    f_idx = move_encoder.coord_to_index(mv.from_coord)
-                    t_idx = move_encoder.coord_to_index(mv.to_coord)
-                    logit = from_logits[0, f_idx] + to_logits[0, t_idx]
+                    if mv is None:
+                        continue
+                    f_idx = self.move_encoder.coord_to_index(mv.from_coord)
+                    t_idx = self.move_encoder.coord_to_index(mv.to_coord)
+                    logit = policy_logits[0][0, f_idx] + policy_logits[1][0, t_idx]
                     move_probs.append(logit)
                     from_indices.append(f_idx)
                     to_indices.append(t_idx)
@@ -250,7 +206,7 @@ class SelfPlayGenerator:
                     )
                 )
 
-                # CRITICAL: Verify cache manager is still the same
+                # Verify cache manager is still the same
                 if game.state.cache_manager is not self._shared_cache_manager:
                     print(f"[ERROR] Cache manager changed! Expected {id(self._shared_cache_manager)}, got {id(game.state.cache_manager)}")
                     # Force it back
@@ -324,12 +280,12 @@ class SelfPlayGenerator:
 
         return examples
 
-def play_game(model: torch.nn.Module, max_moves: int = 1_000_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+def play_game(model: torch.nn.Module, max_moves: int = 100_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
     """Self-play a single game - creates ONE generator (ONE cache manager)."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types)
     return generator.generate_game(max_moves)
 
-def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 1_000_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
+def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000, device: str = "cpu", opponent_types: Optional[List[str]] = None) -> List[TrainingExample]:
     """Generate examples from multiple games - ONE generator reused for all games."""
     # CRITICAL: Create ONE generator that reuses cache manager across all games
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types)
@@ -344,8 +300,24 @@ def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_move
         all_examples.extend(game_examples)
 
         print(f"Game {game_idx + 1} completed: {len(game_examples)} examples")
+        gc.collect()
 
     print(f"\n{'='*80}")
     print(f"Total examples generated: {len(all_examples)}")
     print(f"{'='*80}")
+    return all_examples
+
+def parallel_generate_game(args):
+    model, max_moves, device, opponent_types = args
+    return play_game(model, max_moves, device, opponent_types)
+
+def generate_training_data_parallel(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000, device: str = "cpu", opponent_types: Optional[List[str]] = None, num_processes: int = 4) -> List[TrainingExample]:
+    with mp.Pool(num_processes) as pool:
+        args = [(model, max_moves, device, opponent_types) for _ in range(num_games)]
+        all_games = pool.map(parallel_generate_game, args)
+
+    all_examples = []
+    for game_examples in all_games:
+        all_examples.extend(game_examples)
+
     return all_examples

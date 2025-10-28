@@ -143,11 +143,8 @@ def get_pieces_by_type(
         result = []
         colors_to_search = [color] if color is not None else [Color.WHITE, Color.BLACK]
 
-        for search_color in colors_to_search:
-            for coord, piece in cache_mgr.get_pieces_of_color(search_color):
-                if piece.ptype == ptype:
-                    result.append((coord, piece))
-        return result
+    return [(coord, piece) for coord, piece in cache_mgr.get_pieces_of_color(color)
+            if piece.ptype == ptype]
 
     # Slow path – fallback to tensor operations
     tensor = board._tensor
@@ -204,7 +201,7 @@ AURA_EFFECT_MAP = {
 }
 
 # Pre-computed set for membership testing
-EFFECT_PIECE_TYPES = set(AURA_EFFECT_MAP.keys())
+EFFECT_PIECE_TYPES = frozenset(AURA_EFFECT_MAP.keys())
 
 def get_piece_effect_type(piece_type: Union[PieceType, torch.Tensor]) -> Union[Optional[str], List[Optional[str]]]:
     """Get standardized effect type for piece - optimized dict lookup. Supports scalar and batch mode."""

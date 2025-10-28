@@ -12,6 +12,7 @@ from enum import Enum
 from game3d.common.coord_utils import Coord
 from game3d.pieces.piece import Piece
 from game3d.common.enums import PieceType, Color
+from game3d.common.debug_utils import CacheStatsMixin
 
 @dataclass(slots=True)
 class CheckCache:
@@ -124,10 +125,10 @@ def _generate_piece_moves(
 
     # CORRECTED: Cache is the manager
     if cache is not None:
-        tmp_state.cache = cache
+        tmp_state.cache_manager = cache
     else:
         from game3d.cache.manager import get_cache_manager
-        tmp_state.cache = get_cache_manager(board, piece.color)
+        tmp_state.cache_manager = get_cache_manager(board, piece.color)
 
     try:
         return dispatcher(tmp_state, *coord)

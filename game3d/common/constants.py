@@ -11,7 +11,8 @@ Coord = Tuple[int, int, int]
 # Board geometry
 SIZE = SIZE_X = SIZE_Y = SIZE_Z = 9
 VOLUME = SIZE ** 3
-
+SIZE_SQUARED = SIZE * SIZE
+SIZE_MINUS_1 = SIZE - 1
 # ----------------------------------------------------------
 # NEW colour-aware channel budget (41 planes total)
 
@@ -58,3 +59,5 @@ MAX_CONCURRENT_BATCHES = 8
 OPTIMAL_DTYPE = np.int32  # Balance between memory and performance
 COORD_ARRAY_SHAPE = (MEGA_BATCH_SIZE, 3)
 OCCUPANCY_ARRAY_SHAPE = (SIZE_Z, SIZE_Y, SIZE_X)
+
+

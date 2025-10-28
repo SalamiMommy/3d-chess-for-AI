@@ -241,70 +241,41 @@ def filter_legal_moves(moves: List[Move], state: GameState) -> List[Move]:
 # =============================================================================
 # Batch Validation (Performance Optimized)
 # =============================================================================
-
 def validate_moves_batch(
-    moves: Union[List[Move], List[List[Move]]],
+    moves: List[Move],
     state: GameState,
     piece: Optional[Piece] = None
-) -> Union[List[Move], List[List[Move]]]:
-    """
-    Consolidated single-pass validation of moves.
-    Combines bounds checking, occupancy validation, and effect filtering - supports scalar and batch mode.
-    """
-    # Handle nested batch (list of lists)
-    if moves and isinstance(moves[0], list):
-        return [validate_moves_batch(move_batch, state, piece) for move_batch in moves]
-
-    # Single batch mode
+) -> List[Move]:
+    """Fast validation with early exits."""
     if not moves:
         return []
 
-    # DEFENSIVE: Filter out None moves immediately
-    moves = filter_none_moves(moves)
+    # Quick filter - remove None moves first
+    moves = [m for m in moves if m is not None]
     if not moves:
         return []
 
-    # Extract coordinates for processing
-    from_coords = [m.from_coord for m in moves]
-    to_coords = [m.to_coord for m in moves]
+    cache = state.cache_manager
+    expected_color = piece.color if piece else state.color
+    color_code = 1 if expected_color == Color.WHITE else 2
 
-    # Manual bounds checking (faster for small lists)
-    bounds_valid = []
-    for i, (frm, to) in enumerate(zip(from_coords, to_coords)):
-        if all(0 <= c < SIZE for c in frm) and all(0 <= c < SIZE for c in to):
-            bounds_valid.append(i)
+    # Extract all coordinates at once
+    from_coords = np.array([m.from_coord for m in moves], dtype=np.int32)
+    to_coords = np.array([m.to_coord for m in moves], dtype=np.int32)
 
-    if not bounds_valid:
-        return []
+    # Batch validation
+    from_colors, _ = cache.occupancy.batch_get_colors_and_types(from_coords)
+    to_colors, _ = cache.occupancy.batch_get_colors_and_types(to_coords)
 
-    # Get piece info for validation
-    expected_color = piece.color if piece is not None else state.color
+    # Vectorized checks
+    valid = (
+        (from_colors == color_code) &  # Correct piece color
+        ((to_colors == 0) | (to_colors != color_code)) &  # Valid destination
+        ~cache.batch_get_frozen_status(from_coords, expected_color)  # Not frozen
+    )
 
-    # Single-pass occupancy and effect validation
-    valid_moves = []
-    cache_manager = state.cache_manager
-
-    for i in bounds_valid:
-        move = moves[i]
-
-        # Check piece exists and is correct color
-        from_piece = cache_manager.occupancy_cache.get(move.from_coord)
-        if not from_piece or from_piece.color != expected_color:
-            continue
-
-        # Check frozen status
-        if cache_manager.is_frozen(move.from_coord, expected_color):
-            continue
-
-        # Check destination is not friendly
-        to_piece = cache_manager.occupancy_cache.get(move.to_coord)
-        if to_piece and to_piece.color == expected_color:
-            continue
-
-        valid_moves.append(move)
-
-    return valid_moves
-
+    # Return filtered moves
+    return [moves[i] for i in range(len(moves)) if valid[i]]
 
 def validate_moves_ultra_batch(
     moves: Union[List[Move], List[List[Move]]],
@@ -348,20 +319,16 @@ def validate_moves_ultra_batch(
     valid_to_coords = to_coords[valid_indices]
 
     # 3. Batch occupancy and color validation
-    from_pieces = cache_manager.occupancy.batch_get_pieces_vectorized(valid_from_coords)
-    to_pieces = cache_manager.occupancy.batch_get_pieces_vectorized(valid_to_coords)
+    from_colors, from_types = cache_manager.occupancy.batch_get_colors_and_types(valid_from_coords)
+    to_colors, to_types = cache_manager.occupancy.batch_get_colors_and_types(valid_to_coords)
+
+    expected_code = 1 if expected_color == Color.WHITE else 2
 
     # Vectorized color validation
-    color_valid = np.array([
-        p is not None and p.color == expected_color
-        for p in from_pieces
-    ], dtype=bool)
+    color_valid = (from_colors != 0) & (from_colors == expected_code)
 
     # Vectorized destination validation
-    dest_valid = np.array([
-        p is None or p.color != expected_color
-        for p in to_pieces
-    ], dtype=bool)
+    dest_valid = (to_colors == 0) | (to_colors != expected_code)
 
     # 4. Batch effect validation using cache manager batch methods
     frozen_valid = ~cache_manager.batch_get_frozen_status(valid_from_coords, expected_color)
@@ -379,25 +346,27 @@ def validate_moves_ultra_batch(
         if np.any(debuffed_mask):
             debuffed_indices = np.where(debuffed_mask)[0]
             original_valid_indices = valid_indices[final_valid_mask]
-            debuffed_original_indices = original_valid_indices[debuffed_indices]
 
             # Apply range reduction for debuffed pieces
-            for idx in debuffed_original_indices:
-                move = moves[idx]
+            for debuff_subidx in debuffed_indices:
+                orig_idx = original_valid_indices[debuff_subidx]
+                move = moves[orig_idx]
                 from_arr = np.array(move.from_coord)
                 to_arr = np.array(move.to_coord)
                 distance = np.max(np.abs(to_arr - from_arr))
 
                 # If distance exceeds reduced range, mark as invalid
                 if distance > 1:  # Debuffed pieces can only move 1 square
-                    final_valid_mask[final_valid_mask] = False
-                    break
+                    final_valid_mask[debuff_subidx] = False
 
     # 7. Apply final mask to original indices
     final_valid_indices = valid_indices[final_valid_mask]
 
-    # 8. Build final list
-    return [moves[i] for i in final_valid_indices]
+    result = []
+    result_append = result.append  # Cache method
+    for i in final_valid_indices:
+        result_append(moves[i])
+    return result
 
 
 # =============================================================================
@@ -501,7 +470,7 @@ def validate_cache_integrity(state: GameState) -> bool:
         test_positions = [(0,0,0), (4,4,4), (8,8,8)]
         for pos in test_positions:
             cache_piece = cache.occupancy.get(pos)
-            board_piece = board.get_piece(pos)
+            board_piece = board.piece_at(pos)
 
             if cache_piece != board_piece:
                 return False

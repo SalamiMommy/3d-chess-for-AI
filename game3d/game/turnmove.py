@@ -1,4 +1,4 @@
-# game3d/game/turnmove.py - CLEANED
+# game3d/game/turnmove.py - FIXED
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
@@ -124,6 +124,7 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
             new_state.halfmove_clock = 0
 
         return new_state
+
 # ------------------------------------------------------------------
 # UNDO MOVE IMPLEMENTATION
 # ------------------------------------------------------------------
@@ -165,7 +166,7 @@ def _fast_undo(game_state: 'GameState') -> 'GameState':
         game_mode=game_state.game_mode,
         turn_number=undo_info.original_turn_number,
     )
-    prev_state._zkey = undo_info.original_zkey
+    # REMOVED: prev_state._zkey = undo_info.original_zkey - Zobrist is now managed by cache_manager
     prev_state._clear_caches()
     return prev_state
 
@@ -178,7 +179,8 @@ def _compute_undo_info(game_state: 'GameState',
         original_board_tensor=game_state.board.tensor().clone().cpu(),
         original_halfmove_clock=game_state.halfmove_clock,
         original_turn_number=game_state.turn_number,
-        original_zkey=game_state._zkey,
+        # FIX: Use zkey property instead of _zkey attribute
+        original_zkey=game_state.zkey,  # CHANGED: game_state._zkey -> game_state.zkey
         moving_piece=moving_piece,
         captured_piece=captured_piece,
         # ADD these for cache manager undo

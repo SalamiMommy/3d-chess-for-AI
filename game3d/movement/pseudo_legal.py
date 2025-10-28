@@ -1,3 +1,4 @@
+# pseudo_legal.py
 # pseudo_legal.py - FIXED
 """Optimized pseudo-legal move generator using cache manager with autodetection of batch vs scalar mode."""
 from __future__ import annotations
@@ -124,7 +125,7 @@ def _generate_pseudo_legal(state: GameState, threshold: Optional[int] = None) ->
     if threshold is None:
         if piece_count > 100:
             mode = 'mega'
-        elif piece_count > 30:
+        elif piece_count > 20:  # Lowered from 30
             mode = 'batch'
         else:
             mode = 'scalar'
@@ -149,11 +150,7 @@ def _run_scalar_mode(state: GameState, cache_manager, all_coords: List[Tuple], a
     all_moves = []
     for coord in all_coords:
         moves = generate_pseudo_legal_moves_for_piece(state, coord)
-        if moves:
-            all_moves.extend(moves)
-            piece = cache_manager.occupancy.get(coord)
-            if piece:
-                _STATS.piece_breakdown[piece.ptype] = _STATS.piece_breakdown.get(piece.ptype, 0) + len(moves)
+        all_moves.extend(moves)
     return all_moves
 
 def _run_standard_batch_mode(state: GameState, cache_manager, all_coords: np.ndarray, all_types: np.ndarray) -> List[Move]:
@@ -167,7 +164,7 @@ def _run_standard_batch_mode(state: GameState, cache_manager, all_coords: np.nda
     if len(active_coords) == 0:
         return []
 
-    batch_size = 50
+    batch_size = 100  # Increased from 50
     all_moves = []
 
     for i in range(0, len(active_coords), batch_size):
@@ -192,7 +189,7 @@ def _run_mega_batch_mode(state: GameState, cache_manager, all_coords: np.ndarray
     pawn_mask = (active_types == PieceType.PAWN.value)
     debuffed_types = np.where(debuffed_mask & ~pawn_mask, PieceType.PAWN.value, active_types)
 
-    batch_size = 25
+    batch_size = 100  # Increased from 25
     all_moves = []
 
     for i in range(0, len(active_coords), batch_size):

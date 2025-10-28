@@ -29,7 +29,7 @@ class AttacksCache(CacheStatsMixin):
         # FIX: Call the parent mixin's __init__ method explicitly
         CacheStatsMixin.__init__(self)
 
-        # Ensure manager reference is set
+        self._board = self.board
         self._manager = getattr(self.board, "cache_manager", None)
 
         # Initialize with proper structure
@@ -229,7 +229,7 @@ class AttacksCache(CacheStatsMixin):
             temp_state = GameState.__new__(GameState)
             temp_state.board = board
             temp_state.color = piece.color
-            temp_state.cache = temp_cache
+            temp_state.cache_manager = temp_cache
 
             moves = dispatcher(temp_state, coord[0], coord[1], coord[2])
 
