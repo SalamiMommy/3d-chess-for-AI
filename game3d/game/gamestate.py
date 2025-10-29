@@ -269,6 +269,11 @@ class GameState:
         from game3d.game.turnmove import legal_moves
         return legal_moves(self)
 
+    def legal_moves_for_piece(self, coord: Tuple[int, int, int]) -> List[Move]:
+        """Get legal moves for a specific piece."""
+        from game3d.game.turnmove import legal_moves_for_piece
+        return legal_moves_for_piece(self, coord)
+
     def make_move(self, mv: Move) -> 'GameState':
         """Apply move and return new game state."""
         from game3d.game.turnmove import make_move

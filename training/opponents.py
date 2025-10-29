@@ -28,27 +28,51 @@ def is_king(piece) -> bool:
 
 
 class OpponentBase:
-    """Base class for all opponents - FIXED to not clone states."""
     def __init__(self, color: Color):
         self.color = color
+        self.visited_positions = set()
+        self.position_counter = {}
+        self.repetition_penalty = -1.0
+
+    def _get_position_key(self, state: GameState, move: Move) -> str:
+        """Create a unique key for position + move combination."""
+        # Use board hash + current move
+        board_hash = state.board.byte_hash()
+        move_key = f"{move.from_coord}-{move.to_coord}"
+        return f"{board_hash}:{move_key}:{state.color}"
 
     def reward(self, state: GameState, move: Move) -> float:
-        """
-        Compute reward for a move WITHOUT simulating it.
-        Uses heuristics based on move properties and current state.
-        """
         raise NotImplementedError
 
-    def observe(self, state: GameState):
-        """Update opponent's internal state if needed."""
-        pass
+    def observe(self, state: GameState, move: Move):
+        """Update opponent's internal state after move."""
+        position_key = self._get_position_key(state, move)
 
+        # Track position frequency
+        self.position_counter[position_key] = self.position_counter.get(position_key, 0) + 1
+
+        # Add to visited positions
+        self.visited_positions.add(position_key)
+
+    def get_repetition_penalty(self, state: GameState, move: Move) -> float:
+        """Get penalty for repetitive positions."""
+        position_key = self._get_position_key(state, move)
+        count = self.position_counter.get(position_key, 0)
+
+        if count >= 3:
+            return self.repetition_penalty * 2  # Heavy penalty for 3+ repetitions
+        elif count >= 2:
+            return self.repetition_penalty  # Standard penalty for 2 repetitions
+        return 0.0
 
 class AdversarialOpponent(OpponentBase):
     """Adversarial opponent: rewards captures, checks, and tactical moves."""
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
         cache_manager = state.cache_manager
+
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
 
         # Reward for captures
         captured = cache_manager.occupancy_cache.get(move.to_coord)
@@ -92,6 +116,9 @@ class CenterControlOpponent(OpponentBase):
         reward = 0.0
         cache_manager = state.cache_manager
 
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
         # Reward for moving to center
         if is_center(move.to_coord):
             reward += 0.3
@@ -120,6 +147,9 @@ class PieceCaptureOpponent(OpponentBase):
         reward = 0.0
         cache_manager = state.cache_manager
 
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
         captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.5  # Base capture reward
@@ -138,6 +168,9 @@ class PriestHunterOpponent(OpponentBase):
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
         cache_manager = state.cache_manager
+
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
 
         captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():

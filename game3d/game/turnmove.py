@@ -5,8 +5,7 @@ from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
 from game3d.board.board import Board
 from game3d.movement.movepiece import Move, Move
-from game3d.movement.generator import generate_legal_moves
-from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
+from game3d.movement.generator import generate_legal_moves, generate_legal_moves_for_piece  # UPDATED: Use legal moves generator
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 
@@ -58,7 +57,7 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
 
             moves = move_cache._legal_by_color[game_state.color].copy()
         else:
-            moves = generate_legal_moves(game_state)
+            moves = generate_legal_moves(game_state)  # UPDATED: Using legal moves generator
             # Cache in move cache through manager
             move_cache._legal_by_color[game_state.color] = moves
             move_cache._rebuild_color_lists()
@@ -76,6 +75,10 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
         game_state._legal_moves_cache_key = current_key
 
         return moves
+
+def legal_moves_for_piece(game_state: 'GameState', coord: Tuple[int, int, int]) -> List[Move]:
+    """Get legal moves for a specific piece."""
+    return generate_legal_moves_for_piece(game_state, coord)  # UPDATED: Using legal moves generator
 
 # ------------------------------------------------------------------
 # OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES

@@ -150,11 +150,12 @@ def is_fifty_move_draw(game_state) -> bool:
 
 def is_threefold_repetition(game_state) -> bool:
     """Check for threefold repetition using Zobrist hashes."""
-    if len(game_state.history) < 6:  # Need at least 3 repetitions
+    # Need to track position occurrences in game state or cache manager
+    if not hasattr(game_state, '_position_counts'):
         return False
 
-    # Optimization: Store historical hashes in state if needed; simplified here
-    return False  # Implement fully with hash list
+    current_zkey = game_state.zkey
+    return game_state._position_counts.get(current_zkey, 0) >= 3
 
 def is_game_over(game_state) -> bool:
     """More conservative game over detection."""
