@@ -800,12 +800,29 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         return self.get_debuffed_status(coords, color)
 
     def batch_get_geomancy_blocked(self, coords: np.ndarray, current_ply: int) -> np.ndarray:
-        """Optimized batch geomancy check."""
+        """Ultra-fast geomancy check with minimal Python overhead."""
         if len(coords) == 0:
             return np.array([], dtype=bool)
 
-        coord_tuples = [tuple(coord) for coord in coords]
-        return np.array([self.geomancy_cache.is_blocked(coord, current_ply) for coord in coord_tuples])
+        # Direct cache access (avoid method call overhead)
+        geomancy_cache = self.geomancy_cache
+
+        # Pre-allocate result
+        result = np.zeros(len(coords), dtype=bool)
+
+        # Batch check if cache is empty (fast path)
+        if not hasattr(geomancy_cache, '_blocked_squares') or not geomancy_cache._blocked_squares:
+            return result
+
+        # Vectorized lookup using dictionary
+        blocked_dict = geomancy_cache._blocked_squares
+        for i, coord in enumerate(coords):
+            coord_tuple = tuple(coord)
+            if coord_tuple in blocked_dict:
+                block_ply = blocked_dict[coord_tuple]
+                result[i] = (current_ply - block_ply) < 3
+
+        return result
 
     def batch_apply_effects_to_moves(self, moves: List[Move], mover: Color, current_ply: int) -> List[Move]:
         """Alias for batch processing - maintained for backward compatibility."""

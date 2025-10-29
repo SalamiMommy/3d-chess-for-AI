@@ -315,14 +315,14 @@ class SelfPlayGenerator:
 
         return examples
 
-def play_game(model: torch.nn.Module, max_moves: int = 100_000, device: str = "cpu",
+def play_game(model: torch.nn.Module, max_moves: int = 100_000, device: str = "cuda",
              opponent_types: Optional[List[str]] = None, epsilon: float = 0.1) -> List[TrainingExample]:
     """Self-play a single game - creates ONE generator (ONE cache manager)."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types, epsilon=epsilon)
     return generator.generate_game(max_moves)
 
 def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000,
-                          device: str = "cpu", opponent_types: Optional[List[str]] = None,
+                          device: str = "cuda", opponent_types: Optional[List[str]] = None,
                           epsilon: float = 0.1) -> List[TrainingExample]:
     """Generate examples from multiple games - ONE generator reused for all games."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types, epsilon=epsilon)
@@ -349,7 +349,7 @@ def parallel_generate_game(args):
     return play_game(model, max_moves, device, opponent_types, epsilon)
 
 def generate_training_data_parallel(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000,
-                                  device: str = "cpu", opponent_types: Optional[List[str]] = None,
+                                  device: str = "cuda", opponent_types: Optional[List[str]] = None,
                                   epsilon: float = 0.1, num_processes: int = 4) -> List[TrainingExample]:
     with mp.Pool(num_processes) as pool:
         args = [(model, max_moves, device, opponent_types, epsilon) for _ in range(num_games)]  # INCLUDE epsilon in args

@@ -142,7 +142,7 @@ class ChessTrainer:
         self.scheduler = self._create_scheduler()
         self.criterion = ChessLoss(config.policy_weight, config.value_weight)
         # Fix: Updated GradScaler to use torch.amp
-        self.scaler = torch.amp.GradScaler('cpu') if config.mixed_precision else None
+        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision else None
 
         if config.use_ema:
             self.ema_model = self._create_model()
@@ -209,7 +209,7 @@ class ChessTrainer:
 
             self.optimizer.zero_grad()
 
-            with torch.amp.autocast('cpu', enabled=self.config.mixed_precision):
+            with torch.amp.autocast('cuda', enabled=self.config.mixed_precision):
                 from_logits, to_logits, value_pred = self.model(states)
                 loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
 
