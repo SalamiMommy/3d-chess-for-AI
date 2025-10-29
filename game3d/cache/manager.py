@@ -219,7 +219,8 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         return True
 
     def undo_move(self, mv: Move, mover: Color) -> bool:
-        original_tensor = self.board.tensor().clone()
+        # Use numpy array instead of tensor for backup
+        original_array = self.board.array().copy()
 
         try:
             moving_piece = self.occupancy.get(mv.to_coord)
@@ -267,7 +268,8 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             return True
 
         except Exception as e:
-            self.board._tensor = original_tensor
+            # Restore using numpy array
+            self.board._array = original_array
             print(f"[ERROR] Undo move failed: {e}")
             return False
 

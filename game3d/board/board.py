@@ -1,14 +1,12 @@
-# game3d/board/board.py - CLEANED
+# board.py - NUMPY VERSION
 """
-9×9×9 board – tensor-first, zero-copy, training-ready.
+9×9×9 board – numpy-first, zero-copy, optimized for 600 pieces and 40 piece-types.
 """
 from __future__ import annotations
-import torch
 import numpy as np
 from typing import Optional, Tuple, Iterable, List, TYPE_CHECKING
 
 from game3d.common.coord_utils import Coord, in_bounds
-from game3d.common.tensor_utils import hash_board_tensor
 from game3d.common.piece_utils import iterate_occupied
 from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_PIECE_TYPES, PIECE_SLICE, N_TOTAL_PLANES
 from game3d.common.enums import Color, PieceType
@@ -19,19 +17,19 @@ if TYPE_CHECKING:
 
 class Board:
     __slots__ = (
-        "_tensor", "_hash", "_symmetry_manager",
+        "_array", "_hash", "_symmetry_manager",
         "_occupancy_mask", "_occupied_list", "_gen", "cache_manager", "__weakref__"
     )
 
-    def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
-        if tensor is None:
-            self._tensor = torch.zeros(N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X, dtype=torch.float32)
+    def __init__(self, array: Optional[np.ndarray] = None) -> None:
+        if array is None:
+            self._array = np.zeros((N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X), dtype=np.float32)
         else:
-            if tensor.shape != (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X):
-                raise ValueError("Board tensor must be (C,9,9,9)")
-            self._tensor = tensor
+            if array.shape != (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X):
+                raise ValueError("Board array must be (C,9,9,9)")
+            self._array = array
         self._hash: Optional[int] = None
-        self._occupancy_mask: Optional[torch.Tensor] = None
+        self._occupancy_mask: Optional[np.ndarray] = None
         self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
         self._gen = 0
         self._symmetry_manager: Optional[SymmetryManager] = None
@@ -133,7 +131,6 @@ class Board:
                 put(x, y, 2, PieceType.PAWN, Color.WHITE)
                 put(x, y, 6, PieceType.PAWN, Color.BLACK)
 
-
         # ------------------------------------------------------------------
         # z=3,4,5 remain empty
         # ------------------------------------------------------------------
@@ -142,16 +139,13 @@ class Board:
         if self.cache_manager is not None:
             self.cache_manager.occupancy.rebuild(self)
 
-        # print("[POST-INIT] BK plane-40 value:", self._tensor[40, 8, 4, 4].item())
-        # print("[POST-INIT] BK nonzero:", self._tensor[:, 8, 4, 4].nonzero(as_tuple=False).flatten())
-
     @property
-    def occupancy_mask(self) -> torch.Tensor:
+    def occupancy_mask(self) -> np.ndarray:
         if self.cache_manager is not None:
-            return torch.from_numpy(self.cache_manager.occupancy.mask).to(dtype=torch.bool)
+            return self.cache_manager.occupancy.mask.astype(bool)
         else:
             if self._occupancy_mask is None:
-                self._occupancy_mask = torch.any(self._tensor[PIECE_SLICE] > 0, dim=0)
+                self._occupancy_mask = np.any(self._array[PIECE_SLICE] > 0, axis=0)
             return self._occupancy_mask
 
     def list_occupied(self) -> List[Tuple[Coord, Piece]]:
@@ -164,7 +158,7 @@ class Board:
     def clone(self) -> "Board":
         """Clone board - cache manager will be set by caller."""
         clone = Board.__new__(Board)
-        clone._tensor = self._tensor.clone().detach()
+        clone._array = self._array.copy()
         clone._hash = self._hash
         clone._gen = self._gen
         clone._symmetry_manager = None
@@ -172,13 +166,6 @@ class Board:
         clone._occupied_list = None
         clone.cache_manager = None  # Will be set by caller
         return clone
-
-    def share_memory_(self) -> Board:
-        self._tensor.share_memory_()
-        return self
-
-    def __repr__(self) -> str:
-        return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
 
     def apply_move(self, mv: Move) -> bool:
         """Apply move with proper cache synchronization."""
@@ -193,7 +180,6 @@ class Board:
             raise ValueError(f"apply_move: empty from-square {from_coord}")
 
         # Increment generation BEFORE making changes
-
 
         if mv.is_capture:
             # Just mark as needing update
@@ -219,13 +205,13 @@ class Board:
 
         return True
 
-    def validate_tensor(self) -> bool:
+    def validate_array(self) -> bool:
         """Check that every (x,y,z) has at most one 1.0 in piece planes - OPTIMIZED."""
-        piece_vals = self._tensor[PIECE_SLICE]
-        max_per_square = piece_vals.max(dim=0)[0]
-        invalid = (max_per_square > 1.0001).any()  # Handle float precision
+        piece_vals = self._array[PIECE_SLICE]
+        max_per_square = np.max(piece_vals, axis=0)
+        invalid = np.any(max_per_square > 1.0001)  # Handle float precision
         if invalid:
-            invalid_positions = torch.nonzero(max_per_square > 1.0001, as_tuple=False).tolist()
+            invalid_positions = np.argwhere(max_per_square > 1.0001)
             print(f"Invalid positions found: {invalid_positions}")
         return not invalid
 
@@ -241,44 +227,56 @@ class Board:
         return self._gen
 
     def set_piece(self, coord: Coord, piece: Optional[Piece]) -> None:
-        """Set piece at coord, updating tensor."""
+        """Set piece at coord, updating array."""
         z, y, x = coord[2], coord[1], coord[0]
-        self._tensor[:, z, y, x] = 0.0  # Clear all planes first
+        self._array[:, z, y, x] = 0.0  # Clear all planes first
         if piece is not None:
             offset = 0 if piece.color == Color.WHITE else N_PIECE_TYPES
-            self._tensor[offset + piece.ptype.value, z, y, x] = 1.0
+            self._array[offset + piece.ptype.value, z, y, x] = 1.0
         self._hash = None
         self._occupancy_mask = None
         self._occupied_list = None
         self._gen += 1
 
     def piece_at(self, coord: Coord) -> Optional[Piece]:
-        """Get piece at coord from tensor."""
+        """Get piece at coord from array."""
         if not in_bounds(coord):
             return None
         z, y, x = coord[2], coord[1], coord[0]
-        white_vals = self._tensor[0:N_PIECE_TYPES, z, y, x]
-        black_vals = self._tensor[N_PIECE_TYPES:2 * N_PIECE_TYPES, z, y, x]
-        white_sum = white_vals.sum().item()
-        black_sum = black_vals.sum().item()
+        white_vals = self._array[0:N_PIECE_TYPES, z, y, x]
+        black_vals = self._array[N_PIECE_TYPES:2 * N_PIECE_TYPES, z, y, x]
+        white_sum = np.sum(white_vals)
+        black_sum = np.sum(black_vals)
         if white_sum + black_sum == 0:
             return None
         if white_sum > 0 and black_sum > 0:
             raise ValueError(f"Overlapping pieces at {coord}")
         if white_sum > 0:
-            ptype = PieceType(white_vals.argmax().item())
+            ptype = PieceType(np.argmax(white_vals))
             return Piece(Color.WHITE, ptype)
         else:
-            ptype = PieceType(black_vals.argmax().item())
+            ptype = PieceType(np.argmax(black_vals))
             return Piece(Color.BLACK, ptype)
 
     def byte_hash(self) -> int:
-        """Compute hash."""
-        return hash_board_tensor(self._tensor)
+        """Compute stable hash of board state using NumPy array."""
+        # Convert the board array to a stable byte representation
+        # We use a consistent order and include only the piece planes (not metadata)
+        piece_planes = self._array[:2*N_PIECE_TYPES]  # Only piece data, no metadata
 
-    def tensor(self) -> torch.Tensor:
-        """Return the raw (C, 9, 9, 9) tensor."""
-        return self._tensor
+        # Create a deterministic byte representation
+        # Use fixed precision to avoid floating point inconsistencies
+        scaled = (piece_planes * 255).astype(np.uint8)
+
+        # Flatten and convert to bytes for hashing
+        byte_data = scaled.tobytes()
+
+        # Use Python's built-in hash (consistent within process)
+        return hash(byte_data)
+
+    def array(self) -> np.ndarray:
+        """Return the raw (C, 9, 9, 9) array."""
+        return self._array
 
     def get(self, coord: Coord) -> Optional[Piece]:
         """Fallback for old code that still calls board.get(coord)."""

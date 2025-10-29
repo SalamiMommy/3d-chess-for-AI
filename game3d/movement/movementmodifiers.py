@@ -1,4 +1,4 @@
-# movementmodifiers.py - FIXED VERSION
+# movementmodifiers.py - NUMPY VERSION
 """Centralized movement modifier application with autodetection of scalar vs batch mode."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from enum import Enum
 import time
 
 import numpy as np
+
 
 from game3d.common.enums import Color, PieceType
 from game3d.common.coord_utils import add_coords, euclidean_distance, manhattan, get_path_squares, in_bounds_vectorised, filter_valid_coords
@@ -58,14 +59,14 @@ class MovementEffectType(Enum):
 
 def apply_movement_effects(
     state,
-    starts: np.ndarray,
-    raw_directions_batch: List[List[Tuple[int, int, int]]],
-    max_steps_list: List[int],
+    starts: np.ndarray,  # Changed to np.ndarray (N,3)
+    raw_directions_batch: List[np.ndarray],  # Each (M,3)
+    max_steps_list: np.ndarray,
     piece_types: Optional[List[PieceType]] = None,
     cache_manager=None,
     *,
     current_ply: int,
-) -> Tuple[List[List[Tuple[int, int, int]]], List[int]]:
+) -> Tuple[List[np.ndarray], np.ndarray]:
     """Batch apply movement effects to multiple pieces - fully vectorized."""
     with measure_time_ms() as elapsed_ms:
         _STATS.total_calls += 1
@@ -73,27 +74,26 @@ def apply_movement_effects(
         if cache_manager is None:
             raise ValueError("cache_manager is required")
 
-        batch_size = len(starts)
+        batch_size = starts.shape[0]
         if batch_size == 0:
             return [], []
 
         # Vectorize: Flatten all directions and steps across batch
-        all_raw_directions = []
+        all_raw_directions = np.vstack(raw_directions_batch)
         all_max_steps = []
         direction_indices = []  # To reconstruct per-piece
         cumsum = 0
         for dirs, max_steps in zip(raw_directions_batch, max_steps_list):
-            all_raw_directions.extend(dirs)
-            all_max_steps.extend([max_steps] * len(dirs))
-            direction_indices.extend([cumsum + i for i in range(len(dirs))])
-            cumsum += len(dirs)
+            n_dirs = len(dirs)
+            all_max_steps.extend([max_steps] * n_dirs)
+            direction_indices.extend([cumsum + i for i in range(n_dirs)])
+            cumsum += n_dirs
 
-        if not all_raw_directions:
-            return [[] for _ in range(batch_size)], [0] * batch_size
+        if len(all_raw_directions) == 0:
+            return [[] for _ in range(batch_size)], np.zeros(batch_size, dtype=int)
 
-        dir_arr = np.array(all_raw_directions)  # (total_dirs, 3)
+        dir_arr = all_raw_directions  # (total_dirs, 3)
         max_steps_arr = np.array(all_max_steps)  # (total_dirs,)
-        starts_arr = np.tile(starts, (len(all_raw_directions), 1))  # Broadcast starts? No, per-piece starts needed
 
         # Per-piece starts: Reconstruct with indices
         piece_indices = np.repeat(np.arange(batch_size), [len(dirs) for dirs in raw_directions_batch])
@@ -124,17 +124,24 @@ def apply_movement_effects(
             full_blocked = np.full(len(end_arr), False)
 
         # Wall: Only for wall pieces - vectorized per direction
-        wall_pieces = piece_types == PieceType.WALL if piece_types else np.full(batch_size, False)
+        if piece_types is not None:
+            wall_pieces = np.array([pt == PieceType.WALL for pt in piece_types])
+        else:
+            wall_pieces = np.full(batch_size, False)
+
         valid_wall_mask = np.ones(len(dir_arr), dtype=bool)
         if np.any(wall_pieces):
-            wall_starts = starts[wall_pieces]
-            wall_dirs = dir_arr[piece_indices == np.where(wall_pieces)[0]]  # Subset
-            # Batch call to external (assumes vectorized)
-            from game3d.pieces.pieces.wall import can_capture_wall_batch
-            wall_valid = can_capture_wall_batch((wall_starts + wall_dirs * debuffed_max_steps[piece_indices == np.where(wall_pieces)[0]]).tolist(), wall_starts[0])  # Hack: assume single start for batch
-            # Map back - simplified
-            valid_wall_mask[piece_indices == np.where(wall_pieces)[0]] = wall_valid
-            _STATS.wall_captures_prevented += np.sum(~wall_valid)
+            wall_indices = np.where(wall_pieces)[0]
+            wall_mask = np.isin(piece_indices, wall_indices)
+            if np.any(wall_mask):
+                from game3d.pieces.pieces.wall import can_capture_wall_batch
+                wall_starts = starts_per_dir[wall_mask]
+                wall_dirs = dir_arr[wall_mask]
+                wall_max_steps = debuffed_max_steps[wall_mask]
+                wall_ends = wall_starts + wall_dirs * wall_max_steps[:, np.newaxis]
+                wall_valid = can_capture_wall_batch(wall_ends.tolist(), tuple(starts[wall_indices[0]]))  # Assume single start for batch
+                valid_wall_mask[wall_mask] = wall_valid
+                _STATS.wall_captures_prevented += np.sum(~wall_valid)
 
         # Combined mask: in_bounds & ~blocked & active_pieces[piece_idx] & valid_wall_mask
         piece_active_mask = active_pieces[piece_indices]
@@ -142,10 +149,11 @@ def apply_movement_effects(
 
         # Reconstruct per-piece
         filtered_directions = [[] for _ in range(batch_size)]
-        current_max_steps_list = [0] * batch_size
+        current_max_steps_list = np.zeros(batch_size, dtype=int)
         for i in range(batch_size):
-            piece_dirs = dir_arr[piece_indices == i][final_mask[piece_indices == i]]
-            filtered_directions[i] = piece_dirs.tolist()
+            piece_mask = piece_indices == i
+            piece_dirs = dir_arr[piece_mask & final_mask]
+            filtered_directions[i] = piece_dirs
             current_max_steps_list[i] = max_steps_list[i] if active_pieces[i] else 0
 
         _STATS.geomancy_blocks += np.sum(full_blocked)
@@ -230,8 +238,8 @@ def modify_raw_moves_unified(
     else:
         # Scalar mode - convert to batch of size 1 and extract result
         from_coords_batch = np.array([from_coords])
-        to_coords_batch = [to_coords_or_batch]
-        captures_batch = [captures_or_batch]
+        to_coords_batch = [np.array(to_coords_or_batch)]
+        captures_batch = [np.array(captures_or_batch)]
         colors_batch = np.array([color_or_colors.value])
         debuffed_mask = np.array([debuffed_or_mask])
 
@@ -289,7 +297,7 @@ def _modify_batch(
     if sum(lengths) == 0:
         return [[] for _ in range(batch_size)]
 
-    cum_lengths = np.cumsum(lengths)
+    cum_lengths = np.cumsum([0] + lengths)
     all_to_coords = np.vstack(to_coords_batch)
     all_captures = np.concatenate(captures_batch)
 

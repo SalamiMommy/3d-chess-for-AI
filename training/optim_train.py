@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +26,9 @@ BATCH_SIZE = 32
 NUM_WORKERS = 0  # Changed to 0 to avoid CUDA multiprocessing issues
 PIN_MEMORY = False  # Changed to False to avoid CUDA multiprocessing issues
 
+
 class ChessDataset(Dataset):
-    """Dataset with augmentation and validation."""
+    """Dataset with augmentation and validation - converts numpy arrays to tensors."""
 
     def __init__(self, examples: List[TrainingExample], augment: bool = True):
         self.examples = examples
@@ -35,25 +37,48 @@ class ChessDataset(Dataset):
 
     def _validate_examples(self):
         for i, ex in enumerate(self.examples):
-            if ex.state_tensor.shape != (N_CHANNELS, SIZE, SIZE, SIZE):
-                raise ValueError(f"Example {i}: Invalid state shape")
-            if ex.from_target.shape != (729,):
-                raise ValueError(f"Example {i}: Invalid from_target shape")
-            if ex.to_target.shape != (729,):
-                raise ValueError(f"Example {i}: Invalid to_target shape")
+            # Check if state_tensor is numpy array and convert expectations
+            if hasattr(ex.state_tensor, 'shape'):
+                # It's a numpy array, check its shape
+                if ex.state_tensor.shape != (N_CHANNELS, SIZE, SIZE, SIZE):
+                    raise ValueError(f"Example {i}: Invalid state shape {ex.state_tensor.shape}")
+            # Check targets
+            if hasattr(ex.from_target, 'shape'):
+                if ex.from_target.shape != (729,):
+                    raise ValueError(f"Example {i}: Invalid from_target shape {ex.from_target.shape}")
+            if hasattr(ex.to_target, 'shape'):
+                if ex.to_target.shape != (729,):
+                    raise ValueError(f"Example {i}: Invalid to_target shape {ex.to_target.shape}")
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-        state = ex.state_tensor
+
+        # Convert numpy arrays to tensors
+        if isinstance(ex.state_tensor, np.ndarray):
+            state = torch.from_numpy(ex.state_tensor).float()
+        else:
+            state = ex.state_tensor
+
+        if isinstance(ex.from_target, np.ndarray):
+            from_target = torch.from_numpy(ex.from_target).float()
+        else:
+            from_target = ex.from_target
+
+        if isinstance(ex.to_target, np.ndarray):
+            to_target = torch.from_numpy(ex.to_target).float()
+        else:
+            to_target = ex.to_target
+
         if self.augment:
             state = self._augment_state(state)
+
         return (
             state,
-            ex.from_target,
-            ex.to_target,
+            from_target,
+            to_target,
             torch.tensor(ex.value_target, dtype=torch.float32)
         )
 

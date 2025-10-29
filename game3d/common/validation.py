@@ -1,8 +1,8 @@
+# validation.py
 # game3d/common/validation.py
 """CONSOLIDATED MOVE VALIDATION MODULE"""
 from __future__ import annotations
 import numpy as np
-import torch
 from typing import List, Dict, Any, Tuple, Optional, Union, Set, TYPE_CHECKING
 
 from game3d.common.constants import SIZE
@@ -34,7 +34,7 @@ def validate_moves_fast(
     expected_color = piece.color if piece else state.color
 
     # Extract coordinates in single batch
-    from_coords = np.array([m.from_coord for m in moves], dtype=np.int8)  # Changed from int32.
+    from_coords = np.array([m.from_coord for m in moves], dtype=np.int8)
     to_coords = np.array([m.to_coord for m in moves], dtype=np.int8)
 
     # Batch occupancy checks
@@ -364,6 +364,7 @@ def validate_moves_ultra_batch(
     # Build result using pre-filtered indices
     final_valid = valid_indices[effect_valid]
     return [moves[i] for i in final_valid]
+
 # =============================================================================
 # Specialized Validations
 # =============================================================================

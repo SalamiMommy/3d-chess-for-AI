@@ -1,7 +1,6 @@
 # game3d/common/move_utils.py - ENHANCED VECTORIZED VERSION
 from __future__ import annotations
 import numpy as np
-import torch
 from typing import List, Tuple, Set, Optional, Union, TYPE_CHECKING
 
 from game3d.common.constants import SIZE, VOLUME
@@ -17,37 +16,23 @@ if TYPE_CHECKING:
 Coord = Tuple[int, int, int]
 
 def extract_directions_and_steps_vectorized(start, to_coords):
-    if torch.is_tensor(to_coords):
-        # Stay in Torch: No conversion!
-        if to_coords.ndim < 2:
-            to_coords = to_coords.unsqueeze(0)
-        start = torch.tensor(start, dtype=to_coords.dtype).to(to_coords.device) if not torch.is_tensor(start) else start
-        deltas = (to_coords - start).to(torch.int8)
-        abs_deltas = torch.abs(deltas)
-        norms = torch.max(abs_deltas, dim=1, keepdims=True)[0]
-        norms_no_zero = torch.where(norms == 0, torch.tensor(1, dtype=torch.int8), norms)
-        unit_dirs = (deltas // norms_no_zero).to(torch.int8)
-        uniq_dirs = torch.unique(unit_dirs, dim=0) if unit_dirs.numel() > 0 else unit_dirs
-        max_steps = int(torch.max(norms).item()) if norms.numel() > 0 else 0
-        return uniq_dirs.cpu().numpy(), max_steps  # Convert only at end if needed.
-    else:
-        # NumPy path: Use int8.
-        to_coords_np = np.asarray(to_coords, dtype=np.int8)
-        start_arr = np.asarray(start, dtype=np.int8)
-        deltas = to_coords_np - start_arr
-        abs_deltas = np.abs(deltas)
-        norms = np.max(abs_deltas, axis=1, keepdims=True)
-        norms_no_zero = np.where(norms == 0, 1, norms)
-        unit_dirs = (deltas // norms_no_zero).astype(np.int8)
-        uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
-        max_steps = int(np.max(norms)) if len(norms) > 0 else 0
-        return uniq_dirs, max_steps
+    # Always use NumPy path
+    to_coords_np = np.asarray(to_coords, dtype=np.int8)
+    start_arr = np.asarray(start, dtype=np.int8)
+    deltas = to_coords_np - start_arr
+    abs_deltas = np.abs(deltas)
+    norms = np.max(abs_deltas, axis=1, keepdims=True)
+    norms_no_zero = np.where(norms == 0, 1, norms)
+    unit_dirs = (deltas // norms_no_zero).astype(np.int8)
+    uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
+    max_steps = int(np.max(norms)) if len(norms) > 0 else 0
+    return uniq_dirs, max_steps
 
-def extract_directions_and_steps(to_coords: Union[np.ndarray, torch.Tensor], start: Union[Coord, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
+def extract_directions_and_steps(to_coords: np.ndarray, start: Union[Coord, np.ndarray]) -> Tuple[np.ndarray, int]:
     return extract_directions_and_steps_vectorized(start, to_coords)
 
 def rebuild_moves_from_directions(
-    starts: Union[np.ndarray, torch.Tensor, List[Coord]],
+    starts: Union[np.ndarray, List[Coord]],
     directions_batch: Union[List[np.ndarray], List[List[np.ndarray]]],
     max_steps_batch: Union[List[int], List[List[int]]],
     capture_sets: Union[List[Set[Coord]], List[List[Set[Coord]]]]
@@ -56,7 +41,7 @@ def rebuild_moves_from_directions(
     from game3d.movement.movepiece import Move
 
     # Handle scalar input
-    if not isinstance(starts, (list, np.ndarray, torch.Tensor)) or (torch.is_tensor(starts) and starts.ndim == 1):
+    if not isinstance(starts, (list, np.ndarray)) or (isinstance(starts, np.ndarray) and starts.ndim == 1):
         # Scalar mode
         if not isinstance(directions_batch, list) or not directions_batch:
             return []
@@ -68,7 +53,7 @@ def rebuild_moves_from_directions(
         if len(directions) == 0 or max_steps <= 0:
             return []
 
-        if torch.is_tensor(starts):
+        if isinstance(starts, np.ndarray):
             sx, sy, sz = starts.tolist()
         else:
             sx, sy, sz = starts
@@ -88,10 +73,8 @@ def rebuild_moves_from_directions(
         all_moves = []
 
         # Convert to list for consistent processing
-        if torch.is_tensor(starts):
+        if isinstance(starts, np.ndarray):
             starts_list = [tuple(starts[i].tolist()) for i in range(starts.shape[0])]
-        elif isinstance(starts, np.ndarray):
-            starts_list = [tuple(starts[i]) for i in range(starts.shape[0])]
         else:
             starts_list = starts
 
@@ -383,18 +366,18 @@ def apply_trailblaze_effect(
                     board.set_piece(sq, None)
 
 def reconstruct_trailblazer_path(
-    from_coord: Union[Tuple[int, int, int], torch.Tensor],
-    to_coord: Union[Tuple[int, int, int], torch.Tensor],
+    from_coord: Union[Tuple[int, int, int], np.ndarray],
+    to_coord: Union[Tuple[int, int, int], np.ndarray],
     include_start: bool = False,
     include_end: bool = True
 ) -> Union[Set[Tuple[int, int, int]], List[Set[Tuple[int, int, int]]]]:
     """Reconstruct the path of a trailblazer move - supports scalar and batch mode."""
-    if torch.is_tensor(from_coord) and from_coord.ndim > 1:
+    if isinstance(from_coord, np.ndarray) and from_coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(from_coord.shape[0]):
             single_from = tuple(from_coord[i].tolist())
-            single_to = tuple(to_coord[i].tolist()) if torch.is_tensor(to_coord) and to_coord.ndim > 1 else to_coord
+            single_to = tuple(to_coord[i].tolist()) if isinstance(to_coord, np.ndarray) and to_coord.ndim > 1 else to_coord
             results.append(reconstruct_trailblazer_path(single_from, single_to, include_start, include_end))
         return results
 
@@ -420,15 +403,15 @@ def extract_enemy_slid_path(mv: Union['Move', List['Move']]) -> Union[List[Tuple
 def apply_geomancy_effect(
     board: 'Board',
     cache: 'OptimizedCacheManager',
-    target: Union[Tuple[int, int, int], torch.Tensor],
-    halfmove_clock: Union[int, torch.Tensor]
+    target: Union[Tuple[int, int, int], np.ndarray],
+    halfmove_clock: Union[int, np.ndarray]
 ) -> None:
     """Block a square via the geomancy cache - supports scalar and batch mode."""
-    if torch.is_tensor(target) and target.ndim > 1:
+    if isinstance(target, np.ndarray) and target.ndim > 1:
         # Batch mode
         for i in range(target.shape[0]):
             single_target = tuple(target[i].tolist())
-            single_clock = halfmove_clock[i] if torch.is_tensor(halfmove_clock) and halfmove_clock.numel() > 1 else halfmove_clock
+            single_clock = halfmove_clock[i] if isinstance(halfmove_clock, np.ndarray) and halfmove_clock.size > 1 else halfmove_clock
             apply_geomancy_effect(board, cache, single_target, single_clock)
     else:
         # Scalar mode
@@ -471,7 +454,7 @@ def apply_promotion_move(board: 'Board', mv: Union['Move', List['Move']], piece:
     board.set_piece(mv.from_coord, None)
     board.set_piece(mv.to_coord, promoted)
 
-def detonate(board: 'Board', center: Union[Coord, torch.Tensor], friendly_color: Union[Color, torch.Tensor]) -> Union[Set[Coord], List[Set[Coord]]]:
+def detonate(board: 'Board', center: Union[Coord, np.ndarray], friendly_color: Union[Color, np.ndarray]) -> Union[Set[Coord], List[Set[Coord]]]:
     """
     Get all squares in Manhattan distance 1 from center.
     Returns coords of enemy pieces that would be destroyed - supports scalar and batch mode.
@@ -479,11 +462,11 @@ def detonate(board: 'Board', center: Union[Coord, torch.Tensor], friendly_color:
     from game3d.common.coord_utils import manhattan_distance, in_bounds
 
     # Handle batch mode
-    if torch.is_tensor(center) and center.ndim > 1:
+    if isinstance(center, np.ndarray) and center.ndim > 1:
         results = []
         for i in range(center.shape[0]):
             single_center = tuple(center[i].tolist())
-            single_color = friendly_color[i] if torch.is_tensor(friendly_color) and friendly_color.numel() > 1 else friendly_color
+            single_color = friendly_color[i] if isinstance(friendly_color, np.ndarray) and friendly_color.size > 1 else friendly_color
             results.append(detonate(board, single_center, single_color))
         return results
 

@@ -3,7 +3,6 @@
 # Coordinate utilities – optimised drop-in replacements
 # ------------------------------------------------------------------
 from __future__ import annotations
-import torch
 import math
 from typing import Tuple, List, Optional, Union, Set
 import numpy as np
@@ -40,31 +39,20 @@ def in_bounds_numpy_batch(coords: np.ndarray) -> np.ndarray:
         result[i] = np.all((coords[i] >= 0) & (coords[i] < SIZE))
     return result
 
-def in_bounds_torch_batch(coords: torch.Tensor) -> torch.Tensor:
-    """Batch bounds checking for torch tensors."""
-    if coords.ndim == 1:
-        return torch.all((coords >= 0) & (coords < SIZE))
-    return torch.all((coords >= 0) & (coords < SIZE), dim=1)
-
-def in_bounds(c: Union[Coord, np.ndarray, torch.Tensor]) -> Union[bool, np.ndarray, torch.Tensor]:
+def in_bounds(c: Union[Coord, np.ndarray]) -> Union[bool, np.ndarray]:
     """Bounds checking - supports scalar and batch mode."""
-    if isinstance(c, torch.Tensor):
-        return in_bounds_torch_batch(c)
-    elif isinstance(c, np.ndarray):
+    if isinstance(c, np.ndarray):
         return in_bounds_numpy_batch(c)
     else:
         # Scalar mode - tuple or list
         return in_bounds_scalar(c[0], c[1], c[2])
 
-def in_bounds_vectorised(coords: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def in_bounds_vectorised(coords: np.ndarray) -> np.ndarray:
     """
     Return a 1-D bool array: True for every row whose x,y,z are all in 0-8.
     coords: int array shape (N, 3)  or  (3,) - supports scalar and batch mode.
     """
-    if isinstance(coords, torch.Tensor):
-        return in_bounds_torch_batch(coords)
-    else:
-        return in_bounds_numpy_batch(coords)
+    return in_bounds_numpy_batch(coords)
 
 def filter_valid_coords(coords: np.ndarray) -> np.ndarray:
     """Optimized coordinate filtering."""
@@ -81,101 +69,68 @@ def filter_valid_coords(coords: np.ndarray) -> np.ndarray:
     return coords[valid]
 
 # NEW – real functions that the rest of the code can call
-def coord_to_idx(coord: Union[Coord, torch.Tensor]) -> Union[int, torch.Tensor]:
-    if isinstance(coord, torch.Tensor) and coord.ndim > 1:
-        coord = coord.to(torch.int8)
+def coord_to_idx(coord: Union[Coord, np.ndarray]) -> Union[int, np.ndarray]:
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
+        coord = coord.astype(np.int8)
         x, y, z = coord[:, 0], coord[:, 1], coord[:, 2]
-        return (x + SIZE * y + SIZE_SQUARED * z).to(torch.int16)
+        return (x + SIZE * y + SIZE_SQUARED * z).astype(np.int16)
     else:
         # Scalar mode
-        if isinstance(coord, torch.Tensor):
+        if isinstance(coord, np.ndarray):
             x, y, z = coord.tolist()
         else:
             x, y, z = coord
         return x + SIZE * y + SIZE_SQUARED * z
 
-def idx_to_coord(idx: Union[int, torch.Tensor]) -> Union[Coord, torch.Tensor]:
+def idx_to_coord(idx: Union[int, np.ndarray]) -> Union[Coord, np.ndarray]:
     """Inverse of the above - supports scalar and batch mode."""
-    if isinstance(idx, torch.Tensor) and idx.ndim > 0:
+    if isinstance(idx, np.ndarray) and idx.ndim > 0:
         # Batch mode: [N] -> [N, 3]
         z = idx // (SIZE_SQUARED)
         rem = idx % (SIZE_SQUARED)
         y = rem // SIZE
         x = rem % SIZE
-        return torch.stack([x, y, z], dim=1)
+        return np.stack([x, y, z], axis=1)
     else:
         # Scalar mode
-        if isinstance(idx, torch.Tensor):
+        if isinstance(idx, np.ndarray):
             idx = idx.item()
         z, rem = divmod(idx, SIZE_SQUARED)
         y, x = divmod(rem, SIZE)
         return (x, y, z)
 
-def clip_coords(x: Union[np.ndarray, torch.Tensor], y: Union[np.ndarray, torch.Tensor], z: Union[np.ndarray, torch.Tensor]) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+def clip_coords(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Clamp coordinates to [0, 8] to prevent index errors - supports scalar and batch mode."""
-    if isinstance(x, torch.Tensor):
-        return torch.clamp(x, 0, 8), torch.clamp(y, 0, 8), torch.clamp(z, 0, 8)
-    else:
-        return np.clip(x, 0, 8), np.clip(y, 0, 8), np.clip(z, 0, 8)
+    return np.clip(x, 0, 8), np.clip(y, 0, 8), np.clip(z, 0, 8)
 
 @njit(cache=True)
 def add_coords(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> Tuple[int, int, int]:
     """Component-wise addition of two 3-D coordinates."""
     return a[0] + b[0], a[1] + b[1], a[2] + b[2]
 
-def add_coords_batch(a: Union[np.ndarray, torch.Tensor], b: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def add_coords_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch coordinate addition - supports scalar and batch mode."""
-    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        return a + b
-    elif isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
-        return a + b
-    else:
-        # Mixed types - convert to common type
-        if isinstance(a, torch.Tensor):
-            b = torch.tensor(b, dtype=a.dtype, device=a.device)
-            return a + b
-        else:
-            a = np.array(a)
-            b = np.array(b)
-            return a + b
+    return a + b
 
 @njit(cache=True)
 def subtract_coords(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> Tuple[int, int, int]:
     """Component-wise subtraction of two 3-D coordinates."""
     return a[0] - b[0], a[1] - b[1], a[2] - b[2]
 
-def subtract_coords_batch(a: Union[np.ndarray, torch.Tensor], b: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def subtract_coords_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch coordinate subtraction - supports scalar and batch mode."""
-    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        return a - b
-    elif isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
-        return a - b
-    else:
-        # Mixed types
-        if isinstance(a, torch.Tensor):
-            b = torch.tensor(b, dtype=a.dtype, device=a.device)
-            return a - b
-        else:
-            a = np.array(a)
-            b = np.array(b)
-            return a - b
+    return a - b
 
 @njit(cache=True)
 def scale_coord(coord: Tuple[int, int, int], scalar: int) -> Tuple[int, int, int]:
     return (coord[0] * scalar, coord[1] * scalar, coord[2] * scalar)
 
-def scale_coord_batch(coord: Union[np.ndarray, torch.Tensor], scalar: Union[int, np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def scale_coord_batch(coord: np.ndarray, scalar: Union[int, np.ndarray]) -> np.ndarray:
     """Batch coordinate scaling - supports scalar and batch mode."""
-    if isinstance(coord, torch.Tensor):
-        if isinstance(scalar, torch.Tensor):
-            return coord * scalar.unsqueeze(-1)
-        else:
-            return coord * scalar
+    if isinstance(scalar, np.ndarray):
+        return coord * scalar[:, np.newaxis]
     else:
-        if isinstance(scalar, np.ndarray):
-            return coord * scalar[:, np.newaxis]
-        else:
-            return coord * scalar
+        return coord * scalar
 
 # ------------------------------------------------------------------
 # Distance helpers – optimized with numba
@@ -197,18 +152,9 @@ def manhattan_distance_numpy_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
             b = b.reshape(1, -1)
         return np.sum(np.abs(a - b), axis=1).astype(np.int32)
 
-def manhattan_distance_batch(
-    a: Union[np.ndarray, torch.Tensor],
-    b: Union[np.ndarray, torch.Tensor]
-) -> Union[np.ndarray, torch.Tensor]:
+def manhattan_distance_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch Manhattan distance - supports scalar and batch mode."""
-    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        if a.ndim == 1 and b.ndim == 1:
-            return torch.sum(torch.abs(a - b))
-        else:
-            return torch.sum(torch.abs(a - b), dim=1)
-    else:
-        return manhattan_distance_numpy_batch(np.asarray(a), np.asarray(b))
+    return manhattan_distance_numpy_batch(a, b)
 
 @njit(cache=True)
 def chebyshev_distance(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> int:
@@ -226,15 +172,9 @@ def chebyshev_distance_numpy_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
             b = b.reshape(1, -1)
         return np.max(np.abs(a - b), axis=1)
 
-def chebyshev_distance_batch(a: Union[np.ndarray, torch.Tensor], b: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def chebyshev_distance_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch Chebyshev distance - supports scalar and batch mode."""
-    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        if a.ndim == 1 and b.ndim == 1:
-            return torch.max(torch.abs(a - b))
-        else:
-            return torch.max(torch.abs(a - b), dim=1)[0]
-    else:
-        return chebyshev_distance_numpy_batch(np.asarray(a), np.asarray(b))
+    return chebyshev_distance_numpy_batch(a, b)
 
 @njit(cache=True)
 def euclidean_distance_squared(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> int:
@@ -252,28 +192,19 @@ def euclidean_distance_squared_numpy_batch(a: np.ndarray, b: np.ndarray) -> np.n
             b = b.reshape(1, -1)
         return np.sum((a - b)**2, axis=1)
 
-def euclidean_distance_squared_batch(a: Union[np.ndarray, torch.Tensor], b: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def euclidean_distance_squared_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch Euclidean distance squared - supports scalar and batch mode."""
-    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        if a.ndim == 1 and b.ndim == 1:
-            return torch.sum((a - b)**2)
-        else:
-            return torch.sum((a - b)**2, dim=1)
-    else:
-        return euclidean_distance_squared_numpy_batch(np.asarray(a), np.asarray(b))
+    return euclidean_distance_squared_numpy_batch(a, b)
 
 @njit(cache=True)
 def euclidean_distance(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> float:
     """Calculate the Euclidean distance between two coordinates."""
     return math.sqrt(euclidean_distance_squared(a, b))
 
-def euclidean_distance_batch(a: Union[np.ndarray, torch.Tensor], b: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+def euclidean_distance_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Batch Euclidean distance - supports scalar and batch mode."""
     squared = euclidean_distance_squared_batch(a, b)
-    if isinstance(squared, torch.Tensor):
-        return torch.sqrt(squared.float())
-    else:
-        return np.sqrt(squared.astype(float))
+    return np.sqrt(squared.astype(float))
 
 # Aliases for backward compatibility
 manhattan = manhattan_distance
@@ -282,18 +213,18 @@ manhattan = manhattan_distance
 # Ray generation (optimized)
 # ------------------------------------------------------------------
 def generate_ray(
-    start: Union[Coord, torch.Tensor],
-    direction: Union[Tuple[int, int, int], torch.Tensor],
+    start: Union[Coord, np.ndarray],
+    direction: Union[Tuple[int, int, int], np.ndarray],
     max_steps: Optional[int] = None
 ) -> Union[List[Coord], List[List[Coord]]]:
     """Generate ray - supports scalar and batch mode."""
-    if isinstance(start, torch.Tensor) and start.ndim > 1:
+    if isinstance(start, np.ndarray) and start.ndim > 1:
         # Batch mode
         batch_size = start.shape[0]
-        if isinstance(direction, torch.Tensor) and direction.ndim > 1:
+        if isinstance(direction, np.ndarray) and direction.ndim > 1:
             directions = direction
         else:
-            directions = direction.unsqueeze(0).repeat(batch_size, 1)
+            directions = np.tile(direction, (batch_size, 1))
 
         rays = []
         for i in range(batch_size):
@@ -303,9 +234,9 @@ def generate_ray(
         return rays
 
     # Scalar mode
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
-    if isinstance(direction, torch.Tensor):
+    if isinstance(direction, np.ndarray):
         direction = tuple(direction.tolist())
 
     # Pre-allocate list with estimated capacity
@@ -331,15 +262,15 @@ def generate_ray(
 # ------------------------------------------------------------------
 # Path utilities (optimized)
 # ------------------------------------------------------------------
-def reconstruct_path(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.Tensor], include_start: bool = False, include_end: bool = True, as_set: bool = False) -> Union[List[Coord], Set[Coord], List[List[Coord]], List[Set[Coord]]]:
+def reconstruct_path(start: Union[Coord, np.ndarray], end: Union[Coord, np.ndarray], include_start: bool = False, include_end: bool = True, as_set: bool = False) -> Union[List[Coord], Set[Coord], List[List[Coord]], List[Set[Coord]]]:
     """Reconstruct path from start to end - supports scalar and batch mode."""
-    if isinstance(start, torch.Tensor) and start.ndim > 1:
+    if isinstance(start, np.ndarray) and start.ndim > 1:
         # Batch mode
         batch_size = start.shape[0]
-        if isinstance(end, torch.Tensor) and end.ndim > 1:
+        if isinstance(end, np.ndarray) and end.ndim > 1:
             ends = end
         else:
-            ends = end.unsqueeze(0).repeat(batch_size, 1)
+            ends = np.tile(end, (batch_size, 1))
 
         paths = []
         for i in range(batch_size):
@@ -349,9 +280,9 @@ def reconstruct_path(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.
         return paths
 
     # Scalar mode
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
-    if isinstance(end, torch.Tensor):
+    if isinstance(end, np.ndarray):
         end = tuple(end.tolist())
 
     if start == end:
@@ -403,28 +334,25 @@ def reconstruct_path(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.
         return path
 
 # Optimized batch version
-def reconstruct_paths_batch(start: Union[Coord, torch.Tensor], ends: Union[np.ndarray, torch.Tensor], include_start: bool = False, include_end: bool = True, as_sets: bool = False) -> List[Union[List[Coord], Set[Coord]]]:
+def reconstruct_paths_batch(start: Union[Coord, np.ndarray], ends: np.ndarray, include_start: bool = False, include_end: bool = True, as_sets: bool = False) -> List[Union[List[Coord], Set[Coord]]]:
     """Batch path reconstruction - supports scalar and batch mode."""
-    if isinstance(ends, torch.Tensor):
-        ends_list = [tuple(end.tolist()) for end in ends]
-    else:
-        ends_list = [tuple(end) for end in ends]
+    ends_list = [tuple(end) for end in ends]
 
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
 
     return [reconstruct_path(start, end, include_start, include_end, as_sets) for end in ends_list]
 
 # Optimized path functions
-def get_path_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.Tensor]) -> Union[List[Coord], List[List[Coord]]]:
+def get_path_squares(start: Union[Coord, np.ndarray], end: Union[Coord, np.ndarray]) -> Union[List[Coord], List[List[Coord]]]:
     """Get all squares on the path from start to end - supports scalar and batch mode."""
-    if isinstance(start, torch.Tensor) and start.ndim > 1:
+    if isinstance(start, np.ndarray) and start.ndim > 1:
         # Batch mode
         batch_size = start.shape[0]
-        if isinstance(end, torch.Tensor) and end.ndim > 1:
+        if isinstance(end, np.ndarray) and end.ndim > 1:
             ends = end
         else:
-            ends = end.unsqueeze(0).repeat(batch_size, 1)
+            ends = np.tile(end, (batch_size, 1))
 
         paths = []
         for i in range(batch_size):
@@ -434,9 +362,9 @@ def get_path_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.
         return paths
 
     # Scalar mode
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
-    if isinstance(end, torch.Tensor):
+    if isinstance(end, np.ndarray):
         end = tuple(end.tolist())
 
     if start == end:
@@ -473,15 +401,15 @@ def get_path_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.
 
     return path
 
-def get_between_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, torch.Tensor]) -> Union[List[Coord], List[List[Coord]]]:
+def get_between_squares(start: Union[Coord, np.ndarray], end: Union[Coord, np.ndarray]) -> Union[List[Coord], List[List[Coord]]]:
     """Get squares strictly between start and end - supports scalar and batch mode."""
-    if isinstance(start, torch.Tensor) and start.ndim > 1:
+    if isinstance(start, np.ndarray) and start.ndim > 1:
         # Batch mode
         batch_size = start.shape[0]
-        if isinstance(end, torch.Tensor) and end.ndim > 1:
+        if isinstance(end, np.ndarray) and end.ndim > 1:
             ends = end
         else:
-            ends = end.unsqueeze(0).repeat(batch_size, 1)
+            ends = np.tile(end, (batch_size, 1))
 
         between_list = []
         for i in range(batch_size):
@@ -491,9 +419,9 @@ def get_between_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, tor
         return between_list
 
     # Scalar mode
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
-    if isinstance(end, torch.Tensor):
+    if isinstance(end, np.ndarray):
         end = tuple(end.tolist())
 
     if start == end:
@@ -533,9 +461,9 @@ def get_between_squares(start: Union[Coord, torch.Tensor], end: Union[Coord, tor
 # ------------------------------------------------------------------
 # Geometric utilities (optimized)
 # ------------------------------------------------------------------
-def get_layer_coords(layer_type: str, index: Union[int, torch.Tensor]) -> Union[List[Coord], List[List[Coord]]]:
+def get_layer_coords(layer_type: str, index: Union[int, np.ndarray]) -> Union[List[Coord], List[List[Coord]]]:
     """Get layer coordinates - supports scalar and batch mode."""
-    if isinstance(index, torch.Tensor) and index.ndim > 0:
+    if isinstance(index, np.ndarray) and index.ndim > 0:
         # Batch mode
         return [get_layer_coords(layer_type, idx.item()) for idx in index]
 
@@ -571,15 +499,15 @@ def get_layer_coords(layer_type: str, index: Union[int, torch.Tensor]) -> Union[
         return [c for c in coords if in_bounds(c)]
     return []
 
-def get_distance_layers(start: Union[Coord, torch.Tensor], max_distance: Union[int, torch.Tensor]) -> Union[List[List[Coord]], List[List[List[Coord]]]]:
+def get_distance_layers(start: Union[Coord, np.ndarray], max_distance: Union[int, np.ndarray]) -> Union[List[List[Coord]], List[List[List[Coord]]]]:
     """Get distance layers - supports scalar and batch mode."""
-    if isinstance(start, torch.Tensor) and start.ndim > 1:
+    if isinstance(start, np.ndarray) and start.ndim > 1:
         # Batch mode
         batch_size = start.shape[0]
-        if isinstance(max_distance, torch.Tensor) and max_distance.ndim > 0:
+        if isinstance(max_distance, np.ndarray) and max_distance.ndim > 0:
             max_distances = max_distance
         else:
-            max_distances = torch.tensor([max_distance] * batch_size)
+            max_distances = np.full(batch_size, max_distance)
 
         layers_list = []
         for i in range(batch_size):
@@ -589,9 +517,9 @@ def get_distance_layers(start: Union[Coord, torch.Tensor], max_distance: Union[i
         return layers_list
 
     # Scalar mode
-    if isinstance(start, torch.Tensor):
+    if isinstance(start, np.ndarray):
         start = tuple(start.tolist())
-    if isinstance(max_distance, torch.Tensor):
+    if isinstance(max_distance, np.ndarray):
         max_distance = max_distance.item()
 
     # Pre-allocate layers
@@ -609,15 +537,15 @@ def get_distance_layers(start: Union[Coord, torch.Tensor], max_distance: Union[i
                     layers[dist].append((x, y, z))
     return layers
 
-def get_aura_squares(center: Union[Tuple[int, int, int], torch.Tensor], radius: Union[int, torch.Tensor] = 2) -> Union[Set[Tuple[int, int, int]], List[Set[Tuple[int, int, int]]]]:
+def get_aura_squares(center: Union[Tuple[int, int, int], np.ndarray], radius: Union[int, np.ndarray] = 2) -> Union[Set[Tuple[int, int, int]], List[Set[Tuple[int, int, int]]]]:
     """Compute aura squares around center - supports scalar and batch mode."""
-    if isinstance(center, torch.Tensor) and center.ndim > 1:
+    if isinstance(center, np.ndarray) and center.ndim > 1:
         # Batch mode
         batch_size = center.shape[0]
-        if isinstance(radius, torch.Tensor) and radius.ndim > 0:
+        if isinstance(radius, np.ndarray) and radius.ndim > 0:
             radii = radius
         else:
-            radii = torch.tensor([radius] * batch_size)
+            radii = np.full(batch_size, radius)
 
         auras = []
         for i in range(batch_size):
@@ -627,9 +555,9 @@ def get_aura_squares(center: Union[Tuple[int, int, int], torch.Tensor], radius: 
         return auras
 
     # Scalar mode
-    if isinstance(center, torch.Tensor):
+    if isinstance(center, np.ndarray):
         center = tuple(center.tolist())
-    if isinstance(radius, torch.Tensor):
+    if isinstance(radius, np.ndarray):
         radius = radius.item()
 
     if radius != 2:
@@ -645,30 +573,19 @@ def get_aura_squares(center: Union[Tuple[int, int, int], torch.Tensor], radius: 
             aura.add((x, y, z))
     return aura
 
-def validate_directions(start: Union[Coord, torch.Tensor], directions: Union[np.ndarray, torch.Tensor], board_size: int = 9) -> Union[np.ndarray, torch.Tensor]:
+def validate_directions(start: Union[Coord, np.ndarray], directions: np.ndarray, board_size: int = 9) -> np.ndarray:
     """Filter directions that would lead to out-of-bounds coordinates - supports scalar and batch mode."""
     if directions.size == 0:
         return directions
 
-    if isinstance(start, torch.Tensor) and isinstance(directions, torch.Tensor):
-        start_arr = start
-        if start_arr.ndim == 1:
-            start_arr = start_arr.unsqueeze(0)
-        if directions.ndim == 2:
-            directions = directions.unsqueeze(0)
+    start_arr = np.array(start, dtype=np.int16)
+    dest_coords = start_arr + directions
+    valid_mask = np.all((dest_coords >= 0) & (dest_coords < board_size), axis=1)
+    return directions[valid_mask]
 
-        dest_coords = start_arr + directions
-        valid_mask = torch.all((dest_coords >= 0) & (dest_coords < board_size), dim=-1)
-        return directions[valid_mask]
-    else:
-        start_arr = np.array(start, dtype=np.int16)
-        dest_coords = start_arr + directions
-        valid_mask = np.all((dest_coords >= 0) & (dest_coords < board_size), axis=1)
-        return directions[valid_mask]
-
-def validate_and_sanitize_coord(coord: Union[Coord, torch.Tensor]) -> Optional[Coord]:
+def validate_and_sanitize_coord(coord: Union[Coord, np.ndarray]) -> Optional[Coord]:
     """Comprehensive coordinate validation and sanitization - scalar mode only."""
-    if isinstance(coord, torch.Tensor):
+    if isinstance(coord, np.ndarray):
         coord = tuple(coord.tolist())
 
     if not isinstance(coord, tuple) or len(coord) != 3:
@@ -683,10 +600,10 @@ def validate_and_sanitize_coord(coord: Union[Coord, torch.Tensor]) -> Optional[C
 
     return (x, y, z)  # Already in bounds, no need to reclip
 
-def batch_validate_coords(coords: Union[List[Coord], torch.Tensor]) -> Union[List[Coord], torch.Tensor]:
+def batch_validate_coords(coords: Union[List[Coord], np.ndarray]) -> Union[List[Coord], np.ndarray]:
     """Batch validate multiple coordinates - supports scalar and batch mode."""
-    if isinstance(coords, torch.Tensor):
-        # Tensor batch validation
+    if isinstance(coords, np.ndarray):
+        # Array batch validation
         valid_mask = in_bounds_vectorised(coords)
         return coords[valid_mask]
     else:

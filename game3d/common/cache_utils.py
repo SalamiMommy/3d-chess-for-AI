@@ -1,7 +1,6 @@
-# game3d/movement/cache_utils.py
+# cache_utils.py
 """Standardized cache access patterns for movement generators"""
 import numpy as np
-import torch
 from typing import Tuple, Optional, TYPE_CHECKING, List, Union, Dict
 from game3d.common.coord_utils import in_bounds
 from game3d.pieces.piece import Piece
@@ -11,45 +10,45 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.move import Move
 
-def get_piece(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor]) -> Union[Optional[Piece], List[Optional[Piece]]]:
+def get_piece(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray]) -> Union[Optional[Piece], List[Optional[Piece]]]:
     """Standardized piece access with bounds checking - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
-        # Batch mode: coord is [N, 3] tensor
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
+        # Batch mode: coord is [N, 3] array
         coords_list = [tuple(coord[i].tolist()) for i in range(coord.shape[0])]
         return [get_piece(cache_manager, c) for c in coords_list]
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
         if not in_bounds(coord):
             return None
         return cache_manager.occupancy.get(coord)
 
-def is_occupied(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor]) -> Union[bool, torch.Tensor]:
+def is_occupied(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray]) -> Union[bool, np.ndarray]:
     """Standardized occupancy check - optimized by checking bounds first - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
-        # Batch mode: coord is [N, 3] tensor
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
+        # Batch mode: coord is [N, 3] array
         results = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
             results.append(is_occupied(cache_manager, single_coord))
-        return torch.tensor(results, dtype=torch.bool)
+        return np.array(results, dtype=bool)
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
         return in_bounds(coord) and cache_manager.occupancy.get(coord) is not None
 
-def ensure_int_coords(x, y, z) -> Union[Tuple[int, int, int], torch.Tensor]:
+def ensure_int_coords(x, y, z) -> Union[Tuple[int, int, int], np.ndarray]:
     """Ensure coordinates are Python ints to prevent numpy type issues - supports scalar and batch mode"""
-    if torch.is_tensor(x) and x.ndim > 0:
+    if isinstance(x, np.ndarray) and x.ndim > 0:
         # Batch mode
         if x.ndim == 1 and len(x) == 3:
-            # Single coordinate as tensor, convert to tuple
-            return tuple(x.int().tolist())
+            # Single coordinate as array, convert to tuple
+            return tuple(x.astype(int).tolist())
         else:
-            # Batch of coordinates, ensure all are int tensors
-            return torch.stack([x.int(), y.int(), z.int()], dim=-1)
+            # Batch of coordinates, ensure all are int arrays
+            return np.stack([x.astype(int), y.astype(int), z.astype(int)], axis=-1)
     else:
         # Scalar mode
         return int(x), int(y), int(z)
@@ -58,59 +57,59 @@ def get_occupancy_array(cache_manager: 'OptimizedCacheManager') -> np.ndarray:
     """Get occupancy array for movement generators with proper access pattern."""
     return cache_manager.occupancy._occ
 
-def is_frozen(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor], color: Union[Color, torch.Tensor]) -> Union[bool, torch.Tensor]:
+def is_frozen(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray], color: Union[Color, np.ndarray]) -> Union[bool, np.ndarray]:
     """Standardized freeze check - optimized with direct cache access - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
-            single_color = color[i] if torch.is_tensor(color) else color
+            single_color = color[i] if isinstance(color, np.ndarray) else color
             results.append(is_frozen(cache_manager, single_coord, single_color))
-        return torch.tensor(results, dtype=torch.bool)
+        return np.array(results, dtype=bool)
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
-        if torch.is_tensor(color):
+        if isinstance(color, np.ndarray):
             color = Color(color.item())
 
         return cache_manager._frozen_cache.get(coord, color) if hasattr(cache_manager, '_frozen_cache') else cache_manager.is_frozen(coord, color)
 
-def is_movement_debuffed(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor], color: Union[Color, torch.Tensor]) -> Union[bool, torch.Tensor]:
+def is_movement_debuffed(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray], color: Union[Color, np.ndarray]) -> Union[bool, np.ndarray]:
     """Standardized debuff check - optimized with direct cache access - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
-            single_color = color[i] if torch.is_tensor(color) else color
+            single_color = color[i] if isinstance(color, np.ndarray) else color
             results.append(is_movement_debuffed(cache_manager, single_coord, single_color))
-        return torch.tensor(results, dtype=torch.bool)
+        return np.array(results, dtype=bool)
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
-        if torch.is_tensor(color):
+        if isinstance(color, np.ndarray):
             color = Color(color.item())
 
         return cache_manager._debuff_cache.get(coord, color) if hasattr(cache_manager, '_debuff_cache') else cache_manager.is_movement_debuffed(coord, color)
 
-def is_geomancy_blocked(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor], current_ply: Union[int, torch.Tensor]) -> Union[bool, torch.Tensor]:
+def is_geomancy_blocked(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray], current_ply: Union[int, np.ndarray]) -> Union[bool, np.ndarray]:
     """Standardized geomancy block check - optimized with direct cache access - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
-            single_ply = current_ply[i] if torch.is_tensor(current_ply) else current_ply
+            single_ply = current_ply[i] if isinstance(current_ply, np.ndarray) else current_ply
             results.append(is_geomancy_blocked(cache_manager, single_coord, single_ply))
-        return torch.tensor(results, dtype=torch.bool)
+        return np.array(results, dtype=bool)
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
-        if torch.is_tensor(current_ply):
+        if isinstance(current_ply, np.ndarray):
             current_ply = current_ply.item()
 
         return cache_manager._geomancy_cache.is_blocked(coord, current_ply) if hasattr(cache_manager, '_geomancy_cache') else cache_manager.is_geomancy_blocked(coord, current_ply)
@@ -167,18 +166,18 @@ def synchronize_zobrist_after_move(
             new_hash = compute_zobrist(board, new_color)
             cache_manager.sync_zobrist(new_hash)
 
-def is_occupied_safe(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], torch.Tensor]) -> Union[bool, torch.Tensor]:
+def is_occupied_safe(cache_manager: 'OptimizedCacheManager', coord: Union[Tuple[int, int, int], np.ndarray]) -> Union[bool, np.ndarray]:
     """Safe occupancy check with bounds validation - optimized single bounds check - supports scalar and batch mode"""
-    if torch.is_tensor(coord) and coord.ndim > 1:
+    if isinstance(coord, np.ndarray) and coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
             results.append(is_occupied_safe(cache_manager, single_coord))
-        return torch.tensor(results, dtype=torch.bool)
+        return np.array(results, dtype=bool)
     else:
         # Scalar mode
-        if torch.is_tensor(coord):
+        if isinstance(coord, np.ndarray):
             coord = tuple(coord.tolist())
         return in_bounds(coord) and cache_manager.get_piece(coord) is not None
 

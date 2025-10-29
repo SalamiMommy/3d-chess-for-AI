@@ -1,4 +1,4 @@
-# self_play.py - FIXED to use terminal.py properly
+# self_play.py - UPDATED to properly handle numpy/tensor conversion
 """Self-play data generation with termination via terminal.py."""
 import torch
 import numpy as np
@@ -19,7 +19,7 @@ from game3d.game.terminal import (
     is_stalemate,
     is_insufficient_material,
     is_fifty_move_draw,
-    is_threefold_repetition,  # Now uses terminal.py
+    is_threefold_repetition,
 )
 from training.opponents import (
     create_opponent,
@@ -59,7 +59,9 @@ class SelfPlayGenerator:
         self.temperature = temperature
         self.epsilon = epsilon
         self.move_encoder = MoveEncoder()
-        self._state_tensor_cache = {}
+
+        # Cache for NUMPY arrays (internal representation)
+        self._state_array_cache = {}
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -80,25 +82,29 @@ class SelfPlayGenerator:
             Color.BLACK: create_opponent(self.opponent_types[1], Color.BLACK),
         }
 
-    def _get_state_tensor(self, game_state: GameState) -> torch.Tensor:
-        """Get state tensor with caching."""
+    def _get_state_tensor_for_model(self, game_state: GameState) -> torch.Tensor:
+        """Get state tensor - converts from internal numpy array to tensor for AI ONLY."""
         state_hash = game_state.board.byte_hash()
         cache_key = (state_hash, game_state.color)
 
-        if cache_key in self._state_tensor_cache:
+        if cache_key in self._state_array_cache:
             self._cache_hits += 1
-            return self._state_tensor_cache[cache_key].to(self.device)
+            array = self._state_array_cache[cache_key]
+        else:
+            self._cache_misses += 1
+            # Use internal numpy representation
+            array = game_state.to_array()
+            self._state_array_cache[cache_key] = array
 
-        self._cache_misses += 1
-        state_tensor = game_state.to_tensor(device=self.device).unsqueeze(0)
-        self._state_tensor_cache[cache_key] = state_tensor.cpu()
+            # Clean cache if too large
+            if len(self._state_array_cache) > 1000:
+                keys_to_remove = list(self._state_array_cache.keys())[:200]
+                for key in keys_to_remove:
+                    del self._state_array_cache[key]
 
-        if len(self._state_tensor_cache) > 1000:
-            keys_to_remove = list(self._state_tensor_cache.keys())[:200]
-            for key in keys_to_remove:
-                del self._state_tensor_cache[key]
-
-        return state_tensor
+        # ONLY CONVERT TO TENSOR HERE - for AI model consumption
+        tensor = torch.from_numpy(array).to(self.device).unsqueeze(0)
+        return tensor
 
     def _choose_move_with_opponent(self, game: OptimizedGame3D, policy_logits, legal_moves) -> Move:
         """Choose a move using opponent reward logic and policy probabilities."""
@@ -124,16 +130,22 @@ class SelfPlayGenerator:
             f_idx = move_encoder.coord_to_index(mv.from_coord)
             t_idx = move_encoder.coord_to_index(mv.to_coord)
             logit = from_logits[0, f_idx] + to_logits[0, t_idx]
-            move_probs.append(logit)
+            move_probs.append(logit.item())
 
-        move_probs_tensor = torch.tensor(move_probs)
-        move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
+        move_probs_np = np.array(move_probs, dtype=np.float32)
+        max_logit = np.max(move_probs_np)
+        exp_logit = np.exp(move_probs_np - max_logit)
+        sum_exp = np.sum(exp_logit)
+        if sum_exp == 0 or np.isnan(sum_exp):
+            move_probs_soft = np.ones_like(move_probs_np) / len(move_probs_np)
+        else:
+            move_probs_soft = exp_logit / sum_exp
 
         rewards = [opponent.reward(game.state, mv) for mv in legal_moves]
         rewards_np = np.array(rewards)
 
         alpha = 0.5
-        scores = move_probs_tensor.cpu().numpy() + alpha * rewards_np
+        scores = move_probs_soft + alpha * rewards_np
 
         best_idx = int(np.argmax(scores))
         return legal_moves[best_idx]
@@ -170,7 +182,8 @@ class SelfPlayGenerator:
                     print(f"[GAME END] Threefold repetition at move {move_count}")
                     break
 
-                state_tensor = self._get_state_tensor(game.state)
+                # ONLY convert to tensor here for AI model
+                state_tensor = self._get_state_tensor_for_model(game.state)
                 with torch.no_grad():
                     from_logits, to_logits, value_pred = self.model(state_tensor)
                     policy_logits = (from_logits, to_logits)
@@ -188,7 +201,7 @@ class SelfPlayGenerator:
                 opponent = self.opponents[game.state.color]
                 opponent.observe(game.state, chosen_move)
 
-                # Prepare targets
+                # Prepare targets - using numpy internally
                 from_indices = []
                 to_indices = []
                 move_probs = []
@@ -199,33 +212,42 @@ class SelfPlayGenerator:
                     f_idx = self.move_encoder.coord_to_index(mv.from_coord)
                     t_idx = self.move_encoder.coord_to_index(mv.to_coord)
                     logit = policy_logits[0][0, f_idx] + policy_logits[1][0, t_idx]
-                    move_probs.append(logit)
+                    move_probs.append(logit.item())
                     from_indices.append(f_idx)
                     to_indices.append(t_idx)
 
-                move_probs_tensor = torch.stack(move_probs)
-                move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
+                move_probs_np = np.array(move_probs, dtype=np.float32)
+                max_logit = np.max(move_probs_np)
+                exp_logit = np.exp(move_probs_np - max_logit)
+                sum_exp = np.sum(exp_logit)
+                if sum_exp == 0 or np.isnan(sum_exp):
+                    move_probs_soft = np.ones_like(move_probs_np) / len(move_probs_np)
+                else:
+                    move_probs_soft = exp_logit / sum_exp
 
-                from_target = torch.zeros(729, device=self.device)
-                to_target = torch.zeros(729, device=self.device)
+                from_target_np = np.zeros(729, dtype=np.float32)
+                to_target_np = np.zeros(729, dtype=np.float32)
 
                 for i in range(len(legal_moves)):
-                    prob = move_probs_tensor[i]
-                    from_target[from_indices[i]] += prob
-                    to_target[to_indices[i]] += prob
+                    prob = move_probs_soft[i]
+                    from_target_np[from_indices[i]] += prob
+                    to_target_np[to_indices[i]] += prob
 
-                if from_target.sum() > 0:
-                    from_target /= from_target.sum()
-                if to_target.sum() > 0:
-                    to_target /= to_target.sum()
+                if np.sum(from_target_np) > 0:
+                    from_target_np /= np.sum(from_target_np)
+                if np.sum(to_target_np) > 0:
+                    to_target_np /= np.sum(to_target_np)
 
                 player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
 
+                # Store as numpy arrays internally, convert to tensors only in dataset
+                state_array = game.state.to_array()  # Internal numpy representation
+
                 examples.append(
                     TrainingExample(
-                        state_tensor=state_tensor.squeeze(0).cpu(),
-                        from_target=from_target.cpu(),
-                        to_target=to_target.cpu(),
+                        state_tensor=state_array,  # Store as numpy
+                        from_target=from_target_np,  # Store as numpy
+                        to_target=to_target_np,  # Store as numpy
                         value_target=value_pred.item(),
                         move_count=move_count,
                         player_sign=player_sign
@@ -352,7 +374,7 @@ def generate_training_data_parallel(model: torch.nn.Module, num_games: int = 10,
                                   device: str = "cuda", opponent_types: Optional[List[str]] = None,
                                   epsilon: float = 0.1, num_processes: int = 4) -> List[TrainingExample]:
     with mp.Pool(num_processes) as pool:
-        args = [(model, max_moves, device, opponent_types, epsilon) for _ in range(num_games)]  # INCLUDE epsilon in args
+        args = [(model, max_moves, device, opponent_types, epsilon) for _ in range(num_games)]
         all_games = pool.map(parallel_generate_game, args)
 
     all_examples = []
