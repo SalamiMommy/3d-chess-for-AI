@@ -4,7 +4,10 @@
 import struct
 from typing import Optional, Tuple, List, Any, Dict
 import numpy as np
-from game3d.common.common import _COORD_TO_IDX, filter_valid_coords
+import logging
+from game3d.common.coord_utils import _COORD_TO_IDX, filter_valid_coords
+from game3d.common.enums import PieceType
+import numba as nb
 
 MOVE_FLAGS = {
     'CAPTURE': 1 << 0,
@@ -18,19 +21,21 @@ MOVE_FLAGS = {
     'BUFFED': 1 << 8,
     'DEBUFFED': 1 << 9,
     'GEOMANCY': 1 << 10,
-    # 'DETONATE' not added as new; using 'SELF_DETONATE' for bomb consistency
+
 }
 
 # ------------------------------------------------------------------
 # Move-pool management – built *lazily* so Move already exists
 # ------------------------------------------------------------------
 class MovePool:
-    """Light-weight object pool for Move instances."""
-    __slots__ = ('_pool', '_in_use')
+    __slots__ = ('_pool', '_in_use', '_total_created', '_max_in_use')
+    MAX_POOL_SIZE = 100000  # Increased from 10000
 
-    def __init__(self) -> None:
-        self._pool: List[Move] = []
-        self._in_use: set[int] = set()
+    def __init__(self):
+        self._pool = []
+        self._in_use = set()
+        self._total_created = 0
+        self._max_in_use = 0
 
     # ----------------------------------------------------------
     # internal helpers
@@ -49,21 +54,36 @@ class MovePool:
     # ----------------------------------------------------------
     # public API
     # ----------------------------------------------------------
-    def acquire(self) -> 'Move':
+    def acquire(self):
         if self._pool:
             move = self._pool.pop()
-            self._in_use.add(id(move))
-            return move
-        # pool exhausted – mint one more
-        move = self._new_move()
+        else:
+            move = self._new_move()
+            self._total_created += 1
+
         self._in_use.add(id(move))
+        self._max_in_use = max(self._max_in_use, len(self._in_use))
         return move
 
-    def release(self, move: 'Move') -> None:
+    def release(self, move):
         move_id = id(move)
         if move_id in self._in_use:
             self._in_use.remove(move_id)
-            self._pool.append(move)
+
+            # Clear move data before pooling
+            move.metadata.clear()
+            move._cached_hash = None
+
+            if len(self._pool) < self.MAX_POOL_SIZE:
+                self._pool.append(move)
+
+    def get_stats(self):
+        return {
+            'total_created': self._total_created,
+            'pool_size': len(self._pool),
+            'in_use': len(self._in_use),
+            'max_in_use': self._max_in_use
+        }
 
     def acquire_batch(self, n: int) -> List['Move']:
         """Return n pooled Move objects."""
@@ -98,7 +118,7 @@ def _get_move_pool() -> MovePool:
     global _move_pool
     if _move_pool is None:
         _move_pool = MovePool()
-        _move_pool.populate(100_000)
+        _move_pool.populate(500_000)  # Increased from 100_000
     return _move_pool
 
 
@@ -106,8 +126,7 @@ def _get_move_pool() -> MovePool:
 # Move
 # ------------------------------------------------------------------
 class Move:
-    """Immutable, tightly-packed move descriptor."""
-    __slots__ = ('_data', '_cached_hash', 'metadata')
+    __slots__ = ('_data', '_cached_hash', 'metadata', '_cached_from', '_cached_to')
 
     def __init__(
         self,
@@ -123,11 +142,14 @@ class Move:
             from_idx
             | (to_idx << 10)
             | (flags << 20)
-            | (captured_piece << 32)  # Shifted to 32 for 12-bit flags
-            | (promotion_type << 38)  # Shifted to 38
+            | (captured_piece << 32)
+            | (promotion_type << 38)
         )
         self._cached_hash: Optional[int] = None
         self.metadata: Dict[str, Any] = {}
+        # PRE-CACHE COORDINATES to avoid expensive computation
+        self._cached_from = from_coord
+        self._cached_to = to_coord
 
     @classmethod
     def create_simple(
@@ -136,53 +158,66 @@ class Move:
         to_coord: Tuple[int, int, int],
         is_capture: bool = False,
         debuffed: bool = False,
+        flags: int = 0,  # ADDED: flags parameter
     ) -> 'Move':
         move = _get_move_pool().acquire()
         from_idx = _COORD_TO_IDX[from_coord]
         to_idx = _COORD_TO_IDX[to_coord]
-        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0
-        if debuffed:
-            flags |= MOVE_FLAGS['DEBUFFED']
         move._data = from_idx | (to_idx << 10) | (flags << 20)
         move._cached_hash = None
         return move
 
     @classmethod
     def create_batch(
-        cls,
-        from_coord: Tuple[int, int, int],
+        cls, from_coord: Tuple[int, int, int],
         to_coords: np.ndarray,
         captures: np.ndarray,
         debuffed: bool = False,
     ) -> List['Move']:
+        """OPTIMIZED batch creation with reduced validation overhead."""
         n = len(to_coords)
         if n == 0:
             return []
 
-        if not all(0 <= c < 9 for c in from_coord):
-            print(f"Invalid from_coord: {from_coord}")
-            return []
-
-        # Filter invalid to_coords
+        # FAST bounds checking using numpy
         valid_mask = np.all((to_coords >= 0) & (to_coords < 9), axis=1)
-        if not np.all(valid_mask):
-            print(f"Invalid to_coords found: {to_coords[~valid_mask]}")
 
-        to_coords = to_coords[valid_mask]
-        captures = captures[valid_mask]
-        n = len(to_coords)
-        if n == 0:
+        # FAST same-square check
+        from_arr = np.array(from_coord)
+        same_square_mask = ~np.all(to_coords == from_arr, axis=1)
+        valid_mask = valid_mask & same_square_mask
+
+        valid_count = np.sum(valid_mask)
+        if valid_count == 0:
             return []
 
-        moves = _get_move_pool().acquire_batch(n)
-        from_idx = _COORD_TO_IDX[from_coord]
-        flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
+        # Use precomputed indices for valid moves only
+        to_valid = to_coords[valid_mask]
+        cap_valid = captures[valid_mask]
 
-        for i in range(n):
-            to_idx = _COORD_TO_IDX[tuple(to_coords[i])]
-            flags = flags_base | (MOVE_FLAGS['CAPTURE'] if captures[i] else 0)
-            moves[i]._data = from_idx | (to_idx << 10) | (flags << 20)
-            moves[i]._cached_hash = None
+        # VECTORIZED index computation
+        from_idx = _COORD_TO_IDX[from_coord]
+        to_idxs = to_valid[:, 0] + to_valid[:, 1] * 9 + to_valid[:, 2] * 81
+
+        # VECTORIZED flag computation
+        flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
+        capture_flag = MOVE_FLAGS['CAPTURE']
+        flags = np.where(cap_valid, flags_base | capture_flag, flags_base)
+
+        # VECTORIZED data computation
+        datas = from_idx | (to_idxs << 10) | (flags << 20)
+
+        # Batch acquire moves
+        moves = _get_move_pool().acquire_batch(valid_count)
+
+        # FAST assignment with pre-cached coordinates
+        for i in range(valid_count):
+            move = moves[i]
+            move._data = int(datas[i])
+            move._cached_hash = None
+            move._cached_from = from_coord
+            move._cached_to = tuple(to_valid[i])
+            move.metadata = {}  # Reset metadata
 
         return moves
     # ----------------------------------------------------------
@@ -201,26 +236,38 @@ class Move:
         return bool(self._data & (MOVE_FLAGS['BUFFED'] << 20))
 
     @property
+    def is_debuffed(self) -> bool:
+        return bool(self._data & (MOVE_FLAGS['DEBUFFED'] << 20))
+
+    @property
     def flags(self) -> int:
         return (self._data >> 20) & 0xFFF
 
     @property
     def from_coord(self) -> Tuple[int, int, int]:
+        # Use pre-cached coordinate if available
+        if hasattr(self, '_cached_from'):
+            return self._cached_from
+
+        # Fallback to computation only when needed
         idx = self._data & 0x3FF
-        z = idx // 81
-        r = idx % 81
-        y = r // 9
-        x = r % 9
-        return (x, y, z)
+        z, rem = divmod(idx, 81)
+        y, x = divmod(rem, 9)
+        coord = (x, y, z)
+        self._cached_from = coord
+        return coord
 
     @property
     def to_coord(self) -> Tuple[int, int, int]:
-        idx = (self._data >> 10) & 0x3FF
-        z = idx // 81
-        r = idx % 81
-        y = r // 9
-        x = r % 9
-        return (x, y, z)
+        if hasattr(self, '_cached_to'):
+            return self._cached_to
+
+        to_idx = (self._data >> 10) & 0x3FF
+        z, rem = divmod(to_idx, 81)
+        y, x = divmod(rem, 9)
+        coord = (x, y, z)
+        self._cached_to = coord
+        return coord
 
     # ----------------------------------------------------------
     # dunder + life-cycle
@@ -244,52 +291,15 @@ class Move:
         """Return this instance to the pool."""
         _get_move_pool().release(self)
 
+    @property
+    def promotion_type(self) -> int:
+        """Extract promotion piece type from packed data (6 bits sufficient for PieceType values)."""
+        return (self._data >> 38) & 0x3F
 
-# ------------------------------------------------------------------
-# legacy adaptor (unchanged)
-# ------------------------------------------------------------------
-def convert_legacy_move_args(
-    from_coord,
-    to_coord,
-    flags=0,
-    captured_piece=None,
-    is_promotion=False,
-    promotion_type=None,
-    is_en_passant=False,
-    is_castle=False,
-    is_archery=False,
-    is_hive=False,
-    is_self_detonate=False,
-    is_capture=False,
-    is_buffed=False,
-    is_debuffed=False,
-    **kwargs,
-):
-    flags = 0
-    if is_capture:
-        flags |= MOVE_FLAGS['CAPTURE']
-    if is_promotion:
-        flags |= MOVE_FLAGS['PROMOTION']
-    if is_en_passant:
-        flags |= MOVE_FLAGS['EN_PASSANT']
-    if is_castle:
-        flags |= MOVE_FLAGS['CASTLE']
-    if is_archery:
-        flags |= MOVE_FLAGS['ARCHERY']
-    if is_hive:
-        flags |= MOVE_FLAGS['HIVE']
-    if is_self_detonate:
-        flags |= MOVE_FLAGS['SELF_DETONATE']
-    if is_buffed:
-        flags |= MOVE_FLAGS['BUFFED']
-    if is_debuffed:
-        flags |= MOVE_FLAGS['DEBUFFED']
-
-    captured_int = captured_piece.ptype.value if captured_piece else 0
-    promotion_int = promotion_type.ptype.value if promotion_type else 0
-
-    return Move(from_coord, to_coord, flags, captured_int, promotion_int)
-
+    @property
+    def captured_piece(self) -> int:
+        """Extract captured piece type from packed data."""
+        return (self._data >> 32) & 0x3F
 
 # ------------------------------------------------------------------
 # MoveReceipt (unchanged)
@@ -338,5 +348,5 @@ __all__ = [
     'Move',
     'MoveReceipt',
     'MOVE_FLAGS',
-    'convert_legacy_move_args',
+    'Move',
 ]

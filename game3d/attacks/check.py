@@ -9,9 +9,10 @@ from typing import Protocol, Optional, Dict, Set, Tuple, List, Any
 from dataclasses import dataclass
 from enum import Enum
 
-from game3d.common.common import Coord
+from game3d.common.coord_utils import Coord
 from game3d.pieces.piece import Piece
 from game3d.common.enums import PieceType, Color
+from game3d.common.debug_utils import CacheStatsMixin
 
 @dataclass(slots=True)
 class CheckCache:
@@ -36,24 +37,16 @@ def _get_cache_from_board(board) -> Optional[Any]:
         return board.cache_manager
     return None
 
-def _any_priest_alive(
-    board,
-    king_color: Color | None = None,
-    cache: Any | None = None,
-) -> bool:
-    """
-    Return True if *king_color* still has at least one priest on the board.
-    If *king_color* is None -> True if ANY priest exists.
-    Delegates to the manager's occupancy cache counters.
-    """
+def _any_priest_alive(board, king_color: Color | None = None, cache: Any | None = None) -> bool:
     if cache is None:
-        cache = _get_cache_from_board(board)
+        # Try to get from board first
+        if hasattr(board, 'cache_manager') and board.cache_manager is not None:
+            cache = board.cache_manager
+        else:
+            # Fallback to global function
+            from game3d.cache.manager import get_cache_manager
+            cache = get_cache_manager(board, king_color or Color.WHITE)
 
-    if cache is None:
-        # Ultra-defensive fallback
-        return False
-
-    # CORRECTED: Use manager method
     if king_color is None:
         return cache.any_priest_alive()
     return cache.has_priest(king_color)
@@ -82,9 +75,6 @@ def _get_attacked_squares_from_move_cache(
     cache=None
 ) -> Set[Tuple[int, int, int]]:
     """Get all squares attacked by attacker_color using move cache through manager."""
-    if cache is None:
-        cache = _get_cache_from_board(board)
-
     if cache and hasattr(cache, 'move'):
         # CORRECTED: Access through manager
         return cache.move.get_attacked_squares(attacker_color)
@@ -107,7 +97,7 @@ def _calculate_attacked_squares_fallback(
         return attacked
 
     # CORRECTED: Access through manager
-    for coord, piece in cache.piece_cache.iter_color(attacker_color):
+    for coord, piece in cache.occupancy.iter_color(attacker_color):
         moves = _generate_piece_moves(board, coord, piece, cache)
         for move in moves:
             attacked.add(move.to_coord)
@@ -135,10 +125,10 @@ def _generate_piece_moves(
 
     # CORRECTED: Cache is the manager
     if cache is not None:
-        tmp_state.cache = cache
+        tmp_state.cache_manager = cache
     else:
         from game3d.cache.manager import get_cache_manager
-        tmp_state.cache = get_cache_manager(board, piece.color)
+        tmp_state.cache_manager = get_cache_manager(board, piece.color)
 
     try:
         return dispatcher(tmp_state, *coord)

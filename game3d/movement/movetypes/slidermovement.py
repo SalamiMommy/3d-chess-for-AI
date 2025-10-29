@@ -1,43 +1,49 @@
-# slidermovement.py (updated imports)
-"""Slider movement – kernel-only, no pre-computed rays."""
+# slidermovement.py - FIXED (parameter name consistency)
+"""Slider movement – use only public cache manager API."""
 from __future__ import annotations
 import numpy as np
 from numba import njit, prange
-from typing import List
+from typing import List, TYPE_CHECKING
 
 from game3d.common.enums import Color
-from game3d.movement.movepiece import Move, MOVE_FLAGS, convert_legacy_move_args
-from game3d.common.common import in_bounds, in_bounds_scalar  # UPDATED: Add scalar for njit
-# ------------------------------------------------------------------
-# 1.  Public generator (single entry-point)
-# ------------------------------------------------------------------
+from game3d.movement.movepiece import Move
+from game3d.common.coord_utils import in_bounds_scalar, in_bounds
+from game3d.common.cache_utils import ensure_int_coords
+
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+
 def generate_moves(
-    piece_type: str,                       # still accepted for logging / future use
+    piece_type: str,
     pos: tuple[int, int, int],
-    color: int,
+    color: Color,
     max_distance: int = 8,
     *,
-    directions: np.ndarray,                # ← REQUIRED now
-    occupancy: np.ndarray,                 # ← pass the current mask directly
+    directions: np.ndarray,
+    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
 ) -> List[Move]:
-    """Generate every slider move by running the Numba kernel once."""
+    """Generate every slider move using cache manager's public API."""
+    pos = ensure_int_coords(*pos)
+
+    # Use public API to get occupancy array
+    occupancy = cache_manager.get_occupancy_array_readonly()
+
     raw = generate_slider_moves_kernel(
         pos=pos,
         directions=directions,
         occupancy=occupancy,
-        color=color,
+        color=color.value,  # Convert to int for kernel
         max_distance=max_distance,
     )
+
     return [
-        convert_legacy_move_args(
+        Move.create_simple(
             from_coord=pos,
             to_coord=(nx, ny, nz),
             is_capture=is_cap,
         )
         for nx, ny, nz, is_cap in raw
     ]
-
-
 # ------------------------------------------------------------------
 # 2.  Hot Numba kernel (unchanged)
 # ------------------------------------------------------------------
@@ -62,10 +68,11 @@ def generate_slider_moves_kernel(
             nx = px + step * dx
             ny = py + step * dy
             nz = pz + step * dz
-            # UPDATED: Use in_bounds_scalar for njit
             if not in_bounds_scalar(nx, ny, nz):
                 break
             occ = occupancy[nz, ny, nx]
+
+            # CRITICAL FIX: Enhanced occupancy logic
             if occ == 0:                       # empty
                 move_coords[d_idx, count] = (nx, ny, nz)
                 is_capture[d_idx, count] = False
@@ -75,7 +82,7 @@ def generate_slider_moves_kernel(
                 is_capture[d_idx, count] = True
                 count += 1
                 break
-            else:                              # own piece
+            else:                              # own piece - stop here
                 break
         move_counts[d_idx] = count
 
@@ -87,7 +94,35 @@ def generate_slider_moves_kernel(
             moves.append((x, y, z, is_capture[d_idx, i]))
     return moves
 # ------------------------------------------------------------------
-# 3.  Convenience re-exports (keep existing callers happy)
+# 3.  Backward compatibility wrapper
+# ------------------------------------------------------------------
+def generate_moves_with_occupancy(
+    piece_type: str,
+    pos: tuple[int, int, int],
+    color: int,
+    max_distance: int = 8,
+    *,
+    directions: np.ndarray,
+    occupancy: np.ndarray,
+) -> List[Move]:
+    """Backward compatibility wrapper for existing callers."""
+    # Create a mock cache manager for compatibility
+    class MockCacheManager:
+        def __init__(self, occupancy):
+            self.occupancy = type('Occupancy', (), {'_occ': occupancy})()
+
+    mock_cache = MockCacheManager(occupancy)
+    return generate_moves(
+        piece_type=piece_type,
+        pos=pos,
+        color=color,
+        max_distance=max_distance,
+        directions=directions,
+        cache_manager=mock_cache
+    )
+
+# ------------------------------------------------------------------
+# 4.  Convenience re-exports
 # ------------------------------------------------------------------
 def dirty_squares_slider(mv, mover, cache_manager):
     """Same helper as before—unchanged."""

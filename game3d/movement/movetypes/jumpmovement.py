@@ -6,17 +6,17 @@ from numba import njit
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.movepiece import Move, MOVE_FLAGS
-from game3d.common.common import in_bounds_scalar, filter_valid_coords, color_to_code
+from game3d.common.coord_utils import in_bounds_scalar, filter_valid_coords
+from game3d.common.piece_utils import color_to_code
+from game3d.common.cache_utils import ensure_int_coords
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
-
 
 # ----------  JIT kernels stay exactly the same  ----------
 @njit(cache=True, inline="always")
 def _in_bounds(x: int, y: int, z: int) -> bool:
     return 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9
-
 
 @njit(fastmath=True, cache=True)
 def _jump_kernel_direct(
@@ -36,15 +36,18 @@ def _jump_kernel_direct(
         if not _in_bounds(tx, ty, tz):
             continue
         h = occ[tz, ty, tx]
+
+        # CRITICAL FIX: Check for friendly pieces
+        if h == own_code:
+            continue  # Skip friendly squares
+
         if h == 0:
             out.append((tx, ty, tz, False))
-        elif allow_capture and h != own_code:
+        elif allow_capture and h != own_code:  # This check is now redundant but safe
             if h == enemy_code and enemy_has_priests:
                 continue
             out.append((tx, ty, tz, True))
     return out
-
-
 # ----------  helper that builds Move objects  ----------
 def _build_jump_moves(
     color: Color,
@@ -60,7 +63,7 @@ def _build_jump_moves(
 
     to_coords = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
     to_coords = [tuple(int(c) for c in row) for row in
-                filter_valid_coords(to_coords, log_oob=True)]
+                filter_valid_coords(to_coords)]
     valid_raw = [
         (int(x), int(y), int(z), is_cap)
         for (x, y, z), (_, _, _, is_cap) in zip(to_coords, raw)
@@ -87,19 +90,18 @@ def _build_jump_moves(
         print(f"[ERROR] Move.create_batch failed for {start}: {e}")
         return []
 
-
 # ----------  main generator class  ----------
 class IntegratedJumpMovementGenerator:
-    __slots__ = ("mgr", "_jumptables", "_priest_cache")
+    __slots__ = ("cache_manager", "_jumptables", "_priest_cache")
 
-    def __init__(self, manager: OptimizedCacheManager) -> None:
-        self.mgr = manager
+    def __init__(self, cache_manager: 'OptimizedCacheManager') -> None:
+        self.cache_manager = cache_manager
         self._jumptables: dict = {}
         self._priest_cache: dict = {}
 
-    def _get_occ_arrays(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (colour_codes, piece_type_codes) as **copies** for Numba."""
-        return self.mgr.occupancy._occ.copy(), self.mgr.occupancy._ptype.copy()
+    def _get_occ_array(self) -> np.ndarray:
+        """Get occupancy array through public API only."""
+        return self.cache_manager.get_occupancy_array_readonly()
 
     def generate_jump_moves(
         self,
@@ -111,14 +113,15 @@ class IntegratedJumpMovementGenerator:
         use_amd: bool = True,
         piece_name: str | None = None,
     ) -> List[Move]:
-        occ, _ = self._get_occ_arrays()  # get arrays through manager
+        pos = ensure_int_coords(*pos)
+
+        # Use public API only
+        occ = self._get_occ_array()
+        is_buffed = self.cache_manager.is_movement_buffed(pos, color)
         own_code = color_to_code(color)
-        enemy_code = 1 if color == Color.BLACK else 2  # inverse colour code
+        enemy_code = 1 if color == Color.BLACK else 2
 
         enemy_has_priests = self._enemy_still_has_priests_fast(color)
-
-        # CORRECTED: Use manager method
-        is_buffed = self.mgr.is_movement_buffed(pos, color)
 
         raw = _jump_kernel_direct(
             pos,
@@ -138,7 +141,7 @@ class IntegratedJumpMovementGenerator:
         signs = np.sign(directions).astype(np.int16)
         extended_dirs = directions.astype(np.int16) + signs
         dest_coords = np.array(pos, dtype=np.int16) + extended_dirs
-        extended_dirs = filter_valid_coords(extended_dirs)  # keeps (N,3) shape
+        extended_dirs = filter_valid_coords(extended_dirs)
 
         if len(extended_dirs) == 0:
             return standard_moves
@@ -162,15 +165,18 @@ class IntegratedJumpMovementGenerator:
         return standard_moves + extended_moves
 
     def _enemy_still_has_priests_fast(self, color: Color) -> bool:
-        # CORRECTED: Use manager method (has_priest is a manager method)
-        return self.mgr.has_priest(color.opposite())
+        return self.cache_manager.has_priest(color.opposite())
 
+# ----------  factory with proper caching  ----------
+_jump_generators = {}  # cache_id -> generator
 
-# ----------  factory kept for compatibility  ----------
-def get_integrated_jump_movement_generator(cm: OptimizedCacheManager) -> IntegratedJumpMovementGenerator:
-    if not hasattr(cm, "_integrated_jump_gen") or cm._integrated_jump_gen is None:
-        cm._integrated_jump_gen = IntegratedJumpMovementGenerator(cm)
+def get_integrated_jump_movement_generator(cm: 'OptimizedCacheManager') -> IntegratedJumpMovementGenerator:
+    """Use the cache manager's existing generator instead of creating new one."""
+    if hasattr(cm, '_integrated_jump_gen') and cm._integrated_jump_gen is not None:
+        return cm._integrated_jump_gen
+
+    # Create and store in cache manager if not exists
+    cm._integrated_jump_gen = IntegratedJumpMovementGenerator(cm)
     return cm._integrated_jump_gen
-
 
 __all__ = ["get_integrated_jump_movement_generator"]

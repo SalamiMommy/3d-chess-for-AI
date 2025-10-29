@@ -1,26 +1,31 @@
-# occupancycache.py - CORRECTED VERSION
+# occupancycache.py
+# occupancycache.py - OPTIMIZED VERSION (Using Common Modules)
 from __future__ import annotations
 import numpy as np
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Iterator
 import torch
+from functools import lru_cache
 
 from game3d.pieces.piece import Piece
 from game3d.common.enums import Color, PieceType
-from game3d.common.common import (
+from game3d.common.constants import (
     Coord, PIECE_SLICE, COLOR_SLICE,
     N_PIECE_TYPES, SIZE_X, SIZE_Y, SIZE_Z,
-    N_TOTAL_PLANES, clip_coords, filter_valid_coords, in_bounds, in_bounds_vectorised
+    N_TOTAL_PLANES
 )
+from game3d.common.coord_utils import clip_coords, filter_valid_coords, in_bounds, in_bounds_vectorised
+from game3d.common.piece_utils import color_to_code
 
 class OccupancyCache:
-    """Optimized occupancy cache with minimal locking overhead."""
     __slots__ = (
         "_occ", "_ptype", "_white_pieces", "_black_pieces",
-        "_valid", "_occ_view", "_lock", "_gen", "_board",
-        "_piece_cache", "_piece_cache_max_size", "_priest_count"
+        "_valid", "_occ_view", "_lock", "_gen", "_manager",
+        "_piece_cache", "_piece_cache_max_size", "_priest_count", "_board"
     )
 
-    def __init__(self, board: "Board") -> None:
+    def __init__(self, manager: "OptimizedCacheManager") -> None:
+        self._manager = manager          # keep the link
+        board = manager.board            # board lives on the manager
         self._occ = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
         self._ptype = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
         self._white_pieces: Dict[Coord, PieceType] = {}
@@ -28,14 +33,13 @@ class OccupancyCache:
         self._valid = False
         self._board = board
         self._gen = -1
+        # self._board = cache_manager.board
         self._occ_view: Optional[np.ndarray] = None
-        # Use a simpler lock that doesn't reenter
-        # Aggressive caching
         self._piece_cache = {}
-        self._piece_cache_max_size = 8192  # Larger cache
+        self._piece_cache_max_size = 8192
         self._priest_count = np.zeros(2, dtype=np.uint8)
         self.rebuild(board)
-        # CORRECTION: Add assert for color codes
+
         unique = np.unique(self._occ)
         if not np.all(np.isin(unique, [0, 1, 2])):
             bad = unique[~np.isin(unique, [0, 1, 2])]
@@ -45,7 +49,7 @@ class OccupancyCache:
             )
 
     def is_occupied(self, x: int, y: int, z: int) -> bool:
-        """Check if occupied - NO LOCK for read-only operations."""
+        """Check if occupied - parameters are (x,y,z), array indexed as [z,y,x]."""
         return self._occ[z, y, x] != 0
 
     def is_occupied_batch(self, coords: np.ndarray) -> np.ndarray:
@@ -53,8 +57,11 @@ class OccupancyCache:
         if coords.size == 0:
             return np.array([], dtype=bool)
 
-        z, y, x = coords.T
-        x, y, z = clip_coords(x, y, z)  # UPDATED: Use common.py
+        if coords.shape[1] != 3:
+            raise ValueError(f"Expected coords with shape (N,3), got {coords.shape}")
+
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        x, y, z = clip_coords(x, y, z)
         return self._occ[z, y, x] != 0
 
     def has_priest(self, color: Color) -> bool:
@@ -73,59 +80,58 @@ class OccupancyCache:
         return self._occ.tobytes()
 
     def get(self, coord: Coord) -> Optional[Piece]:
-        """Get piece - LOCK-FREE cache hit, lock only on miss."""
-        # Early exit for OOB coordinates (defensive)
+        """Get piece - CONSISTENT (x,y,z) coordinate input."""
+        x, y, z = coord
+
         if not in_bounds(coord):
-            # Optionally cache None for this invalid coord (rare, but prevents repeated checks)
             if len(self._piece_cache) < self._piece_cache_max_size:
                 self._piece_cache[coord] = None
             return None
 
-        # Try cache first WITHOUT lock
         cached = self._piece_cache.get(coord)
         if cached is not None:
             return cached
 
-        # Cache miss - safe to index now
-        x, y, z = coord
         color_code = self._occ[z, y, x]
         if color_code == 0:
-            # Cache the None result
             if len(self._piece_cache) < self._piece_cache_max_size:
                 self._piece_cache[coord] = None
             return None
 
-        # Construct and cache piece...
         color = Color.WHITE if color_code == 1 else Color.BLACK
         ptype = PieceType(self._ptype[z, y, x])
         piece = Piece(color, ptype)
 
-        # Cache it WITHOUT lock
         if len(self._piece_cache) < self._piece_cache_max_size:
             self._piece_cache[coord] = piece
 
         return piece
 
-    def get_batch(self, coords: np.ndarray) -> list[Piece | None]:
-        """
-        Get pieces for multiple coordinates – LOCK-FREE.
-        Gracefully handles OOB inputs by clamping.
-        """
+    def get_batch(self, coords: np.ndarray, skip_validation: bool = False, return_raw: bool = False) -> list[Piece | None]:
+        """Get pieces for multiple coordinates – LOCK-FREE."""
         if coords.size == 0:
             return []
 
-        # Filter OOB upfront (fast vectorised reject)
-        valid_mask = in_bounds_vectorised(coords)
-        if not np.any(valid_mask):
-            return [None] * len(coords)
+        if coords.shape[1] != 3:
+            raise ValueError(f"Expected coords with shape (N,3), got {coords.shape}")
 
-        # Clamp the valid coordinates before indexing
-        valid_coords = coords[valid_mask]
-        x_coords, y_coords, z_coords = valid_coords.T
-        x_coords, y_coords, z_coords = clip_coords(x_coords, y_coords, z_coords)  # UPDATED
+        if not skip_validation:
+            valid_mask = in_bounds_vectorised(coords)
+            if not np.any(valid_mask):
+                return [None] * len(coords)
+            valid_coords = coords[valid_mask]
+        else:
+            valid_mask = None
+            valid_coords = coords
+
+        x_coords, y_coords, z_coords = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x_coords, y_coords, z_coords = clip_coords(x_coords, y_coords, z_coords)
 
         color_codes = self._occ[z_coords, y_coords, x_coords]
         ptypes = self._ptype[z_coords, y_coords, x_coords]
+
+        if return_raw:
+            return color_codes, ptypes
 
         results = []
         for i in range(len(color_codes)):
@@ -136,230 +142,308 @@ class OccupancyCache:
                 ptype = PieceType(ptypes[i])
                 results.append(Piece(color, ptype))
 
-        # Pad results for invalid coords
-        full_results = [None] * len(coords)
-        full_results[valid_mask] = results
-        return full_results
+        if skip_validation:
+            return results
+        else:
+            # FIX: Convert boolean mask to integer indices for list assignment
+            full_results = [None] * len(coords)
+            valid_indices = np.where(valid_mask)[0]
+            for idx, result in zip(valid_indices, results):
+                full_results[idx] = result
+            return full_results
 
-    def get_type(self, coord: Coord, color: Color) -> Optional[PieceType]:
-        """Get piece type - LOCK-FREE."""
-        # Implementation truncated in original; assuming standard get logic
-        piece = self.get(coord)
-        if piece and piece.color == color:
-            return piece.ptype
-        return None
+    def get_type(self, x: int, y: int, z: int) -> int:
+        """Get piece type code."""
+        return self._ptype[z, y, x]
 
-    def _clip_coords(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Clamp coordinates to board bounds."""
-        return np.clip(x, 0, SIZE_X - 1), np.clip(y, 0, SIZE_Y - 1), np.clip(z, 0, SIZE_Z - 1)
+    def get_color(self, x: int, y: int, z: int) -> int:
+        """Get color code: 0 empty, 1 white, 2 black."""
+        return self._occ[z, y, x]
 
-    def iter_color(self, color: Color) -> List[Tuple[Coord, Piece]]:
-        code = 1 if color == Color.WHITE else 2
-        z_idx, y_idx, x_idx = np.where(self._occ == code)
-        return [
-            ((int(x), int(y), int(z)),
-            Piece(Color.WHITE if code == 1 else Color.BLACK,
-                PieceType(self._ptype[z, y, x])))
-            for x, y, z in zip(x_idx, y_idx, z_idx)
-        ]
+    def get_color_batch(self, coords: np.ndarray) -> np.ndarray:
+        """Batch get color codes."""
+        if coords.size == 0:
+            return np.array([])
+
+        valid_mask = in_bounds_vectorised(coords)
+        valid_coords = coords[valid_mask]
+        x, y, z = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x, y, z = clip_coords(x, y, z)
+        colors = self._occ[z, y, x]
+
+        full_colors = np.zeros(len(coords), dtype=np.uint8)
+        full_colors[valid_mask] = colors
+        return full_colors
+
+    def get_type_batch(self, coords: np.ndarray) -> np.ndarray:
+        """Batch get piece types."""
+        if coords.size == 0:
+            return np.array([])
+
+        valid_mask = in_bounds_vectorised(coords)
+        valid_coords = coords[valid_mask]
+        x, y, z = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x, y, z = clip_coords(x, y, z)
+        types = self._ptype[z, y, x]
+
+        full_types = np.zeros(len(coords), dtype=np.uint8)
+        full_types[valid_mask] = types
+        return full_types
+
+    def iter_occupied(self) -> Iterator[Tuple[Coord, Piece]]:
+        """Iterate occupied squares with Piece instances."""
+        for z in range(SIZE_Z):
+            for y in range(SIZE_Y):
+                for x in range(SIZE_X):
+                    color_code = self._occ[z, y, x]
+                    if color_code != 0:
+                        color = Color.WHITE if color_code == 1 else Color.BLACK
+                        ptype = PieceType(self._ptype[z, y, x])
+                        yield (x, y, z), Piece(color, ptype)
+
+    def iter_color(self, color: Color) -> Iterator[Tuple[Coord, Piece]]:
+        """Iterate pieces of specific color."""
+        pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
+        for coord_tuple, ptype in pieces_dict.items():
+            yield coord_tuple, Piece(color, ptype)
+
+    def iter_batch(self, coords: np.ndarray) -> Iterator[Tuple[Coord, Optional[Piece]]]:
+        """Batch iterator for given coordinates."""
+        colors, types = self.batch_get_piece_attributes(coords)
+        for i, coord in enumerate(coords):
+            cc, pt = colors[i], types[i]
+            if cc == 0:
+                yield tuple(coord), None
+            else:
+                piece_color = Color.WHITE if cc == 1 else Color.BLACK
+                yield tuple(coord), Piece(piece_color, PieceType(pt))
 
     def rebuild(self, board: "Board") -> None:
-        """Full rebuild of the occupancy cache."""
-
+        """Rebuild from board."""
         self._occ.fill(0)
         self._ptype.fill(0)
         self._white_pieces.clear()
         self._black_pieces.clear()
+        self._priest_count = np.zeros(2, dtype=np.int8)
         self._piece_cache.clear()
-        self._priest_count.fill(0)
+
+        for coord, piece in board.enumerate_occupied():
+            x, y, z = coord
+            color_code = 1 if piece.color == Color.WHITE else 2
+            self._occ[z, y, x] = color_code
+            self._ptype[z, y, x] = piece.ptype.value
+            pieces_dict = self._white_pieces if piece.color == Color.WHITE else self._black_pieces
+            pieces_dict[coord] = piece.ptype
+
+            if piece.ptype == PieceType.PRIEST:
+                self._priest_count[piece.color.value] += 1
+
         self._valid = True
-        self._gen = getattr(board, 'generation', 0)
+        self._gen = board.generation if hasattr(board, 'generation') else self._gen + 1
 
-        for coord, piece in board.list_occupied():
-            self.set_position(coord, piece)
-
-    def set_position(self, coord: Coord, piece: Optional[Piece]) -> None:
-
+    def update(self, coord: Coord, piece: Optional[Piece]) -> None:
+        """Update single square."""
         x, y, z = coord
+        coord_tuple = tuple(coord)
+
+        # Update priest count
+        old_piece = self.get(coord)
+        if old_piece and old_piece.ptype == PieceType.PRIEST:
+            self._priest_count[old_piece.color.value] -= 1
+        if piece and piece.ptype == PieceType.PRIEST:
+            self._priest_count[piece.color.value] += 1
+
+        # Update arrays and dicts
         if piece is None:
             self._occ[z, y, x] = 0
             self._ptype[z, y, x] = 0
-            self._piece_cache.pop(coord, None)
-            # update priest count …
-            return
+            self._white_pieces.pop(coord_tuple, None)
+            self._black_pieces.pop(coord_tuple, None)
+        else:
+            color_code = 1 if piece.color == Color.WHITE else 2
+            self._occ[z, y, x] = color_code
+            self._ptype[z, y, x] = piece.ptype.value
+            pieces_dict = self._white_pieces if piece.color == Color.WHITE else self._black_pieces
+            pieces_dict[coord_tuple] = piece.ptype
 
-        # >>>>>>  NEW: reject garbage colour  <<<<<<
-        if piece.color not in (Color.WHITE, Color.BLACK):
-            raise ValueError(
-                f"Illegal colour {piece.color!r} for piece {piece} at {coord}"
-            )
-
-        colour_code = 1 if piece.color == Color.WHITE else 2
-        self._occ[z, y, x] = colour_code
-        self._ptype[z, y, x] = piece.ptype.value
-        # Cache the piece
-        if len(self._piece_cache) < self._piece_cache_max_size:
-            self._piece_cache[coord] = piece
-        # Update priest count
-        if piece.ptype == PieceType.PRIEST:
-            self._priest_count[piece.color] += 1
-
-    def batch_set_positions(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
-        """
-        Batch update positions - INCREMENTAL with priest count fix.
-        """
-
-        # CORRECTION: Update priest counts before applying
-        for coord, piece in updates:
-            old_piece = self.get(coord)  # Cache hit, but lock held now
-            if old_piece and old_piece.ptype == PieceType.PRIEST:
-                self._priest_count[old_piece.color.value] -= 1
-            if piece and piece.ptype == PieceType.PRIEST:
-                self._priest_count[piece.color.value] += 1
-
-        # Apply updates (standard logic)
-        for coord, piece in updates:
-            x, y, z = coord
-            if piece is None:
-                self._occ[z, y, x] = 0
-                self._ptype[z, y, x] = 0
-            else:
-                self._occ[z, y, x] = 1 if piece.color == Color.WHITE else 2
-                self._ptype[z, y, x] = piece.ptype.value
-            # CORRECTION: Invalidate piece cache for affected coords
-            self._piece_cache.pop(coord, None)
-
-        self._valid = True
+        self._piece_cache.pop(coord_tuple, None)
         self._gen += 1
 
-    def incremental_update(self, moves: List[Tuple[Coord, Coord, Optional[Piece]]]) -> None:
-        """
-        Apply incremental updates for multiple moves without full rebuild.
+    def batch_update(self, batch: List[Tuple[Coord, Optional[Piece]]]) -> None:
+        """Batch update occupancy."""
+        coords = np.array([coord for coord, _ in batch], dtype=np.int32)
+        pieces = [piece for _, piece in batch]
 
-        Args:
-            moves: List of tuples containing (from_coord, to_coord, promotion_piece)
-                promotion_piece is Optional[Piece] for pawn promotions
-        """
+        # Update priest counts - use int8 for consistency
+        old_pieces = self.get_batch(coords)
+        priest_delta = np.zeros(2, dtype=np.int8)  # Changed to int8
+        for old, new in zip(old_pieces, pieces):
+            if old and old.ptype == PieceType.PRIEST:
+                priest_delta[old.color.value] -= 1
+            if new and new.ptype == PieceType.PRIEST:
+                priest_delta[new.color.value] += 1
 
-        # Process all moves in batch
-        updates = []
+        # Now both arrays are int8, so no casting issues
+        self._priest_count = np.clip(self._priest_count + priest_delta, 0, 4)
 
-        for from_coord, to_coord, promotion_piece in moves:
-            # Get piece at from_coord
-            piece = self.get(from_coord)
-            if piece is None:
-                continue  # Skip if no piece at source
+        # Vectorized array updates
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
 
-            # Handle promotion if specified
-            if promotion_piece is not None:
-                piece = promotion_piece
+        # Clear all coordinates first
+        self._occ[z, y, x] = 0
+        self._ptype[z, y, x] = 0
 
-            # Prepare updates: remove from source, add to destination
-            updates.append((from_coord, None))
-            updates.append((to_coord, piece))
+        # Update non-None pieces
+        coords_arr = np.array([c for c, p in batch if p is not None])
+        pieces_arr = [p for c, p in batch if p is not None]
+        if len(coords_arr) > 0:
+            x, y, z = coords_arr[:, 0], coords_arr[:, 1], coords_arr[:, 2]
+            colors = np.array([1 if p.color == Color.WHITE else 2 for p in pieces_arr])
+            types = np.array([p.ptype.value for p in pieces_arr])
+            self._occ[z, y, x] = colors
+            self._ptype[z, y, x] = types
 
-        # Apply all updates in batch
-        self.batch_set_positions(updates)
+        # Update dictionaries using a simpler approach
+        for coord, piece in batch:
+            coord_tuple = tuple(coord)
 
-    def batch_get_pieces(self, coords: List[Coord]) -> List[Optional[Piece]]:
-        """
-        Get pieces for multiple coordinates efficiently.
+            # Remove from both dictionaries
+            self._white_pieces.pop(coord_tuple, None)
+            self._black_pieces.pop(coord_tuple, None)
+            self._piece_cache.pop(coord_tuple, None)
 
-        Args:
-            coords: List of coordinates to query
+            # Add to appropriate dictionary if piece exists
+            if piece is not None:
+                if piece.color == Color.WHITE:
+                    self._white_pieces[coord_tuple] = piece.ptype
+                else:
+                    self._black_pieces[coord_tuple] = piece.ptype
 
-        Returns:
-            List of pieces (None for empty squares)
-        """
+        self._gen += 1
 
-        # Convert list to numpy array for vectorized operations
-        coords_array = np.array(coords, dtype=int)
-        x_coords, y_coords, z_coords = coords_array.T
+    def batch_invalidate_cache(self, coords: np.ndarray) -> None:
+        """Mass cache invalidation for move generation."""
+        if coords.size == 0:
+            return
 
-        # Get color codes and piece types in vectorized manner
-        color_codes = self._occ[z_coords, y_coords, x_coords]
-        ptypes = self._ptype[z_coords, y_coords, x_coords]
+        for coord in coords:
+            self._piece_cache.pop(tuple(coord), None)
 
-        # Process results
-        results = []
-        for color_code, ptype_val in zip(color_codes, ptypes):
-            if color_code == 0:
-                results.append(None)
+    def batch_update_priest_count(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
+        """Batch update priest counts without per-piece function calls."""
+        priest_delta = np.zeros(2, dtype=np.int8)
+
+        for coord, new_piece in updates:
+            old_piece = self._piece_cache.get(tuple(coord))
+
+            # Old piece was priest
+            if old_piece and old_piece.ptype == PieceType.PRIEST:
+                priest_delta[old_piece.color.value] -= 1
+
+            # New piece is priest
+            if new_piece and new_piece.ptype == PieceType.PRIEST:
+                priest_delta[new_piece.color.value] += 1
+
+        # Apply delta
+        self._priest_count = np.clip(self._priest_count + priest_delta, 0, None)
+
+    # Add to occupancycache.py
+    @lru_cache(maxsize=32)  # Cache based on board gen or Zobrist
+    def batch_get_all_pieces_data(self, color: Optional[Color] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Get all piece coordinates and types as arrays for maximum vectorization."""
+        if color is None:
+            # Combine both colors - critical for 462 pieces
+            white_coords = np.array(list(self._white_pieces.keys()), dtype=np.int32)
+            black_coords = np.array(list(self._black_pieces.keys()), dtype=np.int32)
+
+            if len(white_coords) == 0:
+                all_coords = black_coords
+                all_types = np.array([self._black_pieces[tuple(coord)] for coord in black_coords], dtype=np.uint8)
+            elif len(black_coords) == 0:
+                all_coords = white_coords
+                all_types = np.array([self._white_pieces[tuple(coord)] for coord in white_coords], dtype=np.uint8)
             else:
-                color = Color.WHITE if color_code == 1 else Color.BLACK
-                ptype = PieceType(ptype_val)
-                results.append(Piece(color, ptype))
+                all_coords = np.vstack([white_coords, black_coords])
+                white_types = np.array([self._white_pieces[tuple(coord)] for coord in white_coords], dtype=np.uint8)
+                black_types = np.array([self._black_pieces[tuple(coord)] for coord in black_coords], dtype=np.uint8)
+                all_types = np.concatenate([white_types, black_types])
+        else:
+            pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
+            all_coords = np.array(list(pieces_dict.keys()), dtype=np.int32)
+            all_types = np.array([pieces_dict[tuple(coord)] for coord in all_coords], dtype=np.uint8)
 
-        return results
+        return all_coords, all_types
 
-    def batch_get_types(self, coords: List[Coord], color: Color) -> List[Optional[PieceType]]:
-        """
-        Get piece types for multiple coordinates of a specific color.
+    def batch_get_piece_attributes(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Vectorized piece attribute retrieval - no bounds checking for speed."""
+        if coords.size == 0:
+            return np.array([], dtype=np.uint8), np.array([], dtype=np.uint8)
 
-        Args:
-            coords: List of coordinates to query
-            color: Color of pieces to check
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        colors = self._occ[z, y, x]
+        types = self._ptype[z, y, x]
+        return colors, types
 
-        Returns:
-            List of piece types (None for non-matching squares)
-        """
+    def batch_is_occupied_fast(self, coords: np.ndarray) -> np.ndarray:
+        """Ultra-fast occupancy check assuming pre-validated coordinates."""
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        return self._occ[z, y, x] != 0
 
-        # Convert list to numpy array for vectorized operations
-        coords_array = np.array(coords, dtype=int)
-        x_coords, y_coords, z_coords = coords_array.T
+    def batch_get_colors_and_types(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Ultra-fast batch retrieval of colors and types without bounds checking"""
+        if coords.size == 0:
+            return np.array([], dtype=np.uint8), np.array([], dtype=np.uint8)
 
-        # Get color codes and piece types in vectorized manner
-        color_codes = self._occ[z_coords, y_coords, x_coords]
-        ptypes = self._ptype[z_coords, y_coords, x_coords]
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        colors = self._occ[z, y, x]
+        types = self._ptype[z, y, x]
+        return colors, types
 
-        # Expected color code
-        expected_code = 1 if color == Color.WHITE else 2
+    def batch_update_piece_dicts(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:
+        """Batch update piece dictionaries for white and black pieces"""
+        for coord, piece in updates:
+            coord_tuple = tuple(coord)
 
-        # Process results
-        results = []
-        for color_code, ptype_val in zip(color_codes, ptypes):
-            if color_code != expected_code:
-                results.append(None)
+            # Remove from both dictionaries first
+            self._white_pieces.pop(coord_tuple, None)
+            self._black_pieces.pop(coord_tuple, None)
+
+            # Add to appropriate dictionary if piece exists
+            if piece:
+                if piece.color == Color.WHITE:
+                    self._white_pieces[coord_tuple] = piece.ptype
+                else:
+                    self._black_pieces[coord_tuple] = piece.ptype
+
+    def get_batch_raw(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:  # colors, types, valid_mask
+        if coords.size == 0:
+            return np.array([]), np.array([]), np.array([])
+
+        valid_mask = in_bounds_vectorised(coords)
+        valid_coords = coords[valid_mask]
+        x, y, z = valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2]
+        x, y, z = clip_coords(x, y, z)  # Assuming clip_coords vectorized
+
+        colors = self._occ[z, y, x]
+        types = self._ptype[z, y, x]
+        return colors, types, valid_mask
+
+    def incremental_update(self, updates: List[Tuple[Coord, Coord, Optional[Piece]]]) -> None:
+        """Incremental update for move operations - handles (from_coord, to_coord, piece) tuples"""
+        batch_updates = []
+
+        for from_coord, to_coord, piece in updates:
+            # Remove piece from from_coord
+            batch_updates.append((from_coord, None))
+
+            # Set piece at to_coord (if piece is provided)
+            if piece is not None:
+                batch_updates.append((to_coord, piece))
             else:
-                results.append(PieceType(ptype_val))
+                # For cases where we don't have the piece, get it from the cache
+                moving_piece = self.get(from_coord)
+                if moving_piece:
+                    batch_updates.append((to_coord, moving_piece))
 
-        return results
-
-    def batch_is_occupied(self, coords: List[Coord]) -> List[bool]:
-        """
-        Check if multiple coordinates are occupied.
-
-        Args:
-            coords: List of coordinates to check
-
-        Returns:
-            List of booleans indicating occupancy
-        """
-
-        # Convert list to numpy array for vectorized operations
-        coords_array = np.array(coords, dtype=int)
-        z_coords, y_coords, x_coords = coords_array.T
-
-        # Vectorized occupancy check
-        return (self._occ[z_coords, y_coords, x_coords] != 0).tolist()
-
-    def has_piece_type(self, ptype: PieceType, color: Color) -> bool:
-        """True if at least one piece of the given type/color is on the board."""
-        return any(
-            p == ptype
-            for coord, p in self.iter_color(color))
-
-    def find_king(self, color: Color) -> Optional[Coord]:
-        """
-        Return the coordinate of the *single* king of the requested colour.
-        Returns None if no king is found (should never happen in a legal game).
-        """
-        code = 1 if color == Color.WHITE else 2
-        # np.where gives (z_idx, y_idx, x_idx) tuples
-        z_idx, y_idx, x_idx = np.where(
-            (self._occ == code) & (self._ptype == PieceType.KING.value)
-        )
-        if z_idx.size == 0:          # no king on board
-            return None
-        # assume exactly one king; take the first hit
-        return int(x_idx[0]), int(y_idx[0]), int(z_idx[0])
+        if batch_updates:
+            self.batch_update(batch_updates)

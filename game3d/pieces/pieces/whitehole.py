@@ -1,22 +1,21 @@
 """White-Hole – moves like a Speeder and pushes enemies 1 step away at turn end."""
 
 from __future__ import annotations
-from typing import List, Dict, Tuple, TYPE_CHECKING
-import torch
+from typing import List, Dict, Tuple, TYPE_CHECKING, Set  # ADDED: Set import
 
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
 from game3d.movement.movepiece import Move
-from game3d.common.common import add_coords, in_bounds
-from game3d.pieces.piece import Piece
-if TYPE_CHECKING:
-    from game3d.pieces.pieces.auras.aura import BoardProto
-    from game3d.movement.cache import OptimizedCacheManager
+from game3d.common.coord_utils import add_coords, in_bounds, chebyshev_distance
+from game3d.common.piece_utils import get_pieces_by_type
+from game3d.common.cache_utils import is_occupied_safe, ensure_int_coords  # CHANGED: is_occupied_safe
 
-# ------------------------------------------------------------------
-#  Internal helpers
-# ------------------------------------------------------------------
+if TYPE_CHECKING:
+    from game3d.board.board import BoardProto
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
+
 def _away(pos: Tuple[int, int, int], target: Tuple[int, int, int]) -> Tuple[int, int, int]:
     """1 Chebyshev step from pos *away* from target."""
     x, y, z = pos
@@ -26,71 +25,47 @@ def _away(pos: Tuple[int, int, int], target: Tuple[int, int, int]) -> Tuple[int,
     dz = 0 if z == tz else (1 if tz < z else -1)
     return add_coords(pos, (dx, dy, dz))
 
-def _pieces_from_board(board):
-    """Cold-start fallback: produce (coord, Piece) tuples."""
-    tensor = board.tensor()          # (C, D, H, W)
-    occ = tensor[:40].sum(dim=0)     # any piece plane > 0
-    idx = torch.nonzero(occ, as_tuple=False)  # (N, 3)  -> z,y,x
-    for z, y, x in idx.tolist():
-        coord = (x, y, z)
-        # find first plane that is 1.0 for this square
-        for p in range(40):
-            if tensor[p, z, y, x] > 0.5:
-                # determine colour
-                white_plane = tensor[80, z, y, x]
-                color = Color.WHITE if white_plane > 0.5 else Color.BLACK
-                yield coord, Piece(color, PieceType(p))   # ← Piece object, not PieceType
-                break
-# ------------------------------------------------------------------
-#  Public API
-# ------------------------------------------------------------------
 def generate_whitehole_moves(
-    cache_manager,
+    cache_manager: 'OptimizedCacheManager',  # STANDARDIZED
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
     """White-Hole moves exactly like a Speeder (king single steps)."""
-    return generate_king_moves(cache_manager, color, x, y, z)
-
+    return generate_king_moves(cache_manager, color, x, y, z)  # STANDARDIZED: pass cache_manager
 
 def push_candidates(
-    board: BoardProto,
+    cache_manager: 'OptimizedCacheManager',  # STANDARDIZED: Single parameter
     controller: Color,
-    cache_manager: OptimizedCacheManager | None = None
 ) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
     """
     Return dict {enemy_square: push_target} for every enemy within
-    2-sphere of any friendly WHITE_HOLE.  Push target is 1 step away
-    from the nearest hole (first hole found).
+    2-sphere of any friendly WHITE_HOLE.
     """
-    from game3d.common.common import get_pieces_by_type, chebyshev_distance
-
     out: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
-    holes: list[Tuple[int, int, int]] = [
-        coord for coord, _ in get_pieces_by_type(board, PieceType.WHITEHOLE, controller)
+
+    holes = [
+        coord for coord, piece in cache_manager.get_pieces_of_color(controller)
+        if piece.ptype == PieceType.WHITEHOLE
     ]
+
     if not holes:
         return out
 
-    if board.cache_manager is not None:                      # fast path
-        iterable = board.cache_manager.occupancy.iter_color(None)
-    else:                                                    # cold-start path
-        iterable = _pieces_from_board(board)
+    enemy_color = controller.opposite()
 
-    for coord, piece in iterable:
-        if piece.color == controller:
-            continue
+    # Use cache manager's piece iteration
+    for coord, piece in cache_manager.get_pieces_of_color(enemy_color):
         for hole in holes:
             if chebyshev_distance(coord, hole) <= 2:
                 push = _away(coord, hole)
-                if in_bounds(push):
+                # Use standardized cache utils
+                if in_bounds(push) and not is_occupied_safe(cache_manager, push):
                     out[coord] = push
-                break  # push away from first hole only
+                break
     return out
 
-# ------------------------------------------------------------------
-#  Dispatcher registration
-# ------------------------------------------------------------------
 @register(PieceType.WHITEHOLE)
-def whitehole_move_dispatcher(state, x: int, y: int, z: int) -> List[Move]:
-    return generate_whitehole_moves(state.cache, state.color, x, y, z)
+def whitehole_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
+    x, y, z = ensure_int_coords(x, y, z)
+    # STANDARDIZED: Use cache_manager property
+    return generate_whitehole_moves(state.cache_manager, state.color, x, y, z)

@@ -17,27 +17,31 @@ from game3d.pieces.pieces.hive import (
     get_movable_hives, apply_multi_hive_move
 )
 
-# game3d/game3d.py
+# ADD MISSING IMPORT
+from game3d.cache.manager import OptimizedCacheManager
+
 class OptimizedGame3D:
-    __slots__ = ("_state", "_game_mode", "_debug_turn_info", "_move_history")
+    __slots__ = ("_state", "_game_mode", "_debug_turn_info", "_move_history", "_cache_manager")
 
     def __init__(
         self,
         *,
         board: Board | None = None,
-        cache: OptimizedCacheManager | None = None,
+        cache: OptimizedCacheManager | None = None,  # Parameter is 'cache'
         game_mode: GameMode = GameMode.STANDARD,
         debug_turn_info: bool = True,
     ) -> None:
         if board is None:
-            board = Board.startpos()  # still empty
+            board = Board.startpos()
         if cache is None:
             raise RuntimeError("OptimizedGame3D must be given an external cache")
+
+        self._cache_manager = cache  # Store reference
 
         self._state = GameState(
             board=board,
             color=Color.WHITE,
-            cache=cache,
+            cache_manager=cache,  # FIX: Use 'cache', not 'cache_manager'
             game_mode=game_mode,
         )
         self._game_mode = game_mode
@@ -79,12 +83,24 @@ class OptimizedGame3D:
         """
         start_time = time.perf_counter()
 
+        #debug
+        piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)
+        if piece is None or piece.color != self.current_player:
+            return self._create_error_receipt("No own piece on from-square", start_time)
+
+        piece_name = piece.ptype.name.replace("_", "")          # KNIGHT32 -> KNIGHT32
+        piece_str  = piece_name if piece.color == Color.WHITE else piece_name.lower()
+
+
         if self._debug_turn_info:
+            target_piece = self._state.cache_manager.occupancy_cache.get(move.to_coord)
+            is_capture = target_piece is not None and target_piece.color != self.current_player
+            capture_info = " (CAPTURE)" if is_capture else ""
             print(f"[Turn {self._state.turn_number}] "
-                f"{self.current_player.name} submits {move}")
+                  f"{self.current_player.name} {piece_str} {move}{capture_info}")
 
         # ----- fast reject -------------------------------------------------
-        piece = self._state.cache.piece_cache.get(move.from_coord)
+        piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)
         if piece is None or piece.color != self.current_player:
             return self._create_error_receipt("No own piece on from-square",
                                             start_time)
@@ -110,7 +126,7 @@ class OptimizedGame3D:
                     # --------------------------------------------------------------
                     break   # ← remove this line if you want auto-loop
 
-                # finally flip colour
+                # finally flip colour - REUSE existing cache manager
                 self._state = self._state.pass_turn()
                 return MoveReceipt(
                     new_state=self._state,
@@ -137,12 +153,13 @@ class OptimizedGame3D:
         """The original submit_move body (colour flips automatically)."""
         try:
             # Validate move before applying
-            piece = self._state.cache.piece_cache.get(mv.from_coord)
+            piece = self._state.cache_manager.occupancy_cache.get(mv.from_coord)
             if piece is None:
                 return self._create_error_receipt(f"No piece at {mv.from_coord}", start_time)
             if piece.color != self._state.color:
                 return self._create_error_receipt(f"Cannot move opponent's piece", start_time)
 
+            # This will reuse the existing cache manager via make_move
             new_state = self._state.make_move(mv)
             self._move_history.append((mv, time.perf_counter() - start_time))
             self._state = new_state
@@ -178,22 +195,34 @@ class OptimizedGame3D:
 
     def _get_cache_stats(self) -> Dict[str, Any]:
         """Get current cache statistics."""
-        if hasattr(self._state.cache, 'get_stats'):
-            return self._state.cache.get_stats()
+        if hasattr(self._state.cache_manager, 'get_stats'):
+            return self._state.cache_manager.get_stats()
         return {}
 
     def reset(self, start_state: Optional[GameState] = None) -> None:
-        """Reset game with optional starting state."""
+        """Reset game with optional starting state - REUSE existing cache manager."""
         if start_state:
             self._state = start_state
+            # Update our cache manager reference
+            self._cache_manager = start_state.cache_manager
         else:
             board = Board.startpos()
             current_color = Color.WHITE
-            cache = get_cache_manager(board, current_color)
+
+            # KEY FIX: Reuse existing cache manager instead of creating new one
+            if hasattr(self, '_cache_manager') and self._cache_manager is not None:
+                # Rebuild existing cache manager for new board
+                self._cache_manager.rebuild(board, current_color)
+                cache_to_use = self._cache_manager
+            else:
+                # Only create new cache manager if we don't have one
+                cache_to_use = get_cache_manager(board, current_color)
+                self._cache_manager = cache_to_use
+
             self._state = GameState(
                 board=board,
                 color=current_color,
-                cache=cache,
+                cache_manager=cache_to_use,  # Use reused or new cache manager
                 game_mode=self._game_mode
             )
 
@@ -209,3 +238,9 @@ class OptimizedGame3D:
 
     def __repr__(self) -> str:
         return f"OptimizedGame3D({self._state}, mode={self._game_mode.value})"
+
+    # ADDED: Method to get the cache manager for external reuse
+    @property
+    def cache_manager(self) -> OptimizedCacheManager:
+        """Get the cache manager for potential reuse in other game instances."""
+        return self._cache_manager

@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from game3d.common.common import SIZE_X, SIZE_Y, SIZE_Z, N_CHANNELS
+from game3d.common.constants import SIZE_X, SIZE_Y, SIZE_Z, N_CHANNELS, SIZE
 from typing import Optional, Tuple
-SIZE = 9
 
 # ==============================================================================
 # OPTIMIZED 3D RESNET FOR CHESS

@@ -12,7 +12,7 @@ from enum import Enum
 from dataclasses import dataclass
 from functools import lru_cache
 
-from game3d.common.common import (
+from game3d.common.constants import (
     SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_COLOR_PLANES
 )
 from game3d.common.enums import Color, PieceType

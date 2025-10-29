@@ -1,14 +1,13 @@
 """
-training/opponents.py
-Defines opponent types for self-play in 3D chess, with custom reward logic.
+training/opponents.py - FIXED to avoid creating temporary states
+Defines opponent types with reward logic that doesn't clone states.
 """
 
 from typing import List, Optional, Tuple, Dict, Any
 from game3d.common.enums import Color, PieceType
 from game3d.game.gamestate import GameState
 from game3d.movement.movepiece import Move
-from game3d.cache.manager import get_cache_manager
-from game3d.board.board import Board
+from game3d.common.piece_utils import find_king
 
 # Utility: Center squares (middle layer, center of board)
 CENTER_SQUARES = [
@@ -27,172 +26,189 @@ def is_priest(piece) -> bool:
 def is_king(piece) -> bool:
     return piece is not None and piece.ptype == PieceType.KING
 
-
 class OpponentBase:
-    """Base class for all opponents."""
     def __init__(self, color: Color):
         self.color = color
+        self.visited_positions = set()
+        self.position_counter = {}
+        self.repetition_penalty = -5.0  # INCREASED from -1.0
+        self.recent_moves = []  # Track last N moves
+        self.max_history = 10
 
-    def _get_simulated_state(self, state: GameState, move: Move) -> GameState:
-        """Create an isolated simulated state after the move."""
-        temp_board = Board(state.board.tensor().clone())
-        temp_cache = get_cache_manager(temp_board, state.color)
-        temp_state = GameState(
-            board=temp_board,
-            color=state.color,
-            cache=temp_cache,
-            history=state.history,
-            halfmove_clock=state.halfmove_clock,
-            game_mode=state.game_mode,
-            turn_number=state.turn_number,
-        )
-        next_state = temp_state.make_move(move)
-        return next_state
+    def _get_position_key(self, state: GameState, move: Move) -> str:
+        """Include move direction to detect oscillation."""
+        board_hash = state.board.byte_hash()
+        move_key = f"{move.from_coord}->{move.to_coord}"
+        return f"{board_hash}:{move_key}:{state.color}"
 
     def reward(self, state: GameState, move: Move) -> float:
-        """Compute reward for a move given the current state."""
         raise NotImplementedError
 
-    def observe(self, state: GameState):
-        """Update opponent's internal state if needed."""
-        pass
+    def get_repetition_penalty(self, state: GameState, move: Move) -> float:
+        """Heavily penalize repeated positions AND oscillating moves."""
+        position_key = self._get_position_key(state, move)
+        count = self.position_counter.get(position_key, 0)
 
+        # Exponential penalty for repetition
+        if count >= 3:
+            return self.repetition_penalty * 4  # -20.0
+        elif count >= 2:
+            return self.repetition_penalty * 2  # -10.0
+        elif count >= 1:
+            return self.repetition_penalty      # -5.0
+
+        # Detect oscillation (A→B→A→B pattern)
+        if len(self.recent_moves) >= 4:
+            last_4 = self.recent_moves[-4:]
+            if last_4[0] == last_4[2] and last_4[1] == last_4[3]:
+                return self.repetition_penalty * 3  # -15.0 for oscillation
+
+        return 0.0
+
+    def observe(self, state: GameState, move: Move):
+        """Update tracking after move is made."""
+        position_key = self._get_position_key(state, move)
+        self.position_counter[position_key] = self.position_counter.get(position_key, 0) + 1
+        self.visited_positions.add(position_key)
+
+        # Track recent moves for oscillation detection
+        move_repr = (move.from_coord, move.to_coord)
+        self.recent_moves.append(move_repr)
+        if len(self.recent_moves) > self.max_history:
+            self.recent_moves.pop(0)
 
 class AdversarialOpponent(OpponentBase):
-    """Adversarial opponent: tries to win, rewards for check, priest capture."""
+    """Adversarial opponent: rewards captures, checks, and tactical moves."""
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
+        cache_manager = state.cache_manager
 
-        # Reward for capturing any piece
-        captured = state.cache.piece_cache.get(move.to_coord)
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
+        # Reward for captures
+        captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.2
             if is_priest(captured):
                 reward += 1.0  # Big reward for priests
 
-        # Small reward for capturing opposite priest
-        if captured and is_priest(captured) and captured.color == self.color.opposite():
-            reward += 0.5
+        # Reward for moving to attacked squares (aggressive)
+        attacked_by_enemy = cache_manager.get_attacked_squares(self.color.opposite())
+        if move.to_coord in attacked_by_enemy:
+            # Only if we're capturing or it's a sacrifice
+            if captured:
+                reward += 0.1  # Aggressive capture
 
-        # Small reward for putting king in check (after move)
-        next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
-        if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
-            if opp_king_pos in attacked:
-                reward += 0.2
+        # Reward for attacking enemy king square (without simulating)
+        enemy_king_pos = find_king(state, self.color.opposite())
+        if enemy_king_pos:
+            # Check if this move would attack the king square
+            # This is a heuristic - doesn't require full simulation
+            from_piece = cache_manager.occupancy_cache.get(move.from_coord)
+            if from_piece:
+                # Simple heuristic: if move brings us closer to king
+                from game3d.common.coord_utils import manhattan_distance
+                old_dist = manhattan_distance(move.from_coord, enemy_king_pos)
+                new_dist = manhattan_distance(move.to_coord, enemy_king_pos)
+                if new_dist < old_dist:
+                    reward += 0.05  # Small reward for approaching king
 
-        # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
-        if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
-            if my_king_pos in attacked:
-                reward -= 0.2
+        # Penalty for moving into danger (leaving piece attacked)
+        my_attacked_squares = cache_manager.get_attacked_squares(self.color)
+        if move.from_coord in my_attacked_squares and move.to_coord not in my_attacked_squares:
+            reward -= 0.1  # Moving out of danger is good
 
         return reward
 
 
 class CenterControlOpponent(OpponentBase):
-    """Opponent that favors moving to/controlling the center."""
+    """Opponent that favors controlling the center."""
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
+        cache_manager = state.cache_manager
 
-        # Small reward for moving toward center
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
+        # Reward for moving to center
         if is_center(move.to_coord):
             reward += 0.3
 
-        # Small reward for capturing any piece
-        captured = state.cache.piece_cache.get(move.to_coord)
+        # Reward for captures
+        captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             reward += 0.2
             if is_priest(captured):
                 reward += 1.0
 
-        # Small reward for capturing opposite priest
-        if captured and is_priest(captured) and captured.color == self.color.opposite():
-            reward += 0.5
-
-        # Small reward for putting king in check
-        next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
-        if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
-            if opp_king_pos in attacked:
-                reward += 0.2
-
-        # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
-        if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
-            if my_king_pos in attacked:
-                reward -= 0.2
+        # Reward for controlling center squares with attacks
+        # (without full simulation - use piece type heuristics)
+        from_piece = cache_manager.occupancy_cache.get(move.from_coord)
+        if from_piece and from_piece.ptype in [PieceType.KNIGHT, PieceType.BISHOP, PieceType.QUEEN]:
+            # These pieces control center well
+            if is_center(move.to_coord):
+                reward += 0.1
 
         return reward
 
 
 class PieceCaptureOpponent(OpponentBase):
-    """Opponent that gets a small reward for capturing any piece."""
+    """Opponent that prioritizes capturing pieces."""
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
+        cache_manager = state.cache_manager
 
-        captured = state.cache.piece_cache.get(move.to_coord)
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
+        captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
-            reward += 0.5  # Small reward for any capture
+            reward += 0.5  # Base capture reward
             if is_priest(captured):
                 reward += 1.0
 
-        # Small reward for capturing opposite priest
-        if captured and is_priest(captured) and captured.color == self.color.opposite():
-            reward += 0.5
-
-        # Small reward for putting king in check
-        next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
-        if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
-            if opp_king_pos in attacked:
-                reward += 0.2
-
-        # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
-        if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
-            if my_king_pos in attacked:
-                reward -= 0.2
+            # Bonus for capturing high-value pieces
+            if captured.ptype in [PieceType.QUEEN, PieceType.ROOK]:
+                reward += 0.3
 
         return reward
 
 
 class PriestHunterOpponent(OpponentBase):
-    """Opponent that gets a big reward for capturing priests."""
+    """Opponent that specifically hunts priests."""
     def reward(self, state: GameState, move: Move) -> float:
         reward = 0.0
+        cache_manager = state.cache_manager
 
-        captured = state.cache.piece_cache.get(move.to_coord)
+        repetition_penalty = self.get_repetition_penalty(state, move)
+        reward += repetition_penalty
+
+        captured = cache_manager.occupancy_cache.get(move.to_coord)
         if captured and captured.color == self.color.opposite():
             if is_priest(captured):
-                reward += 3.0  # Big reward for priests
+                reward += 3.0  # Huge reward for priests
             else:
                 reward += 0.2  # Small reward for other captures
 
-        # Small reward for capturing opposite priest
-        if captured and is_priest(captured) and captured.color == self.color.opposite():
-            reward += 0.5
+        # Reward for moving closer to enemy priests
+        from game3d.common.piece_utils import get_pieces_by_type
+        enemy_priests = get_pieces_by_type(state.board, PieceType.PRIEST, self.color.opposite(), cache_manager)
 
-        # Small reward for putting king in check
-        next_state = self._get_simulated_state(state, move)
-        opp_king_pos = next_state.cache.find_king(self.color.opposite())
-        if opp_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color)
-            if opp_king_pos in attacked:
-                reward += 0.2
+        if enemy_priests:
+            from game3d.common.coord_utils import manhattan_distance
+            # Find closest priest
+            min_old_dist = float('inf')
+            min_new_dist = float('inf')
 
-        # Penalty for being in check
-        my_king_pos = next_state.cache.find_king(self.color)
-        if my_king_pos is not None:
-            attacked = next_state.cache.move.get_attacked_squares(self.color.opposite())
-            if my_king_pos in attacked:
-                reward -= 0.2
+            for priest_coord, _ in enemy_priests:
+                old_dist = manhattan_distance(move.from_coord, priest_coord)
+                new_dist = manhattan_distance(move.to_coord, priest_coord)
+                min_old_dist = min(min_old_dist, old_dist)
+                min_new_dist = min(min_new_dist, new_dist)
+
+            if min_new_dist < min_old_dist:
+                reward += 0.1  # Reward for getting closer to priest
 
         return reward
 
