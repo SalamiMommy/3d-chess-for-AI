@@ -24,8 +24,8 @@ def create_occupancy_mask_tensor(board_tensor: torch.Tensor) -> torch.Tensor:
     """Create boolean occupancy mask from board tensor. Supports scalar and batch mode."""
     if board_tensor.ndim == 4:
         # Single board: [C, D, H, W]
-        pieces = board_tensor[PIECE_SLICE].sum(dim=0)
-        return pieces > 0
+        pieces = board_tensor[PIECE_SLICE].sum(dim=0 if board_tensor.ndim == 4 else 1)
+        return (pieces > 0).bool()
     elif board_tensor.ndim == 5:
         # Batch of boards: [B, C, D, H, W]
         pieces = board_tensor[:, PIECE_SLICE].sum(dim=1)

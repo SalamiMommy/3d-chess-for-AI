@@ -16,59 +16,32 @@ if TYPE_CHECKING:
 
 Coord = Tuple[int, int, int]
 
-def extract_directions_and_steps_vectorized(start: Union[Coord, torch.Tensor], to_coords: Union[np.ndarray, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
-    """Fully vectorized direction extraction - supports scalar and batch mode."""
-    if torch.is_tensor(to_coords) and to_coords.ndim > 2:
-        # Batch mode: multiple starts and multiple to_coords
-        batch_size = to_coords.shape[0] if to_coords.ndim == 3 else 1
-        if torch.is_tensor(start) and start.ndim > 1:
-            # Multiple starts
-            starts = start
-        else:
-            # Single start repeated for batch
-            starts = torch.tensor(start).unsqueeze(0).repeat(batch_size, 1)
-
-        batch_directions = []
-        batch_max_steps = []
-
-        for i in range(batch_size):
-            single_start = starts[i] if starts.shape[0] > 1 else starts[0]
-            single_to_coords = to_coords[i] if to_coords.ndim == 3 else to_coords
-            dirs, steps = extract_directions_and_steps_vectorized(single_start, single_to_coords)
-            batch_directions.append(dirs)
-            batch_max_steps.append(steps)
-
-        return batch_directions, batch_max_steps
-
-    elif torch.is_tensor(to_coords):
-        # Convert tensor to numpy for processing
-        to_coords_np = to_coords.cpu().numpy() if to_coords.is_cuda else to_coords.numpy()
+def extract_directions_and_steps_vectorized(start, to_coords):
+    if torch.is_tensor(to_coords):
+        # Stay in Torch: No conversion!
+        if to_coords.ndim < 2:
+            to_coords = to_coords.unsqueeze(0)
+        start = torch.tensor(start, dtype=to_coords.dtype).to(to_coords.device) if not torch.is_tensor(start) else start
+        deltas = (to_coords - start).to(torch.int8)
+        abs_deltas = torch.abs(deltas)
+        norms = torch.max(abs_deltas, dim=1, keepdims=True)[0]
+        norms_no_zero = torch.where(norms == 0, torch.tensor(1, dtype=torch.int8), norms)
+        unit_dirs = (deltas // norms_no_zero).to(torch.int8)
+        uniq_dirs = torch.unique(unit_dirs, dim=0) if unit_dirs.numel() > 0 else unit_dirs
+        max_steps = int(torch.max(norms).item()) if norms.numel() > 0 else 0
+        return uniq_dirs.cpu().numpy(), max_steps  # Convert only at end if needed.
     else:
-        to_coords_np = to_coords
-
-    if to_coords_np.size == 0:
-        return np.empty((0, 3), dtype=np.int8), 0
-
-    if torch.is_tensor(start):
-        start_arr = start.cpu().numpy() if start.is_cuda else start.numpy()
-    else:
-        start_arr = np.asarray(start, dtype=np.int32)
-
-    deltas = to_coords_np.astype(np.int32) - start_arr
-
-    # Vectorized Chebyshev norm
-    abs_deltas = np.abs(deltas)
-    norms = np.max(abs_deltas, axis=1, keepdims=True)
-
-    # Avoid division by zero and convert to int8
-    norms_no_zero = np.where(norms == 0, 1, norms)
-    unit_dirs = (deltas // norms_no_zero).astype(np.int8)
-
-    # Get unique directions efficiently
-    uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
-    max_steps = int(np.max(norms)) if len(norms) > 0 else 0
-
-    return uniq_dirs, max_steps
+        # NumPy path: Use int8.
+        to_coords_np = np.asarray(to_coords, dtype=np.int8)
+        start_arr = np.asarray(start, dtype=np.int8)
+        deltas = to_coords_np - start_arr
+        abs_deltas = np.abs(deltas)
+        norms = np.max(abs_deltas, axis=1, keepdims=True)
+        norms_no_zero = np.where(norms == 0, 1, norms)
+        unit_dirs = (deltas // norms_no_zero).astype(np.int8)
+        uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
+        max_steps = int(np.max(norms)) if len(norms) > 0 else 0
+        return uniq_dirs, max_steps
 
 def extract_directions_and_steps(to_coords: Union[np.ndarray, torch.Tensor], start: Union[Coord, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
     return extract_directions_and_steps_vectorized(start, to_coords)

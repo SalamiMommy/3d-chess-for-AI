@@ -82,11 +82,10 @@ def filter_valid_coords(coords: np.ndarray) -> np.ndarray:
 
 # NEW – real functions that the rest of the code can call
 def coord_to_idx(coord: Union[Coord, torch.Tensor]) -> Union[int, torch.Tensor]:
-    """9×9×9 linear index:  x + 9*y + 81*z   (0 … 728) - supports scalar and batch mode."""
     if isinstance(coord, torch.Tensor) and coord.ndim > 1:
-        # Batch mode: [N, 3] -> [N]
+        coord = coord.to(torch.int8)
         x, y, z = coord[:, 0], coord[:, 1], coord[:, 2]
-        return x + SIZE * y + SIZE_SQUARED * z
+        return (x + SIZE * y + SIZE_SQUARED * z).to(torch.int16)
     else:
         # Scalar mode
         if isinstance(coord, torch.Tensor):

@@ -34,8 +34,8 @@ def validate_moves_fast(
     expected_color = piece.color if piece else state.color
 
     # Extract coordinates in single batch
-    from_coords = np.array([m.from_coord for m in moves], dtype=np.int32)
-    to_coords = np.array([m.to_coord for m in moves], dtype=np.int32)
+    from_coords = np.array([m.from_coord for m in moves], dtype=np.int8)  # Changed from int32.
+    to_coords = np.array([m.to_coord for m in moves], dtype=np.int8)
 
     # Batch occupancy checks
     from_colors, _ = cache.occupancy.batch_get_colors_and_types(from_coords)

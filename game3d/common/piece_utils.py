@@ -23,17 +23,10 @@ def color_to_code(color: "Color") -> int:
     return 1 if color.value == 1 else 2
 
 def find_king(state: "GameState", color: Union[Color, torch.Tensor]) -> Union[Optional[Coord], List[Optional[Coord]]]:
-    """Vectorised, lock-free search for the king - supports scalar and batch mode."""
     if isinstance(color, torch.Tensor) and color.ndim > 0:
-        # Batch mode
-        return [find_king(state, Color(c.item())) for c in color]
-
-    # Scalar mode
-    # Direct iteration with early termination
-    for coord, piece in state.cache_manager.get_pieces_of_color(color):
-        if piece.ptype == PieceType.KING:
-            return coord
-    return None
+        # Vectorized batch: Avoid loop, but since cache access isn't vectorized, loop is fine. Use torch.int8 for colors.
+        colors = color.to(torch.int8)
+        return [find_king(state, Color(c.item())) for c in colors]
 
 def infer_piece_from_cache(
     cache_manager: "OptimizedCacheManager",
@@ -45,13 +38,13 @@ def infer_piece_from_cache(
     FIXED: Handles Piece objects correctly - optimized with direct cache access.
     """
     if isinstance(coord, torch.Tensor) and coord.ndim > 1:
-        # Batch mode
-        pieces = []
-        for i in range(coord.shape[0]):
-            single_coord = tuple(coord[i].tolist())
-            piece = cache_manager.get_piece(single_coord)
-            pieces.append(piece if piece else Piece(Color.WHITE, fallback_type))
-        return pieces
+            coord = coord.to(torch.int8)  # Minimize: Cast once.
+            pieces = []
+            for i in range(coord.shape[0]):
+                single_coord = tuple(coord[i].tolist())
+                piece = cache_manager.get_piece(single_coord)
+                pieces.append(piece if piece else Piece(Color.WHITE, fallback_type))
+                return pieces
     else:
         # Scalar mode
         if isinstance(coord, torch.Tensor):
@@ -151,7 +144,7 @@ def get_pieces_by_type(
     piece_planes = tensor[PIECE_SLICE]
 
     # Create mask for the wanted piece type
-    mask = piece_planes[ptype.value] > 0.5
+    mask = (piece_planes[ptype.value] > 0.5).bool()
 
     if color is not None:
         color_plane = tensor[80]  # Assuming color plane at index 80

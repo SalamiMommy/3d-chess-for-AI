@@ -20,23 +20,23 @@ class OccupancyCache:
     __slots__ = (
         "_occ", "_ptype", "_white_pieces", "_black_pieces",
         "_valid", "_occ_view", "_lock", "_gen", "_manager",
-        "_piece_cache", "_piece_cache_max_size", "_priest_count", "_board"
+        "_piece_cache", "_priest_count", "_board"
     )
 
     def __init__(self, manager: "OptimizedCacheManager") -> None:
-        self._manager = manager          # keep the link
-        board = manager.board            # board lives on the manager
-        self._occ = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
-        self._ptype = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
+        self._manager = manager
+        board = manager.board
+
+        # Use uint8 for everything - most efficient for GPU transfer
+        self._occ = np.zeros((9, 9, 9), dtype=np.uint8)  # 0=empty, 1=white, 2=black
+        self._ptype = np.zeros((9, 9, 9), dtype=np.uint8)  # PieceType values
+
         self._white_pieces: Dict[Coord, PieceType] = {}
         self._black_pieces: Dict[Coord, PieceType] = {}
         self._valid = False
         self._board = board
         self._gen = -1
-        # self._board = cache_manager.board
-        self._occ_view: Optional[np.ndarray] = None
         self._piece_cache = {}
-        self._piece_cache_max_size = 8192
         self._priest_count = np.zeros(2, dtype=np.uint8)
         self.rebuild(board)
 
@@ -84,8 +84,7 @@ class OccupancyCache:
         x, y, z = coord
 
         if not in_bounds(coord):
-            if len(self._piece_cache) < self._piece_cache_max_size:
-                self._piece_cache[coord] = None
+            self._piece_cache[coord] = None
             return None
 
         cached = self._piece_cache.get(coord)
@@ -94,16 +93,15 @@ class OccupancyCache:
 
         color_code = self._occ[z, y, x]
         if color_code == 0:
-            if len(self._piece_cache) < self._piece_cache_max_size:
-                self._piece_cache[coord] = None
+            self._piece_cache[coord] = None
             return None
 
         color = Color.WHITE if color_code == 1 else Color.BLACK
         ptype = PieceType(self._ptype[z, y, x])
         piece = Piece(color, ptype)
 
-        if len(self._piece_cache) < self._piece_cache_max_size:
-            self._piece_cache[coord] = piece
+
+        self._piece_cache[coord] = piece
 
         return piece
 
@@ -390,10 +388,11 @@ class OccupancyCache:
         return self._occ[z, y, x] != 0
 
     def batch_get_colors_and_types(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Ultra-fast batch retrieval of colors and types without bounds checking"""
+        """Ultra-fast batch retrieval using direct memory access."""
         if coords.size == 0:
             return np.array([], dtype=np.uint8), np.array([], dtype=np.uint8)
 
+        # Use advanced indexing without bounds checking (assumes pre-validated)
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         colors = self._occ[z, y, x]
         types = self._ptype[z, y, x]
