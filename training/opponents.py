@@ -26,44 +26,56 @@ def is_priest(piece) -> bool:
 def is_king(piece) -> bool:
     return piece is not None and piece.ptype == PieceType.KING
 
-
 class OpponentBase:
     def __init__(self, color: Color):
         self.color = color
         self.visited_positions = set()
         self.position_counter = {}
-        self.repetition_penalty = -1.0
+        self.repetition_penalty = -5.0  # INCREASED from -1.0
+        self.recent_moves = []  # Track last N moves
+        self.max_history = 10
 
     def _get_position_key(self, state: GameState, move: Move) -> str:
-        """Create a unique key for position + move combination."""
-        # Use board hash + current move
+        """Include move direction to detect oscillation."""
         board_hash = state.board.byte_hash()
-        move_key = f"{move.from_coord}-{move.to_coord}"
+        move_key = f"{move.from_coord}->{move.to_coord}"
         return f"{board_hash}:{move_key}:{state.color}"
 
     def reward(self, state: GameState, move: Move) -> float:
         raise NotImplementedError
 
-    def observe(self, state: GameState, move: Move):
-        """Update opponent's internal state after move."""
-        position_key = self._get_position_key(state, move)
-
-        # Track position frequency
-        self.position_counter[position_key] = self.position_counter.get(position_key, 0) + 1
-
-        # Add to visited positions
-        self.visited_positions.add(position_key)
-
     def get_repetition_penalty(self, state: GameState, move: Move) -> float:
-        """Get penalty for repetitive positions."""
+        """Heavily penalize repeated positions AND oscillating moves."""
         position_key = self._get_position_key(state, move)
         count = self.position_counter.get(position_key, 0)
 
+        # Exponential penalty for repetition
         if count >= 3:
-            return self.repetition_penalty * 2  # Heavy penalty for 3+ repetitions
+            return self.repetition_penalty * 4  # -20.0
         elif count >= 2:
-            return self.repetition_penalty  # Standard penalty for 2 repetitions
+            return self.repetition_penalty * 2  # -10.0
+        elif count >= 1:
+            return self.repetition_penalty      # -5.0
+
+        # Detect oscillation (A→B→A→B pattern)
+        if len(self.recent_moves) >= 4:
+            last_4 = self.recent_moves[-4:]
+            if last_4[0] == last_4[2] and last_4[1] == last_4[3]:
+                return self.repetition_penalty * 3  # -15.0 for oscillation
+
         return 0.0
+
+    def observe(self, state: GameState, move: Move):
+        """Update tracking after move is made."""
+        position_key = self._get_position_key(state, move)
+        self.position_counter[position_key] = self.position_counter.get(position_key, 0) + 1
+        self.visited_positions.add(position_key)
+
+        # Track recent moves for oscillation detection
+        move_repr = (move.from_coord, move.to_coord)
+        self.recent_moves.append(move_repr)
+        if len(self.recent_moves) > self.max_history:
+            self.recent_moves.pop(0)
 
 class AdversarialOpponent(OpponentBase):
     """Adversarial opponent: rewards captures, checks, and tactical moves."""

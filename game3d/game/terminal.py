@@ -1,7 +1,8 @@
-# terminal.py - Updated with correct fifty-move rule implementation
+# terminal.py - FIXED with proper termination conditions
 from __future__ import annotations
 
 from typing import Optional, List
+from collections import defaultdict
 
 from game3d.board.board import Board
 from game3d.common.enums import Color, PieceType, Result
@@ -145,21 +146,72 @@ def _check_insufficient_material(game_state) -> bool:
     return False
 
 def is_fifty_move_draw(game_state) -> bool:
-    """Correct fifty-move rule implementation."""
-    return game_state.halfmove_clock >= 200
+    """
+    Fifty-move rule: Game is drawn if 50 consecutive moves by EACH player
+    (100 half-moves total) with no pawn move or capture.
+
+    For a 462-piece game, we use the standard 50-move rule.
+    halfmove_clock >= 100 means 50 full moves without progress.
+    """
+    return game_state.halfmove_clock >= 100
 
 def is_threefold_repetition(game_state) -> bool:
-    """Check for threefold repetition using Zobrist hashes."""
-    # Need to track position occurrences in game state or cache manager
+    """
+    Check for threefold repetition using Zobrist hashes.
+    The same position must occur 3 times (not necessarily consecutively).
+    """
+    # Initialize position tracking if not exists
+    if not hasattr(game_state, '_position_counts'):
+        game_state._position_counts = defaultdict(int)
+        # Count current position
+        game_state._position_counts[game_state.zkey] = 1
+        return False
+
+    current_zkey = game_state.zkey
+    count = game_state._position_counts.get(current_zkey, 0)
+
+    # Position must occur at least 3 times for threefold repetition
+    return count >= 3
+
+def is_fivefold_repetition(game_state) -> bool:
+    """
+    Fivefold repetition is an automatic draw (no claim needed).
+    This is stronger than threefold repetition.
+    """
     if not hasattr(game_state, '_position_counts'):
         return False
 
     current_zkey = game_state.zkey
-    return game_state._position_counts.get(current_zkey, 0) >= 3
+    count = game_state._position_counts.get(current_zkey, 0)
+    return count >= 5
+
+def is_seventy_five_move_draw(game_state) -> bool:
+    """
+    75-move rule: Automatic draw after 75 moves by each player (150 half-moves)
+    with no pawn move or capture. This is stronger than the fifty-move rule.
+    """
+    return game_state.halfmove_clock >= 150
 
 def is_game_over(game_state) -> bool:
-    """More conservative game over detection."""
-    # Only check terminal conditions if we have reasonable evidence
+    """
+    More conservative game over detection.
+    Game ends when:
+    1. No legal moves (checkmate or stalemate)
+    2. Fivefold repetition (automatic draw)
+    3. 75-move rule (automatic draw)
+    4. Insufficient material
+    """
+    # Check automatic draw conditions first (no claim needed)
+    if is_fivefold_repetition(game_state):
+        return True
+
+    if is_seventy_five_move_draw(game_state):
+        return True
+
+    if is_insufficient_material(game_state):
+        return True
+
+    # Check for no legal moves
     legal_moves = game_state.legal_moves()
 
     # If there are legal moves, game continues
@@ -184,14 +236,31 @@ def is_game_over(game_state) -> bool:
     return True  # True stalemate
 
 def result(game_state) -> Optional[Result]:
-    """Fast game result determination."""
+    """
+    Fast game result determination.
+    Returns None if game is not over.
+    """
     if not is_game_over(game_state):
         return None
 
-    # Check draw conditions first
-    if (is_fifty_move_draw(game_state) or
-        is_insufficient_material(game_state) or
-        is_stalemate(game_state)):
+    # Check automatic draw conditions first
+    if is_fivefold_repetition(game_state):
+        return Result.DRAW
+
+    if is_seventy_five_move_draw(game_state):
+        return Result.DRAW
+
+    # Check claimable draw conditions
+    if is_fifty_move_draw(game_state):
+        return Result.DRAW
+
+    if is_threefold_repetition(game_state):
+        return Result.DRAW
+
+    if is_insufficient_material(game_state):
+        return Result.DRAW
+
+    if is_stalemate(game_state):
         return Result.DRAW
 
     # If we're here and game is over, it must be checkmate
@@ -199,11 +268,14 @@ def result(game_state) -> Optional[Result]:
     return Result.BLACK_WON if game_state.color == Color.WHITE else Result.WHITE_WON
 
 def is_terminal(game_state) -> bool:
-    """Fast terminal check."""
+    """Fast terminal check - alias for is_game_over."""
     return is_game_over(game_state)
 
 def outcome(game_state) -> int:
-    """Fast outcome evaluation."""
+    """
+    Fast outcome evaluation.
+    Returns: 1 for white win, -1 for black win, 0 for draw.
+    """
     res = result(game_state)
     if res == Result.WHITE_WON:
         return 1
@@ -214,7 +286,7 @@ def outcome(game_state) -> int:
     raise ValueError("outcome() called on non-terminal state")
 
 def insufficient_material(board: Board) -> bool:
-    """Fast insufficient material check."""
+    """Fast insufficient material check (backward compatibility)."""
     piece_types = set()
     for _, piece in board.list_occupied():
         if piece.ptype != PieceType.KING:
@@ -228,3 +300,35 @@ def insufficient_material(board: Board) -> bool:
         return True  # Only kings and bishops/knights
 
     return False
+
+def get_draw_reason(game_state) -> Optional[str]:
+    """
+    Get the reason for a draw, if applicable.
+    Returns None if not a draw.
+    """
+    if not is_game_over(game_state):
+        return None
+
+    if result(game_state) != Result.DRAW:
+        return None
+
+    # Check all draw conditions and return the first that matches
+    if is_fivefold_repetition(game_state):
+        return "Fivefold repetition (automatic draw)"
+
+    if is_seventy_five_move_draw(game_state):
+        return "75-move rule (automatic draw)"
+
+    if is_fifty_move_draw(game_state):
+        return "50-move rule"
+
+    if is_threefold_repetition(game_state):
+        return "Threefold repetition"
+
+    if is_insufficient_material(game_state):
+        return "Insufficient material"
+
+    if is_stalemate(game_state):
+        return "Stalemate"
+
+    return "Unknown draw reason"

@@ -83,14 +83,21 @@ class OptimizedGame3D:
         """
         start_time = time.perf_counter()
 
+        #debug
+        piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)
+        if piece is None or piece.color != self.current_player:
+            return self._create_error_receipt("No own piece on from-square", start_time)
+
+        piece_name = piece.ptype.name.replace("_", "")          # KNIGHT32 -> KNIGHT32
+        piece_str  = piece_name if piece.color == Color.WHITE else piece_name.lower()
+
+
         if self._debug_turn_info:
-            # Check if this is a capture move
             target_piece = self._state.cache_manager.occupancy_cache.get(move.to_coord)
             is_capture = target_piece is not None and target_piece.color != self.current_player
-
             capture_info = " (CAPTURE)" if is_capture else ""
             print(f"[Turn {self._state.turn_number}] "
-                f"{self.current_player.name} submits {move}{capture_info}")
+                  f"{self.current_player.name} {piece_str} {move}{capture_info}")
 
         # ----- fast reject -------------------------------------------------
         piece = self._state.cache_manager.occupancy_cache.get(move.from_coord)

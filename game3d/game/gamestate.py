@@ -7,7 +7,7 @@ Optimized 9×9×9 game state with incremental updates, caching, and performance 
 from dataclasses import dataclass, field, replace
 from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING, Set
 from enum import Enum
-
+from collections import defaultdict
 import torch
 import numpy as np
 
@@ -42,7 +42,7 @@ class GameState:
     game_mode: GameMode = GameMode.STANDARD
     turn_number: int = 1
 
-    # REMOVED: _zkey field - now managed by cache_manager only
+
     _legal_moves_cache: Optional[List[Move]] = field(default=None, repr=False)
     _legal_moves_cache_key: Optional[int] = field(default=None, repr=False)
     _tensor_cache: Optional[torch.Tensor] = field(default=None, repr=False)
@@ -54,13 +54,17 @@ class GameState:
     _metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics, repr=False)
     _undo_stack: List[Dict[str, Any]] = field(default_factory=list, repr=False)
     _undo_info: Optional[Any] = field(default=None, repr=False)
+    _position_counts: Optional[defaultdict] = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.cache_manager is None:
             raise RuntimeError("GameState must be given an external cache_manager")
         self.board.cache_manager = self.cache_manager
-        # REMOVED: Zobrist hash initialization - now managed by cache_manager
         self._clear_caches()
+
+        # initialise the repetition counter
+        if self._position_counts is None:
+            self._position_counts = defaultdict(int)
 
     @property
     def cache_manager(self):
