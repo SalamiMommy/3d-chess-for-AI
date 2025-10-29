@@ -654,16 +654,31 @@ class UnifiedAuraCache(CacheStatsMixin):
         self._cache_manager = cache_manager
 
     def batch_is_frozen(self, coords: List[Coord], color: Color) -> np.ndarray:
-        """Batch version of is_frozen for performance."""
+        """Optimized batch frozen check using direct array access."""
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
 
-        results = np.zeros(len(coords), dtype=bool)
-        for i, coord in enumerate(coords):
-            x, y, z = coord
-            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
-                results[i] = self._coverage[AuraType.FREEZE][color][z, y, x] > 0
-        return results
+        n = len(coords)
+        if n == 0:
+            return np.array([], dtype=bool)
+
+        # Pre-allocate result
+        result = np.zeros(n, dtype=bool)
+
+        # Direct array access (avoid method call per coordinate)
+        coverage = self._coverage[AuraType.FREEZE][color]
+
+        # Vectorized access
+        coords_arr = np.array(coords, dtype=np.int32)
+        x, y, z = coords_arr[:, 0], coords_arr[:, 1], coords_arr[:, 2]
+
+        # Bounds check
+        valid = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+
+        # Fast lookup for valid coordinates
+        result[valid] = coverage[z[valid], y[valid], x[valid]] > 0
+
+        return result
 
 def create_unified_aura_cache(board: Optional["Board"] = None, cache_manager=None) -> UnifiedAuraCache:
     return UnifiedAuraCache(board, cache_manager)

@@ -174,50 +174,50 @@ class Move:
         captures: np.ndarray,
         debuffed: bool = False,
     ) -> List['Move']:
-        """OPTIMIZED batch creation with reduced validation overhead."""
+        """ULTRA-OPTIMIZED batch creation."""
         n = len(to_coords)
         if n == 0:
             return []
 
-        # FAST bounds checking using numpy
-        valid_mask = np.all((to_coords >= 0) & (to_coords < 9), axis=1)
+        # Single-pass bounds + same-square check
+        from_arr = np.array(from_coord, dtype=np.int32)
+        valid_mask = (
+            (to_coords[:, 0] >= 0) & (to_coords[:, 0] < 9) &
+            (to_coords[:, 1] >= 0) & (to_coords[:, 1] < 9) &
+            (to_coords[:, 2] >= 0) & (to_coords[:, 2] < 9) &
+            ((to_coords[:, 0] != from_arr[0]) |
+            (to_coords[:, 1] != from_arr[1]) |
+            (to_coords[:, 2] != from_arr[2]))
+        )
 
-        # FAST same-square check
-        from_arr = np.array(from_coord)
-        same_square_mask = ~np.all(to_coords == from_arr, axis=1)
-        valid_mask = valid_mask & same_square_mask
-
-        valid_count = np.sum(valid_mask)
+        valid_count = int(np.sum(valid_mask))
         if valid_count == 0:
             return []
 
-        # Use precomputed indices for valid moves only
         to_valid = to_coords[valid_mask]
         cap_valid = captures[valid_mask]
 
-        # VECTORIZED index computation
+        # Pre-computed index
         from_idx = _COORD_TO_IDX[from_coord]
         to_idxs = to_valid[:, 0] + to_valid[:, 1] * 9 + to_valid[:, 2] * 81
 
-        # VECTORIZED flag computation
+        # Vectorized flags
         flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
-        capture_flag = MOVE_FLAGS['CAPTURE']
-        flags = np.where(cap_valid, flags_base | capture_flag, flags_base)
-
-        # VECTORIZED data computation
+        flags = np.where(cap_valid, flags_base | MOVE_FLAGS['CAPTURE'], flags_base)
         datas = from_idx | (to_idxs << 10) | (flags << 20)
 
-        # Batch acquire moves
+        # Batch acquire
         moves = _get_move_pool().acquire_batch(valid_count)
 
-        # FAST assignment with pre-cached coordinates
+        # Minimize Python loop work
+        to_list = to_valid.tolist()  # Single conversion
         for i in range(valid_count):
             move = moves[i]
             move._data = int(datas[i])
             move._cached_hash = None
             move._cached_from = from_coord
-            move._cached_to = tuple(to_valid[i])
-            move.metadata = {}  # Reset metadata
+            move._cached_to = tuple(to_list[i])
+            move.metadata = {}
 
         return moves
     # ----------------------------------------------------------

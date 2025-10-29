@@ -57,38 +57,22 @@ def _build_jump_moves(
 ) -> List[Move]:
     if not raw:
         return []
-    if any(c < 0 or c >= 9 for c in start):
-        print(f"[ERROR] _build_jump_moves: invalid start position {start}")
+
+    # Fast validation using numpy
+    coords_arr = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
+
+    # Single-pass bounds check
+    valid_mask = np.all((coords_arr >= 0) & (coords_arr < 9), axis=1)
+
+    if not np.any(valid_mask):
         return []
 
-    to_coords = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
-    to_coords = [tuple(int(c) for c in row) for row in
-                filter_valid_coords(to_coords)]
-    valid_raw = [
-        (int(x), int(y), int(z), is_cap)
-        for (x, y, z), (_, _, _, is_cap) in zip(to_coords, raw)
-        if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9
-    ]
+    # Filter once
+    valid_coords = coords_arr[valid_mask]
+    valid_caps = np.array([is_cap for _, _, _, is_cap in raw], dtype=bool)[valid_mask]
 
-    rejected = len(raw) - len(valid_raw)
-    if rejected:
-        print(f"[WARNING] _build_jump_moves rejected {rejected} OOB coords from {start}")
-
-    if not valid_raw:
-        return []
-
-    n = len(valid_raw)
-    to_coords = np.empty((n, 3), dtype=np.int32)
-    captures = np.empty(n, dtype=bool)
-    for i, (x, y, z, is_cap) in enumerate(valid_raw):
-        to_coords[i] = (x, y, z)
-        captures[i] = is_cap
-
-    try:
-        return Move.create_batch(start, to_coords, captures)
-    except (IndexError, KeyError) as e:
-        print(f"[ERROR] Move.create_batch failed for {start}: {e}")
-        return []
+    # Use optimized Move.create_batch
+    return Move.create_batch(start, valid_coords, valid_caps)
 
 # ----------  main generator class  ----------
 class IntegratedJumpMovementGenerator:
