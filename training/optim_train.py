@@ -167,7 +167,7 @@ class ChessTrainer:
         self.scheduler = self._create_scheduler()
         self.criterion = ChessLoss(config.policy_weight, config.value_weight)
         # Fix: Updated GradScaler to use torch.amp
-        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision else None
+        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision and self.device.type == 'cuda' else None
 
         if config.use_ema:
             self.ema_model = self._create_model()
@@ -234,17 +234,26 @@ class ChessTrainer:
 
             self.optimizer.zero_grad()
 
-            with torch.amp.autocast('cuda', enabled=self.config.mixed_precision):
+            # Use autocast only for CUDA
+            if self.device.type == 'cuda' and self.config.mixed_precision:
+                with torch.amp.autocast('cuda'):
+                    from_logits, to_logits, value_pred = self.model(states)
+                    loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
+
+                if self.scaler:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
+                    self.optimizer.step()
+            else:
+                # CPU or no mixed precision
                 from_logits, to_logits, value_pred = self.model(states)
                 loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
-
-            if self.scaler:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
                 self.optimizer.step()
@@ -268,7 +277,11 @@ class ChessTrainer:
                 to_targets = to_targets.to(self.device)
                 value_targets = value_targets.to(self.device)
 
-                with torch.amp.autocast('cpu', enabled=self.config.mixed_precision):
+                if self.device.type == 'cuda' and self.config.mixed_precision:
+                    with torch.amp.autocast('cuda'):
+                        from_logits, to_logits, value_pred = self.model(states)
+                        loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
+                else:
                     from_logits, to_logits, value_pred = self.model(states)
                     loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
 

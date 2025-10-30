@@ -1,4 +1,4 @@
-# self_play.py - UPDATED to properly handle numpy/tensor conversion
+# self_play.py - UPDATED to properly handle GPU inference
 """Self-play data generation with termination via terminal.py."""
 import torch
 import numpy as np
@@ -44,7 +44,7 @@ def index_to_move(idx: int) -> tuple[Coord, Coord]:
     return idx_to_coord(from_idx), idx_to_coord(to_idx)
 
 class SelfPlayGenerator:
-    """Generate training data with SINGLE cache manager reused across all games."""
+    """Generate training data with GPU acceleration for AI model."""
 
     def __init__(
         self,
@@ -54,21 +54,23 @@ class SelfPlayGenerator:
         opponent_types: Optional[List[str]] = None,
         epsilon: float = 0.1
     ):
-        self.model = model.to(device).eval()
+        # Move model to specified device (GPU)
         self.device = device
+        self.model = model.to(self.device).eval()
         self.temperature = temperature
         self.epsilon = epsilon
         self.move_encoder = MoveEncoder()
 
-        # Cache for NUMPY arrays (internal representation)
+        # Cache for NUMPY arrays (CPU for game logic)
         self._state_array_cache = {}
         self._cache_hits = 0
         self._cache_misses = 0
 
-        # CRITICAL: Use factory to create initial game state with cache manager
+        # CRITICAL: Use factory to create initial game state with cache manager (CPU)
         initial_game_state = start_game_state()
         self._shared_cache_manager = initial_game_state.cache_manager
         print(f"[CACHE MANAGER] Using factory-created cache manager ID: {id(self._shared_cache_manager)}")
+        print(f"[DEVICE] AI model on {device}, game logic on CPU")
 
         # Opponent setup
         self.opponent_types = opponent_types or ["adversarial", "center_control"]
@@ -83,7 +85,7 @@ class SelfPlayGenerator:
         }
 
     def _get_state_tensor_for_model(self, game_state: GameState) -> torch.Tensor:
-        """Get state tensor - converts from internal numpy array to tensor for AI ONLY."""
+        """Get state tensor - converts from CPU numpy array to GPU tensor for AI."""
         state_hash = game_state.board.byte_hash()
         cache_key = (state_hash, game_state.color)
 
@@ -92,7 +94,7 @@ class SelfPlayGenerator:
             array = self._state_array_cache[cache_key]
         else:
             self._cache_misses += 1
-            # Use internal numpy representation
+            # Use internal numpy representation (CPU)
             array = game_state.to_array()
             self._state_array_cache[cache_key] = array
 
@@ -102,8 +104,8 @@ class SelfPlayGenerator:
                 for key in keys_to_remove:
                     del self._state_array_cache[key]
 
-        # ONLY CONVERT TO TENSOR HERE - for AI model consumption
-        tensor = torch.from_numpy(array).to(self.device).unsqueeze(0)
+        # Convert CPU numpy array to GPU tensor for AI model
+        tensor = torch.from_numpy(array).float().to(self.device).unsqueeze(0)
         return tensor
 
     def _choose_move_with_opponent(self, game: OptimizedGame3D, policy_logits, legal_moves) -> Move:
@@ -125,11 +127,15 @@ class SelfPlayGenerator:
         from_logits, to_logits = policy_logits
         move_encoder = self.move_encoder
 
+        # Move logits to CPU for processing with game logic
+        from_logits_cpu = from_logits.cpu()
+        to_logits_cpu = to_logits.cpu()
+
         move_probs = []
         for mv in legal_moves:
             f_idx = move_encoder.coord_to_index(mv.from_coord)
             t_idx = move_encoder.coord_to_index(mv.to_coord)
-            logit = from_logits[0, f_idx] + to_logits[0, t_idx]
+            logit = from_logits_cpu[0, f_idx] + to_logits_cpu[0, t_idx]
             move_probs.append(logit.item())
 
         move_probs_np = np.array(move_probs, dtype=np.float32)
@@ -153,11 +159,11 @@ class SelfPlayGenerator:
     def generate_game(self, max_moves: int = 100_000) -> List[TrainingExample]:
         """Generate ONE game - termination logic delegated to terminal.py."""
 
-        # CRITICAL: Use factory pattern to create new board with shared cache manager
+        # CRITICAL: Use factory pattern to create new board with shared cache manager (CPU)
         board = Board.empty()
         board.init_startpos()
 
-        # Rebuild the shared cache manager for this new board
+        # Rebuild the shared cache manager for this new board (CPU)
         self._shared_cache_manager.rebuild(board, Color.WHITE)
 
         game = OptimizedGame3D(board=board, cache=self._shared_cache_manager)
@@ -173,7 +179,7 @@ class SelfPlayGenerator:
 
         while move_count < max_moves and not game.is_game_over():
             try:
-                # Check termination conditions via terminal.py
+                # Check termination conditions via terminal.py (CPU)
                 if is_fifty_move_draw(game.state):
                     print(f"[GAME END] Fifty-move rule at move {move_count}")
                     break
@@ -182,7 +188,7 @@ class SelfPlayGenerator:
                     print(f"[GAME END] Threefold repetition at move {move_count}")
                     break
 
-                # ONLY convert to tensor here for AI model
+                # Convert CPU game state to GPU tensor for AI model inference
                 state_tensor = self._get_state_tensor_for_model(game.state)
                 with torch.no_grad():
                     from_logits, to_logits, value_pred = self.model(state_tensor)
@@ -201,17 +207,21 @@ class SelfPlayGenerator:
                 opponent = self.opponents[game.state.color]
                 opponent.observe(game.state, chosen_move)
 
-                # Prepare targets - using numpy internally
+                # Prepare targets - using numpy internally (CPU)
                 from_indices = []
                 to_indices = []
                 move_probs = []
+
+                # Move logits to CPU for target processing
+                from_logits_cpu = policy_logits[0].cpu()
+                to_logits_cpu = policy_logits[1].cpu()
 
                 for mv in legal_moves:
                     if mv is None:
                         continue
                     f_idx = self.move_encoder.coord_to_index(mv.from_coord)
                     t_idx = self.move_encoder.coord_to_index(mv.to_coord)
-                    logit = policy_logits[0][0, f_idx] + policy_logits[1][0, t_idx]
+                    logit = from_logits_cpu[0, f_idx] + to_logits_cpu[0, t_idx]
                     move_probs.append(logit.item())
                     from_indices.append(f_idx)
                     to_indices.append(t_idx)
@@ -240,21 +250,21 @@ class SelfPlayGenerator:
 
                 player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
 
-                # Store as numpy arrays internally, convert to tensors only in dataset
-                state_array = game.state.to_array()  # Internal numpy representation
+                # Store as numpy arrays internally (CPU), convert to tensors only in dataset
+                state_array = game.state.to_array()  # Internal numpy representation (CPU)
 
                 examples.append(
                     TrainingExample(
-                        state_tensor=state_array,  # Store as numpy
-                        from_target=from_target_np,  # Store as numpy
-                        to_target=to_target_np,  # Store as numpy
+                        state_tensor=state_array,  # Store as numpy (CPU)
+                        from_target=from_target_np,  # Store as numpy (CPU)
+                        to_target=to_target_np,  # Store as numpy (CPU)
                         value_target=value_pred.item(),
                         move_count=move_count,
                         player_sign=player_sign
                     )
                 )
 
-                # Verify cache manager is still the same
+                # Verify cache manager is still the same (CPU)
                 if game.state.cache_manager is not self._shared_cache_manager:
                     print(f"[ERROR] Cache manager changed! Expected {id(self._shared_cache_manager)}, got {id(game.state.cache_manager)}")
                     game.state.cache_manager = self._shared_cache_manager
