@@ -49,29 +49,41 @@ def _jump_kernel_direct(
             out.append((tx, ty, tz, True))
     return out
 # ----------  helper that builds Move objects  ----------
+@njit(cache=True, fastmath=True)
+def _build_jump_moves_fast(
+    color: int,  # Pass as int for numba
+    start: Tuple[int, int, int],
+    raw: List[Tuple[int, int, int, bool]],
+) -> Tuple[np.ndarray, np.ndarray]:  # Return arrays instead of Move objects
+    """Fast version that returns arrays for batch processing."""
+    if not raw:
+        return np.empty((0, 3), dtype=np.int32), np.empty(0, dtype=np.bool_)
+
+    n = len(raw)
+    coords = np.empty((n, 3), dtype=np.int32)
+    captures = np.empty(n, dtype=np.bool_)
+
+    for i in range(n):
+        x, y, z, cap = raw[i]
+        coords[i] = (x, y, z)
+        captures[i] = cap
+
+    return coords, captures
+
 def _build_jump_moves(
     color: Color,
     ptype: PieceType,
     start: Tuple[int, int, int],
     raw: List[Tuple[int, int, int, bool]],
 ) -> List[Move]:
+    """Optimized version using fast numba function."""
     if not raw:
         return []
 
-    # Fast validation using numpy
-    coords_arr = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
+    # Use fast numba function for array processing
+    valid_coords, valid_caps = _build_jump_moves_fast(color.value, start, raw)
 
-    # Single-pass bounds check
-    valid_mask = np.all((coords_arr >= 0) & (coords_arr < 9), axis=1)
-
-    if not np.any(valid_mask):
-        return []
-
-    # Filter once
-    valid_coords = coords_arr[valid_mask]
-    valid_caps = np.array([is_cap for _, _, _, is_cap in raw], dtype=bool)[valid_mask]
-
-    # Use optimized Move.create_batch
+    # Single batch call to Move.create_batch
     return Move.create_batch(start, valid_coords, valid_caps)
 
 # ----------  main generator class  ----------

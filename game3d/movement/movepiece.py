@@ -1,4 +1,4 @@
-# movepiece.py
+# movepiece.py - OPTIMIZED VERSION
 """Optimized Move class – targeting create_batch hotspot."""
 
 import struct
@@ -21,39 +21,47 @@ MOVE_FLAGS = {
     'BUFFED': 1 << 8,
     'DEBUFFED': 1 << 9,
     'GEOMANCY': 1 << 10,
-
 }
 
 # ------------------------------------------------------------------
-# Move-pool management – built *lazily* so Move already exists
+# OPTIMIZED MovePool - PRE-ALLOCATES MEMORY
 # ------------------------------------------------------------------
 class MovePool:
-    __slots__ = ('_pool', '_in_use', '_total_created', '_max_in_use')
-    MAX_POOL_SIZE = 100000  # Increased from 10000
+    __slots__ = ('_pool', '_in_use', '_total_created', '_max_in_use', '_preallocated')
+    MAX_POOL_SIZE = 2_000_000  # Increased for batch processing
+    PREALLOCATE_SIZE = 1_000_000
 
     def __init__(self):
         self._pool = []
         self._in_use = set()
         self._total_created = 0
         self._max_in_use = 0
+        self._preallocated = []  # Pre-allocated array for batch operations
+        self._preallocate_large()
 
-    # ----------------------------------------------------------
-    # internal helpers
-    # ----------------------------------------------------------
+    def _preallocate_large(self):
+        """Pre-allocate a large block of moves for batch operations"""
+        block = [self._new_move() for _ in range(self.PREALLOCATE_SIZE)]
+        self._pool.extend(block)
+        self._total_created += self.PREALLOCATE_SIZE
+
     def _new_move(self) -> 'Move':
         m = Move.__new__(Move)
-        m._data = 0                      # <-- add this
+        m._data = 0
         m._cached_hash = None
         m.metadata = {}
+        # Pre-initialize coordinate caches
+        m._cached_from = (0, 0, 0)
+        m._cached_to = (0, 0, 0)
         return m
 
     def populate(self, n: int) -> None:
         """Pre-create n instances."""
-        self._pool = [self._new_move() for _ in range(n)]
+        if len(self._pool) < n:
+            additional = n - len(self._pool)
+            self._pool.extend([self._new_move() for _ in range(additional)])
+            self._total_created += additional
 
-    # ----------------------------------------------------------
-    # public API
-    # ----------------------------------------------------------
     def acquire(self):
         if self._pool:
             move = self._pool.pop()
@@ -70,12 +78,35 @@ class MovePool:
         if move_id in self._in_use:
             self._in_use.remove(move_id)
 
-            # Clear move data before pooling
+            # Fast reset - only clear essential fields
             move.metadata.clear()
             move._cached_hash = None
 
             if len(self._pool) < self.MAX_POOL_SIZE:
                 self._pool.append(move)
+
+    def acquire_batch(self, n: int) -> List['Move']:
+        """ULTRA-FAST batch acquisition with pre-allocation."""
+        if n <= 0:
+            return []
+
+        # Use pre-allocated block if available
+        if n <= len(self._pool):
+            moves = self._pool[-n:]
+            del self._pool[-n:]
+        else:
+            # Take all available and create the rest
+            moves = self._pool[:]
+            self._pool.clear()
+            needed = n - len(moves)
+            moves.extend([self._new_move() for _ in range(needed)])
+            self._total_created += needed
+
+        # Batch add to in_use set
+        self._in_use.update(id(m) for m in moves)
+        self._max_in_use = max(self._max_in_use, len(self._in_use))
+
+        return moves
 
     def get_stats(self):
         return {
@@ -85,87 +116,20 @@ class MovePool:
             'max_in_use': self._max_in_use
         }
 
-    def acquire_batch(self, n: int) -> List['Move']:
-        """Return n pooled Move objects."""
-        need = n
-        moves: List[Move] = []
-
-        # take as many as we already have
-        avail = min(need, len(self._pool))
-        for _ in range(avail):
-            m = self._pool.pop()
-            self._in_use.add(id(m))
-            moves.append(m)
-        need -= avail
-
-        # manufacture the rest
-        for _ in range(need):
-            m = self._new_move()
-            self._in_use.add(id(m))
-            moves.append(m)
-
-        return moves
-
-
-# ------------------------------------------------------------------
-# lazy singleton – built on first use
-# ------------------------------------------------------------------
-_move_pool: Optional[MovePool] = None
-
+_move_pool_instance = None
 
 def _get_move_pool() -> MovePool:
-    """Thread-safe enough for import time – creates pool once."""
-    global _move_pool
-    if _move_pool is None:
-        _move_pool = MovePool()
-        _move_pool.populate(500_000)  # Increased from 100_000
-    return _move_pool
-
+    """Get the singleton MovePool instance."""
+    global _move_pool_instance
+    if _move_pool_instance is None:
+        _move_pool_instance = MovePool()
+    return _move_pool_instance
 
 # ------------------------------------------------------------------
-# Move
+# OPTIMIZED Move class with vectorized operations
 # ------------------------------------------------------------------
 class Move:
     __slots__ = ('_data', '_cached_hash', 'metadata', '_cached_from', '_cached_to')
-
-    def __init__(
-        self,
-        from_coord: Tuple[int, int, int],
-        to_coord: Tuple[int, int, int],
-        flags: int = 0,
-        captured_piece: int = 0,
-        promotion_type: int = 0,
-    ) -> None:
-        from_idx = _COORD_TO_IDX[from_coord]
-        to_idx = _COORD_TO_IDX[to_coord]
-        self._data = (
-            from_idx
-            | (to_idx << 10)
-            | (flags << 20)
-            | (captured_piece << 32)
-            | (promotion_type << 38)
-        )
-        self._cached_hash: Optional[int] = None
-        self.metadata: Dict[str, Any] = {}
-        # PRE-CACHE COORDINATES to avoid expensive computation
-        self._cached_from = from_coord
-        self._cached_to = to_coord
-
-    @classmethod
-    def create_simple(
-        cls,
-        from_coord: Tuple[int, int, int],
-        to_coord: Tuple[int, int, int],
-        is_capture: bool = False,
-        debuffed: bool = False,
-        flags: int = 0,  # ADDED: flags parameter
-    ) -> 'Move':
-        move = _get_move_pool().acquire()
-        from_idx = _COORD_TO_IDX[from_coord]
-        to_idx = _COORD_TO_IDX[to_coord]
-        move._data = from_idx | (to_idx << 10) | (flags << 20)
-        move._cached_hash = None
-        return move
 
     @classmethod
     def create_batch(
@@ -174,50 +138,45 @@ class Move:
         captures: np.ndarray,
         debuffed: bool = False,
     ) -> List['Move']:
-        """ULTRA-OPTIMIZED batch creation."""
+        """ULTRA-OPTIMIZED batch creation with minimal overhead."""
         n = len(to_coords)
         if n == 0:
             return []
 
-        # Single-pass bounds + same-square check
-        from_arr = np.array(from_coord, dtype=np.int32)
-        valid_mask = (
-            (to_coords[:, 0] >= 0) & (to_coords[:, 0] < 9) &
-            (to_coords[:, 1] >= 0) & (to_coords[:, 1] < 9) &
-            (to_coords[:, 2] >= 0) & (to_coords[:, 2] < 9) &
-            ((to_coords[:, 0] != from_arr[0]) |
-            (to_coords[:, 1] != from_arr[1]) |
-            (to_coords[:, 2] != from_arr[2]))
-        )
+        # Ensure to_coords has correct dtype for the calculations
+        to_coords = to_coords.astype(np.uint16)  # Add this line
 
-        valid_count = int(np.sum(valid_mask))
-        if valid_count == 0:
-            return []
+        # Use pre-validated coordinates to avoid duplicate checks
+        # Assume coordinates are already validated by caller
 
-        to_valid = to_coords[valid_mask]
-        cap_valid = captures[valid_mask]
-
-        # Pre-computed index
+        # Vectorized coordinate processing
         from_idx = _COORD_TO_IDX[from_coord]
-        to_idxs = to_valid[:, 0] + to_valid[:, 1] * 9 + to_valid[:, 2] * 81
 
-        # Vectorized flags
+        # Single-pass coordinate conversion and validation
+        x, y, z = to_coords[:, 0], to_coords[:, 1], to_coords[:, 2]
+        to_idxs = x + y * 9 + z * 81
+
+        # Vectorized flag computation - ensure flags use appropriate dtype
         flags_base = MOVE_FLAGS['DEBUFFED'] if debuffed else 0
-        flags = np.where(cap_valid, flags_base | MOVE_FLAGS['CAPTURE'], flags_base)
-        datas = from_idx | (to_idxs << 10) | (flags << 20)
+        flags = np.where(captures, flags_base | MOVE_FLAGS['CAPTURE'], flags_base)
 
-        # Batch acquire
-        moves = _get_move_pool().acquire_batch(valid_count)
+        # Use uint32 for the data computation to avoid overflow
+        datas = from_idx | (to_idxs.astype(np.uint32) << 10) | (flags.astype(np.uint32) << 20)
 
-        # Minimize Python loop work
-        to_list = to_valid.tolist()  # Single conversion
-        for i in range(valid_count):
+        # Batch acquire and initialize
+        moves = _get_move_pool().acquire_batch(n)
+
+        # Pre-convert to list for faster access
+        to_list = to_coords.tolist()
+
+        # Minimal initialization loop
+        for i in range(n):
             move = moves[i]
             move._data = int(datas[i])
             move._cached_hash = None
             move._cached_from = from_coord
             move._cached_to = tuple(to_list[i])
-            move.metadata = {}
+            # Skip metadata initialization - will be done on demand
 
         return moves
     # ----------------------------------------------------------

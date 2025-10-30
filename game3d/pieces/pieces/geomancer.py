@@ -6,8 +6,8 @@ import numpy as np
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
 from game3d.movement.movetypes.kingmovement import generate_king_moves
-from game3d.movement.movepiece import Move, MOVE_FLAGS, Move
-from game3d.common.coord_utils import in_bounds
+from game3d.movement.movepiece import Move, MOVE_FLAGS, _get_move_pool
+from game3d.common.coord_utils import in_bounds, _COORD_TO_IDX
 from game3d.common.constants import RADIUS_3_OFFSETS
 from game3d.common.cache_utils import ensure_int_coords
 
@@ -57,6 +57,7 @@ def generate_geomancer_moves(
     moves.extend(generate_king_moves(cache_manager, color, x, y, z))
 
     # 2. Geomancy block targets (3-sphere surface)
+    move_pool = _get_move_pool()
     for dx, dy, dz in RADIUS_3_OFFSETS:
         tx, ty, tz = x + dx, y + dy, z + dz
         if not in_bounds((tx, ty, tz)):
@@ -66,13 +67,19 @@ def generate_geomancer_moves(
         if cache_manager.get_piece((tx, ty, tz)) is not None:
             continue
 
-        # Create stationary "effect" move
-        mv = Move(
-            start, start,
-            flags=MOVE_FLAGS['GEOMANCY'],
-        )
-        mv.metadata["is_geomancy_effect"] = True
-        mv.metadata["geomancy_target"] = (tx, ty, tz)
+        # Create stationary "effect" move using the optimized pool
+        mv = move_pool.acquire()
+        from_idx = _COORD_TO_IDX[start]
+        to_idx = from_idx  # Stationary move
+        flags = MOVE_FLAGS['GEOMANCY']
+        mv._data = from_idx | (to_idx << 10) | (flags << 20)
+        mv._cached_hash = None
+        mv._cached_from = start
+        mv._cached_to = start
+        mv.metadata = {
+            "is_geomancy_effect": True,
+            "geomancy_target": (tx, ty, tz)
+        }
         moves.append(mv)
 
     return moves

@@ -61,6 +61,7 @@ def generate_archer_moves(
     moves.extend(king_moves)
 
     # 2. Archery shots (2-radius surface capture only)
+    archery_moves = []
     for dx, dy, dz in _ARCHERY_DIRECTIONS:
         tx, ty, tz = x + dx, y + dy, z + dz
 
@@ -72,18 +73,26 @@ def generate_archer_moves(
         victim = cache_manager.get_piece((tx, ty, tz))
         if victim is not None and victim.color != color:
             # Create archery move (archer doesn't move, just captures)
-            # FIX: Use flags parameter instead of is_capture
-            flags = MOVE_FLAGS['ARCHERY'] | MOVE_FLAGS['CAPTURE']
-            archery_move = Move(
+            # FIX: Use create_batch instead of direct constructor
+            to_coords = np.array([(x, y, z)], dtype=np.int32)  # Archer stays in place
+            captures = np.array([True], dtype=bool)
+
+            archery_move_list = Move.create_batch(
                 from_coord=(x, y, z),
-                to_coord=(x, y, z),  # Archer stays in place
-                flags=flags
+                to_coords=to_coords,
+                captures=captures,
+                debuffed=False
             )
-            archery_move.metadata["target_square"] = (tx, ty, tz)
-            archery_move.metadata["archery_shot"] = True
 
-            moves.append(archery_move)
+            if archery_move_list:
+                archery_move = archery_move_list[0]
+                # Manually set the archery flag since create_batch doesn't support custom flags
+                archery_move._data |= (MOVE_FLAGS['ARCHERY'] << 20)
+                archery_move.metadata["target_square"] = (tx, ty, tz)
+                archery_move.metadata["archery_shot"] = True
+                archery_moves.append(archery_move)
 
+    moves.extend(archery_moves)
     return moves
 
 @register(PieceType.ARCHER)

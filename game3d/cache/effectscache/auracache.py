@@ -79,8 +79,8 @@ class UnifiedAuraCache(CacheStatsMixin):
 
         self._coverage: Dict[AuraType, Dict[Color, np.ndarray]] = {
             aura: {
-                Color.WHITE: np.zeros((9, 9, 9), dtype=np.uint8),
-                Color.BLACK: np.zeros((9, 9, 9), dtype=np.uint8),
+                Color.WHITE: np.zeros((9, 9, 9), dtype=np.uint16),
+                Color.BLACK: np.zeros((9, 9, 9), dtype=np.uint16),
             } for aura in [AuraType.BUFF, AuraType.DEBUFF, AuraType.FREEZE]
         }
 
@@ -306,7 +306,7 @@ class UnifiedAuraCache(CacheStatsMixin):
                         updated_maps = True
                 else:
                     victim = captured_color if affect == "friendly" else captured_color.opposite()
-                    self._incremental_update_coverage(aura, victim, old_sq=mv.to_coord)
+                    self._incremental_update_coverage(aura, victim, old_sq=mv.to_coord, new_sq=mv.to_coord)
                     updated_coverage = True
                     self._sources[aura][captured_color].discard(mv.to_coord)
 
@@ -391,9 +391,10 @@ class UnifiedAuraCache(CacheStatsMixin):
         ptype = AURA_PIECE_MAP[aura]
         for color in (Color.WHITE, Color.BLACK):
             self._sources[aura][color].clear()
-            positions = self._cache_manager.occupancy.get_positions_by_type(color, ptype)
-            for sq in positions:
-                self._sources[aura][color].add(tuple(sq))  # Ensure Coord is tuple
+            # Use iter_color instead of get_positions_by_type
+            for coord, piece in self._cache_manager.occupancy.iter_color(color):
+                if piece.ptype == ptype:
+                    self._sources[aura][color].add(tuple(coord))
 
     def _rebuild_map_for_color(self, aura: AuraType, board: "Board", color: Color) -> None:
         self._maps[aura][color].clear()
@@ -456,12 +457,17 @@ class UnifiedAuraCache(CacheStatsMixin):
         self._coverage[aura][victim].fill(0)
         self._affected_sets[aura][victim].clear()
         ptype = AURA_PIECE_MAP[aura]
-        sources = self._cache_manager.occupancy.get_positions_by_type(controller, ptype)
+
+        # Use iter_color instead of get_positions_by_type
+        sources = []
+        for coord, piece in self._cache_manager.occupancy.iter_color(controller):
+            if piece.ptype == ptype:
+                sources.append(coord)
 
         if not sources:
             return
 
-        # Precompute the aura squares for all sources and flatten
+        # Rest of the method remains the same...
         all_aura_coords = []
         for src in sources:
             aura_squares = self._AURA_SQUARES_CACHE.get(tuple(src), [])
@@ -554,8 +560,15 @@ class UnifiedAuraCache(CacheStatsMixin):
                 return set()
             valid_coords = aura_array[valid_mask]  # Nx3
             az, ay, ax = valid_coords.T  # Transpose for indexing
+
+            # Use int32 for calculations to avoid overflow, then convert back
             old_values = coverage[az, ay, ax].copy()
-            coverage[az, ay, ax] += delta  # Vectorized add
+            # Convert to int32 for the calculation
+            temp_values = old_values.astype(np.int32) + delta
+            # Clamp to 0 and convert back to uint16
+            new_values = np.maximum(temp_values, 0).astype(np.uint16)
+            coverage[az, ay, ax] = new_values
+
             changed_mask = old_values != coverage[az, ay, ax]
             changed_coords = set(zip(ax[changed_mask], ay[changed_mask], az[changed_mask]))
             return changed_coords
@@ -654,7 +667,7 @@ class UnifiedAuraCache(CacheStatsMixin):
         self._cache_manager = cache_manager
 
     def batch_is_frozen(self, coords: List[Coord], color: Color) -> np.ndarray:
-        """Optimized batch frozen check using direct array access."""
+        """ULTRA-OPTIMIZED batch frozen check using direct numpy operations."""
         if self._dirty_flags['coverage']:
             self._incremental_rebuild()
 
@@ -662,21 +675,24 @@ class UnifiedAuraCache(CacheStatsMixin):
         if n == 0:
             return np.array([], dtype=bool)
 
-        # Pre-allocate result
-        result = np.zeros(n, dtype=bool)
-
-        # Direct array access (avoid method call per coordinate)
+        # Direct array access without method calls
         coverage = self._coverage[AuraType.FREEZE][color]
 
-        # Vectorized access
+        # Convert to numpy array once
         coords_arr = np.array(coords, dtype=np.int32)
         x, y, z = coords_arr[:, 0], coords_arr[:, 1], coords_arr[:, 2]
 
-        # Bounds check
-        valid = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+        # Single-pass bounds check and lookup
+        valid_mask = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
 
-        # Fast lookup for valid coordinates
-        result[valid] = coverage[z[valid], y[valid], x[valid]] > 0
+        # Initialize result with False for all
+        result = np.zeros(n, dtype=bool)
+
+        # Only check valid coordinates
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) > 0:
+            valid_x, valid_y, valid_z = x[valid_mask], y[valid_mask], z[valid_mask]
+            result[valid_mask] = coverage[valid_z, valid_y, valid_x] > 0
 
         return result
 

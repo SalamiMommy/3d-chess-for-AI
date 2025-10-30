@@ -312,59 +312,60 @@ def validate_moves_ultra_batch(
     moves: List[Move],
     state: GameState
 ) -> List[Move]:
-    """Ultra-optimized validation with early exits."""
+    """ULTRA-OPTIMIZED validation with minimal overhead."""
     if not moves:
         return []
 
-    moves = filter_none_moves(moves)
-    if not moves:
-        return []
-
+    # Skip filter_none_moves - assume caller handles None moves
     cache_manager = state.cache_manager
     expected_color = state.color
     current_ply = state.halfmove_clock
 
-    # Extract coordinates in single operation
     n = len(moves)
+    if n == 0:
+        return []
+
+    # Pre-allocate arrays
     from_coords = np.empty((n, 3), dtype=np.int32)
     to_coords = np.empty((n, 3), dtype=np.int32)
 
+    # Single-pass coordinate extraction
     for i, m in enumerate(moves):
-        from_coords[i] = m.from_coord
-        to_coords[i] = m.to_coord
+        # Direct attribute access - avoid property calls
+        from_coords[i] = m._cached_from
+        to_coords[i] = m._cached_to
 
-    # Batch occupancy checks
-    from_colors, _ = cache_manager.occupancy.batch_get_colors_and_types(from_coords)
-    to_colors, _ = cache_manager.occupancy.batch_get_colors_and_types(to_coords)
+    # Batch occupancy checks - single call
+    from_colors, from_types = cache_manager.occupancy.batch_get_colors_and_types(from_coords)
+    to_colors, to_types = cache_manager.occupancy.batch_get_colors_and_types(to_coords)
 
     expected_code = 1 if expected_color == Color.WHITE else 2
 
-    # Combined validation mask (single pass)
+    # Combined validation mask
     valid_mask = (
         (from_colors == expected_code) &
         ((to_colors == 0) | (to_colors != expected_code))
     )
 
-    # Early exit if all invalid
-    if not np.any(valid_mask):
+    # Early exit
+    valid_count = np.sum(valid_mask)
+    if valid_count == 0:
         return []
 
-    # Only check effects for valid moves
+    # Only process valid moves for expensive checks
     valid_indices = np.where(valid_mask)[0]
-    valid_from = from_coords[valid_indices]
-    valid_to = to_coords[valid_indices]
+    valid_from = from_coords[valid_mask]
+    valid_to = to_coords[valid_mask]
 
-    # Batch effect checks
+    # Parallel effect checks
     frozen = cache_manager.batch_get_frozen_status(valid_from, expected_color)
     geomancy = cache_manager.batch_get_geomancy_blocked(valid_to, current_ply)
 
-    # Final mask
+    # Final combination
     effect_valid = ~(frozen | geomancy)
+    final_indices = valid_indices[effect_valid]
 
-    # Build result using pre-filtered indices
-    final_valid = valid_indices[effect_valid]
-    return [moves[i] for i in final_valid]
-
+    return [moves[i] for i in final_indices]
 # =============================================================================
 # Specialized Validations
 # =============================================================================

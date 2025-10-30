@@ -1,4 +1,4 @@
-# game3d/common/move_utils.py - ENHANCED VECTORIZED VERSION
+# game3d/common/move_utils.py - OPTIMIZED WITH BATCHING
 from __future__ import annotations
 import numpy as np
 from typing import List, Tuple, Set, Optional, Union, TYPE_CHECKING
@@ -37,12 +37,12 @@ def rebuild_moves_from_directions(
     max_steps_batch: Union[List[int], List[List[int]]],
     capture_sets: Union[List[Set[Coord]], List[List[Set[Coord]]]]
 ) -> Union[List[Move], List[List[Move]]]:
-    """Batch rebuild moves from directions for multiple pieces - supports scalar and batch mode."""
+    """Batch rebuild moves from directions for multiple pieces - OPTIMIZED WITH BATCHING."""
     from game3d.movement.movepiece import Move
 
     # Handle scalar input
     if not isinstance(starts, (list, np.ndarray)) or (isinstance(starts, np.ndarray) and starts.ndim == 1):
-        # Scalar mode
+        # Scalar mode - OPTIMIZED: Use batch creation
         if not isinstance(directions_batch, list) or not directions_batch:
             return []
 
@@ -58,18 +58,26 @@ def rebuild_moves_from_directions(
         else:
             sx, sy, sz = starts
 
-        rebuilt = []
-        capture_frozen = frozenset(capture_set)
+        # Collect all target coordinates and capture flags for batch processing
+        to_coords_list = []
+        capture_flags = []
 
         for dx, dy, dz in directions:
             for step in range(1, max_steps + 1):
                 to = (sx + step * dx, sy + step * dy, sz + step * dz)
                 if all(0 <= c < SIZE for c in to):
-                    rebuilt.append(Move.create_simple((sx, sy, sz), to, to in capture_frozen))
+                    to_coords_list.append(to)
+                    capture_flags.append(to in capture_set)
 
-        return rebuilt
+        if not to_coords_list:
+            return []
+
+        # Use batch creation
+        to_coords_array = np.array(to_coords_list, dtype=np.int16)
+        captures_array = np.array(capture_flags, dtype=bool)
+        return Move.create_batch((sx, sy, sz), to_coords_array, captures_array)
     else:
-        # Batch mode
+        # Batch mode - OPTIMIZED: Use batch creation per piece
         all_moves = []
 
         # Convert to list for consistent processing
@@ -86,21 +94,30 @@ def rebuild_moves_from_directions(
                 continue
 
             sx, sy, sz = start
-            rebuilt = []
-            capture_frozen = frozenset(capture_set)
+            # Collect all target coordinates and capture flags for batch processing
+            to_coords_list = []
+            capture_flags = []
 
             for dx, dy, dz in directions:
                 for step in range(1, max_steps + 1):
                     to = (sx + step * dx, sy + step * dy, sz + step * dz)
                     if all(0 <= c < SIZE for c in to):
-                        rebuilt.append(Move.create_simple(start, to, to in capture_frozen))
+                        to_coords_list.append(to)
+                        capture_flags.append(to in capture_set)
 
-            all_moves.append(rebuilt)
+            if not to_coords_list:
+                all_moves.append([])
+                continue
+
+            # Use batch creation
+            to_coords_array = np.array(to_coords_list, dtype=np.int16)
+            captures_array = np.array(capture_flags, dtype=bool)
+            all_moves.append(Move.create_batch(start, to_coords_array, captures_array))
 
         return all_moves
 
 def extend_move_range(move: Union[Move, List[Move]], start: Union[Coord, List[Coord]], max_steps: Union[int, List[int]] = 1, debuffed: Union[bool, List[bool]] = False) -> Union[List[Move], List[List[Move]]]:
-    """Extend move range for buffed/debuffed pieces - supports scalar and batch mode."""
+    """Extend move range for buffed/debuffed pieces - OPTIMIZED WITH BATCHING."""
     from game3d.movement.movepiece import Move
 
     # Handle batch mode
@@ -119,23 +136,30 @@ def extend_move_range(move: Union[Move, List[Move]], start: Union[Coord, List[Co
                 results.append(extend_move_range(m, start, max_steps, debuffed))
             return results
 
-    # Scalar mode
+    # Scalar mode - OPTIMIZED: Use batch creation
     direction = tuple((b - a) for a, b in zip(start, move.to_coord))
     norm = max(abs(d) for d in direction) if direction else 0
     if norm == 0:
         return [move]
 
     unit_dir = tuple(d // norm for d in direction)
-    extended_moves = [move]
 
-    # Precompute bounds check values
+    # Collect all extended coordinates for batch processing
+    to_coords_list = [move.to_coord]
+    capture_flags = [move.is_capture]
+
     for step in range(1, max_steps + 1):
         next_step = tuple(a + step * b for a, b in zip(move.to_coord, unit_dir))
         if all(0 <= c < SIZE for c in next_step):
-            extended_moves.append(Move.create_simple(start, next_step, is_capture=move.is_capture, debuffed=debuffed))
+            to_coords_list.append(next_step)
+            capture_flags.append(move.is_capture)
         else:
             break
-    return extended_moves
+
+    # Use batch creation
+    to_coords_array = np.array(to_coords_list, dtype=np.int16)
+    captures_array = np.array(capture_flags, dtype=bool)
+    return Move.create_batch(start, to_coords_array, captures_array)
 
 def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType], List[int]]:
     """
@@ -528,6 +552,6 @@ def create_filtered_moves_batch(
         geomancy_mask = ~cache.batch_get_geomancy_blocked(to_coords, state.ply)
         valid_mask &= geomancy_mask
         # Add debuff distance filter if needed
-    filtered_to = to_coords[valid_mask]
+    filtered_to = to_coords[valid_mask].astype(np.uint16)
     filtered_caps = captures[valid_mask]
     return Move.create_batch(from_coord, filtered_to, filtered_caps)

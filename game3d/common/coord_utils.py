@@ -68,14 +68,13 @@ def filter_valid_coords(coords: np.ndarray) -> np.ndarray:
 
     return coords[valid]
 
-# NEW – real functions that the rest of the code can call
 def coord_to_idx(coord: Union[Coord, np.ndarray]) -> Union[int, np.ndarray]:
     if isinstance(coord, np.ndarray) and coord.ndim > 1:
-        coord = coord.astype(np.int8)
+        coord = coord.astype(np.uint16)  # Changed from int8
         x, y, z = coord[:, 0], coord[:, 1], coord[:, 2]
-        return (x + SIZE * y + SIZE_SQUARED * z).astype(np.int16)
+        return (x + SIZE * y + SIZE_SQUARED * z).astype(np.uint16)  # Changed from int16
     else:
-        # Scalar mode
+        # Scalar mode - unchanged
         if isinstance(coord, np.ndarray):
             x, y, z = coord.tolist()
         else:
@@ -109,8 +108,7 @@ def add_coords(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> Tuple[int, i
     return a[0] + b[0], a[1] + b[1], a[2] + b[2]
 
 def add_coords_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Batch coordinate addition - supports scalar and batch mode."""
-    return a + b
+    return a.astype(np.uint16) + b.astype(np.uint16)
 
 @njit(cache=True)
 def subtract_coords(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -118,20 +116,17 @@ def subtract_coords(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> Tuple[i
     return a[0] - b[0], a[1] - b[1], a[2] - b[2]
 
 def subtract_coords_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Batch coordinate subtraction - supports scalar and batch mode."""
-    return a - b
+    return a.astype(np.uint16) - b.astype(np.uint16)
 
 @njit(cache=True)
 def scale_coord(coord: Tuple[int, int, int], scalar: int) -> Tuple[int, int, int]:
     return (coord[0] * scalar, coord[1] * scalar, coord[2] * scalar)
 
 def scale_coord_batch(coord: np.ndarray, scalar: Union[int, np.ndarray]) -> np.ndarray:
-    """Batch coordinate scaling - supports scalar and batch mode."""
     if isinstance(scalar, np.ndarray):
-        return coord * scalar[:, np.newaxis]
+        return coord.astype(np.uint16) * scalar[:, np.newaxis].astype(np.uint16)
     else:
-        return coord * scalar
-
+        return coord.astype(np.uint16) * scalar
 # ------------------------------------------------------------------
 # Distance helpers – optimized with numba
 # ------------------------------------------------------------------

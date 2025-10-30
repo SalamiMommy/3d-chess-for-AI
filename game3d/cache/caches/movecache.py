@@ -1,4 +1,4 @@
-# movecache.py - UPDATED
+# movecache.py - UPDATED TO USE create_batch
 # movecache.py - CONSOLIDATED VERSION WITH AUTO-DETECTION
 from __future__ import annotations
 import random
@@ -482,7 +482,7 @@ class OptimizedMoveCache(CacheStatsMixin):
                 self._legal_per_piece.clear()
                 return
 
-            # Generate pseudo-legal moves
+            # Generate pseudo-legal moves using batch methods
             from game3d.movement.pseudo_legal import generate_pseudo_legal_moves
             pseudo_moves = generate_pseudo_legal_moves(tmp_state)
 

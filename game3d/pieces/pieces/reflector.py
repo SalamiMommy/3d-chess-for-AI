@@ -1,4 +1,4 @@
-# reflector.py - FIXED
+# reflector.py - OPTIMIZED WITH BATCHING
 """Reflecting-Bishop – diagonal slider that bounces off walls (max 3 reflections)."""
 
 from __future__ import annotations
@@ -25,19 +25,19 @@ _BISHOP_DIRS = np.array(
 
 @njit(fastmath=True, boundscheck=False, cache=True)
 def _bounce_ray(
-    occ_flat,          # flat uint8[729]  (x + y*9 + z*81)
+    occ_flat,
     start_x, start_y, start_z,
     dx, dy, dz,
     max_bounces: int,
-    buf,               # uint64[256]  pre-allocated output
-    color_code: int,   # 1 white  2 black
-) -> int:              # number of moves written
+    buf,
+    color_code: int,
+) -> int:
     ptr = 0
     sx, sy, sz = start_x, start_y, start_z
     bounces = 0
     start_idx = start_x + start_y * 9 + start_z * 81
 
-    for _ in range(24):          # 24 steps is plenty on 9×9×9
+    for _ in range(24):
         tx = sx + dx
         ty = sy + dy
         tz = sz + dz
@@ -60,12 +60,12 @@ def _bounce_ray(
         # ---- occupancy test ----
         to_idx = tx + ty * 9 + tz * 81
         code = occ_flat[to_idx]
-        if code == 0:                                    # empty
+        if code == 0:
             packed = (start_idx << 21) | to_idx
             buf[ptr] = packed
             ptr += 1
-        else:                                            # blocked
-            if code != color_code:                       # enemy
+        else:
+            if code != color_code:
                 packed = (start_idx << 21) | to_idx | (1 << 42)
                 buf[ptr] = packed
                 ptr += 1
@@ -85,33 +85,35 @@ class _ReflectingBishopGen:
         occ_flat = occ_array.reshape(-1)
         x, y, z = pos
         color_code = 1 if color == Color.WHITE else 2
-        moves: List[Move] = []
+
+        # OPTIMIZED: Collect all moves for batch processing
+        to_coords_list = []
+        capture_flags = []
 
         for dx, dy, dz in _BISHOP_DIRS:
             n = _bounce_ray(occ_flat, x, y, z, dx, dy, dz, 3, self._buf, color_code)
             for i in range(n):
                 packed = self._buf[i]
-                fr_idx = (packed >> 21) & 0x3FFFF
                 to_idx = packed & 0x3FFFF
                 is_cap = bool(packed & (1 << 42))
 
-                from_coord = (fr_idx % 9, (fr_idx // 9) % 9, fr_idx // 81)
-                to_coord   = (to_idx % 9, (to_idx // 9) % 9, to_idx // 81)
+                to_coord = (to_idx % 9, (to_idx // 9) % 9, to_idx // 81)
+                to_coords_list.append(to_coord)
+                capture_flags.append(is_cap)
 
-                # FIX: Use Move.create_simple instead of direct Move constructor
-                moves.append(Move.create_simple(
-                    from_coord=from_coord,
-                    to_coord=to_coord,
-                    is_capture=is_cap
-                ))
-        return moves
+        if not to_coords_list:
+            return []
+
+        # Use batch creation
+        to_coords_array = np.array(to_coords_list, dtype=np.int8)
+        captures_array = np.array(capture_flags, dtype=bool)
+        return Move.create_batch(from_coord=pos, to_coords=to_coords_array, captures=captures_array)
 
 def _get_gen(cache_manager: 'OptimizedCacheManager') -> _ReflectingBishopGen:
     """Use the cache manager's existing generator instead of creating new one."""
     if hasattr(cache_manager, '_reflecting_bishop_gen') and cache_manager._reflecting_bishop_gen is not None:
         return cache_manager._reflecting_bishop_gen
 
-    # Create and store in cache manager if not exists
     cache_manager._reflecting_bishop_gen = _ReflectingBishopGen(cache_manager)
     return cache_manager._reflecting_bishop_gen
 

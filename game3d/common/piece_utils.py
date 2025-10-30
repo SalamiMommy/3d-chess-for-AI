@@ -38,7 +38,7 @@ def infer_piece_from_cache(
     Infer piece from cache, fallback to given type - optimized numpy version.
     """
     if isinstance(coord, np.ndarray) and coord.ndim > 1:
-        coord = coord.astype(np.int8)
+        coord = coord.astype(np.int16)
         pieces = []
         for i in range(coord.shape[0]):
             single_coord = tuple(coord[i].tolist())
