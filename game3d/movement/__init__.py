@@ -13,7 +13,6 @@ from game3d.pieces.pieces.whitehole import whitehole_move_dispatcher
 from game3d.pieces.pieces.freezer import freezer_move_dispatcher
 from game3d.pieces.pieces.speeder import speeder_move_dispatcher
 from game3d.pieces.pieces.slower import slower_move_dispatcher
-# Special pieces
 from game3d.pieces.pieces.bigknights import knight32_move_dispatcher, knight31_move_dispatcher
 from game3d.pieces.pieces.trigonalbishop import trigonal_bishop_move_dispatcher
 from game3d.pieces.pieces.hive import hive_move_dispatcher
@@ -26,9 +25,7 @@ from game3d.pieces.pieces.xyqueen import xy_queen_move_dispatcher
 from game3d.pieces.pieces.xzqueen import xz_queen_move_dispatcher
 from game3d.pieces.pieces.yzqueen import yz_queen_move_dispatcher
 from game3d.pieces.pieces.vectorslider import vectorslider_move_dispatcher
-
 from game3d.pieces.pieces.spiral import spiral_move_dispatcher
-
 from game3d.pieces.pieces.xzzigzag import xz_zigzag_move_dispatcher
 from game3d.pieces.pieces.yzzigzag import yz_zigzag_move_dispatcher
 from game3d.pieces.pieces.facecone import face_cone_move_dispatcher

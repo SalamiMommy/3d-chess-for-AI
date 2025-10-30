@@ -81,28 +81,32 @@ class OccupancyCache:
 
     def get(self, coord: Coord) -> Optional[Piece]:
         """Get piece - CONSISTENT (x,y,z) coordinate input."""
-        x, y, z = coord
+        # FIX: Convert numpy arrays to tuples for dictionary compatibility
+        if isinstance(coord, np.ndarray):
+            coord_tuple = tuple(coord.tolist())
+        else:
+            coord_tuple = coord
 
-        if not in_bounds(coord):
-            self._piece_cache[coord] = None
+        x, y, z = coord_tuple
+
+        if not in_bounds(coord_tuple):
+            self._piece_cache[coord_tuple] = None
             return None
 
-        cached = self._piece_cache.get(coord)
+        cached = self._piece_cache.get(coord_tuple)
         if cached is not None:
             return cached
 
         color_code = self._occ[z, y, x]
         if color_code == 0:
-            self._piece_cache[coord] = None
+            self._piece_cache[coord_tuple] = None
             return None
 
         color = Color.WHITE if color_code == 1 else Color.BLACK
         ptype = PieceType(self._ptype[z, y, x])
         piece = Piece(color, ptype)
 
-
-        self._piece_cache[coord] = piece
-
+        self._piece_cache[coord_tuple] = piece
         return piece
 
     def get_batch(self, coords: np.ndarray, skip_validation: bool = False, return_raw: bool = False) -> list[Piece | None]:
@@ -367,8 +371,10 @@ class OccupancyCache:
                 all_types = np.concatenate([white_types, black_types])
         else:
             pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
-            all_coords = np.array(list(pieces_dict.keys()), dtype=np.int32)
-            all_types = np.array([pieces_dict[tuple(coord)] for coord in all_coords], dtype=np.uint8)
+            # FIX: Ensure we return numpy arrays, not lists of tuples
+            coord_list = list(pieces_dict.keys())
+            all_coords = np.array(coord_list, dtype=np.int32)
+            all_types = np.array([pieces_dict[coord] for coord in coord_list], dtype=np.uint8)
 
         return all_coords, all_types
 
