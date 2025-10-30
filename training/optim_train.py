@@ -131,8 +131,8 @@ class TrainingConfig:
     batch_size: int = BATCH_SIZE
     learning_rate: float = 2e-4
     weight_decay: float = 1e-5
-    epochs: int = 50
-    warmup_epochs: int = 5
+    epochs: int = 5
+    warmup_epochs: int = 0
     policy_weight: float = 1.0
     value_weight: float = 1.0
     train_split: float = 0.8

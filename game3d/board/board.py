@@ -228,6 +228,7 @@ class Board:
 
     def set_piece(self, coord: Coord, piece: Optional[Piece]) -> None:
         """Set piece at coord, updating array."""
+        self._hash = None
         z, y, x = coord[2], coord[1], coord[0]
         self._array[:, z, y, x] = 0.0  # Clear all planes first
         if piece is not None:
@@ -259,20 +260,13 @@ class Board:
             return Piece(Color.BLACK, ptype)
 
     def byte_hash(self) -> int:
-        """Compute stable hash of board state using NumPy array."""
-        # Convert the board array to a stable byte representation
-        # We use a consistent order and include only the piece planes (not metadata)
-        piece_planes = self._array[:2*N_PIECE_TYPES]  # Only piece data, no metadata
+        """Cached byte hash."""
+        if self._hash is not None:
+            return self._hash
 
-        # Create a deterministic byte representation
-        # Use fixed precision to avoid floating point inconsistencies
-        scaled = (piece_planes * 255).astype(np.uint8)
-
-        # Flatten and convert to bytes for hashing
-        byte_data = scaled.tobytes()
-
-        # Use Python's built-in hash (consistent within process)
-        return hash(byte_data)
+        piece_planes = self._array[:2*N_PIECE_TYPES]
+        self._hash = hash(piece_planes.astype(np.uint8).tobytes())
+        return self._hash
 
     def array(self) -> np.ndarray:
         """Return the raw (C, 9, 9, 9) array."""

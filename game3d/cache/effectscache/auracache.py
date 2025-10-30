@@ -666,33 +666,34 @@ class UnifiedAuraCache(CacheStatsMixin):
         """Set the cache manager reference - ensures single instance usage"""
         self._cache_manager = cache_manager
 
-    def batch_is_frozen(self, coords: List[Coord], color: Color) -> np.ndarray:
-        """ULTRA-OPTIMIZED batch frozen check using direct numpy operations."""
-        if self._dirty_flags['coverage']:
-            self._incremental_rebuild()
-
+    def batch_is_frozen(self, coords: np.ndarray, color: Color) -> np.ndarray:
+        """Cached version for repeated calls with same coordinates."""
         n = len(coords)
         if n == 0:
             return np.array([], dtype=bool)
 
-        # Direct array access without method calls
-        coverage = self._coverage[AuraType.FREEZE][color]
+        # Create cache key
+        cache_key = (id(coords), color.value)
 
-        # Convert to numpy array once
-        coords_arr = np.array(coords, dtype=np.int32)
-        x, y, z = coords_arr[:, 0], coords_arr[:, 1], coords_arr[:, 2]
+        # Check cache
+        if hasattr(self, '_frozen_cache') and cache_key in self._frozen_cache:
+            return self._frozen_cache[cache_key]
 
-        # Single-pass bounds check and lookup
-        valid_mask = (x >= 0) & (x < 9) & (y >= 0) & (y < 9) & (z >= 0) & (z < 9)
+        # Compute result
+        result = self.batch_is_frozen(coords, color)
 
-        # Initialize result with False for all
-        result = np.zeros(n, dtype=bool)
+        # Cache result (limit cache size)
+        if not hasattr(self, '_frozen_cache'):
+            self._frozen_cache = {}
+            self._frozen_cache_keys = []
 
-        # Only check valid coordinates
-        valid_indices = np.where(valid_mask)[0]
-        if len(valid_indices) > 0:
-            valid_x, valid_y, valid_z = x[valid_mask], y[valid_mask], z[valid_mask]
-            result[valid_mask] = coverage[valid_z, valid_y, valid_x] > 0
+        # Limit cache to 10 entries
+        if len(self._frozen_cache) >= 10:
+            oldest_key = self._frozen_cache_keys.pop(0)
+            del self._frozen_cache[oldest_key]
+
+        self._frozen_cache[cache_key] = result
+        self._frozen_cache_keys.append(cache_key)
 
         return result
 

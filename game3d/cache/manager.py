@@ -781,21 +781,24 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             # Batch processing
             return self.occupancy.batch_get_pieces_vectorized(coords)
 
-    # Keep aliases for backward compatibility
     def batch_get_frozen_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
-        """Optimized batch frozen status check."""
+        """Use precomputed frozen bitmap for ultra-fast lookups."""
         if len(coords) == 0:
             return np.array([], dtype=bool)
 
-        # Convert to tuple coordinates efficiently
-        coord_tuples = [tuple(coord) for coord in coords]
+        # Ensure cache is built and get frozen bitmap
+        frozen_bitmap = self.aura_cache.frozen_bitmap
 
-        # Use vectorized approach if available in aura cache
-        if hasattr(self.aura_cache, 'batch_is_frozen'):
-            return self.aura_cache.batch_is_frozen(coord_tuples, color)
+        n = len(coords)
+        result = np.zeros(n, dtype=bool)
 
-        # Fallback to list comprehension but with pre-check
-        return np.array([self.aura_cache.is_frozen(coord, color) for coord in coord_tuples])
+        # Direct bitmap lookup
+        for i in range(n):
+            x, y, z = coords[i]
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                result[i] = frozen_bitmap[z, y, x]
+
+        return result
 
     def batch_get_debuffed_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
         """Alias for batch processing - maintained for backward compatibility."""

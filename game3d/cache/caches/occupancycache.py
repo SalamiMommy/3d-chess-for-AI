@@ -383,19 +383,48 @@ class OccupancyCache:
         return colors, types
 
     def batch_is_occupied_fast(self, coords: np.ndarray) -> np.ndarray:
-        """Ultra-fast occupancy check assuming pre-validated coordinates."""
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        return self._occ[z, y, x] != 0
+        """Optimized occupancy check."""
+        if coords.size == 0:
+            return np.array([], dtype=bool)
+
+        n = len(coords)
+        result = np.zeros(n, dtype=bool)
+        occ_flat = self._occ.ravel()
+
+        for i in range(n):
+            x, y, z = coords[i]
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                idx = z * 81 + y * 9 + x
+                result[i] = occ_flat[idx] != 0
+
+        return result
 
     def batch_get_colors_and_types(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Ultra-fast batch retrieval using direct memory access."""
+        """ULTRA-OPTIMIZED batch retrieval using direct memory access."""
         if coords.size == 0:
             return np.array([], dtype=np.uint8), np.array([], dtype=np.uint8)
 
-        # Use advanced indexing without bounds checking (assumes pre-validated)
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        colors = self._occ[z, y, x]
-        types = self._ptype[z, y, x]
+        n = len(coords)
+
+        # Pre-allocate arrays
+        colors = np.empty(n, dtype=np.uint8)
+        types = np.empty(n, dtype=np.uint8)
+
+        # Get direct references to avoid repeated attribute lookups
+        occ = self._occ
+        ptype = self._ptype
+
+        # Single-pass processing with bounds checking
+        for i in range(n):
+            x, y, z = coords[i]
+            # Manual bounds checking (faster than function calls)
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                colors[i] = occ[z, y, x]
+                types[i] = ptype[z, y, x]
+            else:
+                colors[i] = 0
+                types[i] = 0
+
         return colors, types
 
     def batch_update_piece_dicts(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:

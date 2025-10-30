@@ -11,6 +11,7 @@ Each iteration:
 import os, multiprocessing as mp, torch, argparse, pickle, random
 from pathlib import Path
 from typing import List
+from itertools import cycle
 
 # ---------- 0. Configure GPU for AI, CPU for game ----------
 # Only hide GPUs from game logic, not from AI model
@@ -26,6 +27,7 @@ if __name__ == "__main__":
     from training.optim_train import TrainingConfig, ChessTrainer
     from training.self_play import generate_training_data
     from training.types import TrainingExample
+    from training.opponents import AVAILABLE_OPPONENTS, create_opponent
 
     # ---------- 2. simple CLI ----------
     parser = argparse.ArgumentParser()
@@ -39,11 +41,31 @@ if __name__ == "__main__":
                         help="max examples to keep (oldest dropped)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="device for AI model (cuda/cpu)")
+    parser.add_argument("--opponent-types", type=str, nargs="+",
+                        default=AVAILABLE_OPPONENTS,
+                        help=f"opponent types to cycle through (available: {AVAILABLE_OPPONENTS})")
+    parser.add_argument("--epsilon", type=float, default=0.1,
+                        help="exploration rate for self-play")
     args = parser.parse_args()
 
     # ---------- 3. config & trainer ----------
     config = TrainingConfig(device=args.device)
     trainer = ChessTrainer(config)
+
+    # Create opponent cycles
+    white_opponents = cycle(args.opponent_types)
+    black_opponents = cycle(args.opponent_types)
+
+    print(f"\n{'='*80}")
+    print(f"TRAINING CONFIGURATION")
+    print(f"{'='*80}")
+    print(f"Device: {args.device}")
+    print(f"Games per iteration: {args.games_per_iter}")
+    print(f"Available opponents: {AVAILABLE_OPPONENTS}")
+    print(f"Selected opponents: {args.opponent_types}")
+    print(f"Epsilon: {args.epsilon}")
+    print(f"Max replay buffer: {args.max_replay:,}")
+    print(f"{'='*80}\n")
 
     # ---------- 4. load or create replay buffer ----------
     replay_path = Path(args.replay_file)
@@ -59,14 +81,21 @@ if __name__ == "__main__":
         if args.max_iter and iteration >= args.max_iter:
             break
         iteration += 1
-        print(f"\n===== ITERATION {iteration} =====")
+
+        # Get next opponent pair for this iteration
+        white_type = next(white_opponents)
+        black_type = next(black_opponents)
+
+        print(f"\n===== ITERATION {iteration} - White: {white_type}, Black: {black_type} =====")
 
         # 5a. self-play
         print("Generating fresh games …")
         fresh = generate_training_data(
             trainer.model,
             num_games=args.games_per_iter,
-            device=args.device  # Pass the device to self-play
+            device=args.device,  # Pass the device to self-play
+            opponent_types=[white_type, black_type],
+            epsilon=args.epsilon
         )
         print(f"  → {len(fresh)} new examples")
 
