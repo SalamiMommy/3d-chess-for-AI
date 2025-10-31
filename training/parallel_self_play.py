@@ -1,17 +1,20 @@
-# parallel_self_play.py - TRUE parallel self-play with threading
+# parallel_self_play.py - TRUE parallel self-play with multiprocessing
 """
-Parallel self-play with GPU batching and multi-threaded CPU game engines.
-Uses thread pool for game logic and synchronized GPU batching.
+Parallel self-play with GPU batching and multi-process CPU game engines.
+Uses process pool for game logic and synchronized GPU batching.
 """
 import torch
 import numpy as np
 from typing import List, Optional, Dict, Tuple
 import random
 from collections import defaultdict
-import threading
+import multiprocessing as mp
 import queue
 import time
 from dataclasses import dataclass
+import os
+import tempfile
+import threading
 
 from game3d.game.gamestate import GameState
 from game3d.common.enums import Color, Result
@@ -27,139 +30,116 @@ from game3d.game.terminal import (
 )
 from training.opponents import create_opponent, OpponentBase
 from game3d.game.factory import start_game_state
+from training.optim_train import TrainingConfig, ChessTrainer
 
 
-@dataclass
-class InferenceRequest:
-    """Request for GPU inference."""
-    game_id: int
-    state_array: np.ndarray
-    response_queue: queue.Queue
+class SharedModelInference:
+    """Shared model that handles batched inference for multiple games."""
 
-
-@dataclass
-class InferenceResponse:
-    """Response from GPU inference."""
-    game_id: int
-    from_logits: torch.Tensor
-    to_logits: torch.Tensor
-    value_pred: torch.Tensor
-
-
-class GPUInferenceServer:
-    """Dedicated thread for batched GPU inference."""
-
-    def __init__(self, model: torch.nn.Module, device: str, batch_size: int):
-        self.model = model.to(device).eval()
+    def __init__(self, model_path: str, device: str, batch_size: int = 32):
         self.device = device
         self.batch_size = batch_size
-        self.request_queue = queue.Queue(maxsize=batch_size * 2)
-        self.running = False
-        self.thread = None
-        self.total_inferences = 0
-        self.total_batches = 0
+        self.request_queue = mp.Queue()
+        self.result_queues = {}  # game_id -> queue
+        self.lock = threading.Lock()
 
-    def start(self):
-        """Start the inference server thread."""
+        # Load model once
+        config = TrainingConfig(device=self.device)
+        self.trainer = ChessTrainer(config)
+        if model_path:
+            state_dict = torch.load(model_path, map_location=self.device)
+            self.trainer.model.load_state_dict(state_dict)
+        self.model = self.trainer.model.eval()
+
         self.running = True
         self.thread = threading.Thread(target=self._inference_loop, daemon=True)
         self.thread.start()
 
-    def stop(self):
-        """Stop the inference server."""
-        self.running = False
-        if self.thread:
-            self.thread.join()
-
-    def request_inference(self, game_id: int, state_array: np.ndarray, response_queue: queue.Queue):
-        """Submit inference request (called from game threads)."""
-        request = InferenceRequest(game_id, state_array, response_queue)
-        self.request_queue.put(request)
-
     def _inference_loop(self):
-        """Main inference loop - processes batches."""
+        """Main inference loop running in a separate thread."""
         while self.running:
-            # Collect batch
-            batch_requests = []
-            timeout = 0.01  # 10ms timeout for responsive shutdown
-
             try:
-                # Get first request (blocking with timeout)
-                first_request = self.request_queue.get(timeout=timeout)
-                batch_requests.append(first_request)
+                # Collect batch of requests
+                batch_requests = []
+                start_time = time.time()
 
-                # Collect more requests up to batch_size (non-blocking)
-                while len(batch_requests) < self.batch_size:
-                    try:
-                        request = self.request_queue.get_nowait()
-                        batch_requests.append(request)
-                    except queue.Empty:
-                        break
+                # Get first request with timeout
+                try:
+                    first_request = self.request_queue.get(timeout=0.1)
+                    batch_requests.append(first_request)
 
-            except queue.Empty:
-                continue
+                    # Collect more requests quickly
+                    while len(batch_requests) < self.batch_size and time.time() - start_time < 0.05:
+                        try:
+                            request = self.request_queue.get_nowait()
+                            batch_requests.append(request)
+                        except queue.Empty:
+                            break
+                except queue.Empty:
+                    continue
 
-            if not batch_requests:
-                continue
+                if not batch_requests:
+                    continue
 
-            # Process batch on GPU
-            try:
-                states = np.stack([req.state_array for req in batch_requests], axis=0)
+                # Process batch
+                states = np.stack([req['state_array'] for req in batch_requests])
                 states_tensor = torch.from_numpy(states).float().to(self.device)
 
                 with torch.no_grad():
                     from_logits, to_logits, value_pred = self.model(states_tensor)
 
-                # Send responses back to game threads
-                for i, request in enumerate(batch_requests):
-                    response = InferenceResponse(
-                        game_id=request.game_id,
-                        from_logits=from_logits[i],
-                        to_logits=to_logits[i],
-                        value_pred=value_pred[i],
-                    )
-                    request.response_queue.put(response)
-
-                self.total_inferences += len(batch_requests)
-                self.total_batches += 1
+                # Send results back
+                for i, req in enumerate(batch_requests):
+                    result = {
+                        'from_logits': from_logits[i].cpu(),
+                        'to_logits': to_logits[i].cpu(),
+                        'value_pred': value_pred[i].cpu()
+                    }
+                    self.result_queues[req['game_id']].put(result)
 
             except Exception as e:
-                print(f"[GPU SERVER] Inference error: {e}")
-                # Send error responses
-                for request in batch_requests:
-                    request.response_queue.put(None)
+                print(f"[INFERENCE] Error: {e}")
+                # Put None in result queues to indicate error
+                for req in batch_requests:
+                    self.result_queues[req['game_id']].put(None)
+
+    def request_inference(self, game_id: int, state_array: np.ndarray):
+        """Request inference for a game state."""
+        with self.lock:
+            if game_id not in self.result_queues:
+                self.result_queues[game_id] = mp.Queue()
+
+        self.request_queue.put({
+            'game_id': game_id,
+            'state_array': state_array
+        })
+
+        # Wait for result
+        result = self.result_queues[game_id].get()
+        return result
+
+    def stop(self):
+        """Stop the inference thread."""
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join(timeout=5.0)
 
 
-class GameWorker:
-    """Worker thread that plays a single game."""
+def _game_worker(args):
+    """Game worker function that runs a single game."""
+    game_id, model_path, device, opponent_types, epsilon, max_moves = args
 
-    def __init__(
-        self,
-        game_id: int,
-        inference_server: GPUInferenceServer,
-        opponent_types: List[str],
-        epsilon: float,
-        max_moves: int,
-    ):
-        self.game_id = game_id
-        self.inference_server = inference_server
-        self.opponent_types = opponent_types
-        self.epsilon = epsilon
-        self.max_moves = max_moves
-        self.response_queue = queue.Queue(maxsize=1)
-        self.examples = []
-        self.move_count = 0
-        self.finished = False
+    try:
+        # Create shared inference for this process
+        inference = SharedModelInference(model_path, device)
 
-    def run(self) -> List[TrainingExample]:
-        """Run the game to completion."""
         # Initialize game
         initial_state = start_game_state()
         game = OptimizedGame3D(board=initial_state.board, cache=initial_state.cache_manager)
 
         opponents = {
-            Color.WHITE: create_opponent(self.opponent_types[0], Color.WHITE),
-            Color.BLACK: create_opponent(self.opponent_types[1], Color.BLACK),
+            Color.WHITE: create_opponent(opponent_types[0], Color.WHITE),
+            Color.BLACK: create_opponent(opponent_types[1], Color.BLACK),
         }
 
         # Initialize position tracking
@@ -167,9 +147,11 @@ class GameWorker:
             game.state._position_counts = defaultdict(int)
         game.state._position_counts[game.state.zkey] = 1
 
+        examples = []
+        move_count = 0
         error_count = 0
 
-        while self.move_count < self.max_moves and not game.is_game_over():
+        while move_count < max_moves and not game.is_game_over():
             try:
                 # Check termination
                 if is_fifty_move_draw(game.state) or is_threefold_repetition(game.state):
@@ -180,34 +162,30 @@ class GameWorker:
                 if not legal_moves:
                     break
 
-                # Request GPU inference
+                # Request inference
                 state_array = game.state.to_array()
-                self.inference_server.request_inference(
-                    self.game_id, state_array, self.response_queue
-                )
+                result = inference.request_inference(game_id, state_array)
 
-                # Wait for response
-                response = self.response_queue.get()
-                if response is None:
+                if result is None:
                     error_count += 1
                     if error_count >= 3:
                         break
                     continue
 
                 # Process response
-                from_logits = response.from_logits
-                to_logits = response.to_logits
-                value_pred = response.value_pred
+                from_logits = result['from_logits']
+                to_logits = result['to_logits']
+                value_pred = result['value_pred']
 
                 # Create training example
-                example = self._create_training_example(
-                    game, from_logits, to_logits, value_pred, legal_moves
+                example = _create_training_example(
+                    game, from_logits, to_logits, value_pred, legal_moves, move_count
                 )
-                self.examples.append(example)
+                examples.append(example)
 
                 # Choose and apply move
-                chosen_move = self._choose_move(
-                    game, opponents, from_logits, to_logits, legal_moves
+                chosen_move = _choose_move(
+                    game, opponents, from_logits, to_logits, legal_moves, epsilon
                 )
 
                 if chosen_move is None:
@@ -227,164 +205,169 @@ class GameWorker:
 
                 # Update tracking
                 game.state._position_counts[game.state.zkey] += 1
-                self.move_count += 1
+                move_count += 1
                 error_count = 0
 
-                if self.move_count % 100 == 0:
-                    print(f"[GAME {self.game_id}] Move {self.move_count}")
+                if move_count % 100 == 0:
+                    print(f"[GAME {game_id}] Move {move_count}")
 
             except Exception as e:
-                print(f"[GAME {self.game_id}] Error at move {self.move_count}: {e}")
+                print(f"[GAME {game_id}] Error at move {move_count}: {e}")
                 error_count += 1
                 if error_count >= 3:
                     break
 
         # Assign outcomes
-        self._assign_outcomes(game)
-        self.finished = True
+        _assign_outcomes(game, examples)
 
-        print(f"[GAME {self.game_id}] Completed: {len(self.examples)} examples, {self.move_count} moves")
-        return self.examples
+        inference.stop()
+        print(f"[GAME {game_id}] Completed: {len(examples)} examples, {move_count} moves")
+        return examples
 
-    def _create_training_example(
-        self,
-        game: OptimizedGame3D,
-        from_logits: torch.Tensor,
-        to_logits: torch.Tensor,
-        value_pred: torch.Tensor,
-        legal_moves: List[Move],
-    ) -> TrainingExample:
-        """Create training example from current state."""
-        from_logits_cpu = from_logits.cpu()
-        to_logits_cpu = to_logits.cpu()
+    except Exception as e:
+        print(f"[GAME {game_id}] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
-        # PRE-COMPUTE all indices at once (vectorized)
-        from_indices = np.array([coord_to_idx(mv.from_coord) for mv in legal_moves if mv], dtype=np.int32)
-        to_indices = np.array([coord_to_idx(mv.to_coord) for mv in legal_moves if mv], dtype=np.int32)
 
-        # Vectorized logit computation
-        from_logits_np = from_logits_cpu.numpy()
-        to_logits_np = to_logits_cpu.numpy()
+def _create_training_example(
+    game: OptimizedGame3D,
+    from_logits: torch.Tensor,
+    to_logits: torch.Tensor,
+    value_pred: torch.Tensor,
+    legal_moves: List[Move],
+    move_count: int,
+) -> TrainingExample:
+    """Create training example from current state."""
+    from_logits_np = from_logits.numpy()
+    to_logits_np = to_logits.numpy()
 
-        move_probs = from_logits_np[from_indices] + to_logits_np[to_indices]
+    # PRE-COMPUTE all indices at once (vectorized)
+    from_indices = np.array([coord_to_idx(mv.from_coord) for mv in legal_moves if mv], dtype=np.int32)
+    to_indices = np.array([coord_to_idx(mv.to_coord) for mv in legal_moves if mv], dtype=np.int32)
 
-        # Softmax (vectorized)
-        max_logit = np.max(move_probs)
-        exp_logit = np.exp(move_probs - max_logit)
-        sum_exp = np.sum(exp_logit)
+    # Vectorized logit computation
+    move_probs = from_logits_np[from_indices] + to_logits_np[to_indices]
 
-        if sum_exp == 0 or np.isnan(sum_exp):
-            move_probs_soft = np.ones_like(move_probs) / len(move_probs)
-        else:
-            move_probs_soft = exp_logit / sum_exp
+    # Softmax (vectorized)
+    max_logit = np.max(move_probs)
+    exp_logit = np.exp(move_probs - max_logit)
+    sum_exp = np.sum(exp_logit)
 
-        # Vectorized target creation
-        from_target_np = np.zeros(729, dtype=np.float32)
-        to_target_np = np.zeros(729, dtype=np.float32)
+    if sum_exp == 0 or np.isnan(sum_exp):
+        move_probs_soft = np.ones_like(move_probs) / len(move_probs)
+    else:
+        move_probs_soft = exp_logit / sum_exp
 
-        # Use np.add.at for fast accumulation
-        np.add.at(from_target_np, from_indices, move_probs_soft)
-        np.add.at(to_target_np, to_indices, move_probs_soft)
+    # Vectorized target creation
+    from_target_np = np.zeros(729, dtype=np.float32)
+    to_target_np = np.zeros(729, dtype=np.float32)
 
-        # Normalize
-        from_sum = np.sum(from_target_np)
-        to_sum = np.sum(to_target_np)
-        if from_sum > 0:
-            from_target_np /= from_sum
-        if to_sum > 0:
-            to_target_np /= to_sum
+    # Use np.add.at for fast accumulation
+    np.add.at(from_target_np, from_indices, move_probs_soft)
+    np.add.at(to_target_np, to_indices, move_probs_soft)
 
-        player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
-        state_array = game.state.to_array()
+    # Normalize
+    from_sum = np.sum(from_target_np)
+    to_sum = np.sum(to_target_np)
+    if from_sum > 0:
+        from_target_np /= from_sum
+    if to_sum > 0:
+        to_target_np /= to_sum
 
-        return TrainingExample(
-            state_tensor=state_array,
-            from_target=from_target_np,
-            to_target=to_target_np,
-            value_target=value_pred.item(),
-            move_count=self.move_count,
-            player_sign=player_sign
-        )
+    player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
+    state_array = game.state.to_array()
 
-    def _choose_move(
-        self,
-        game: OptimizedGame3D,
-        opponents: Dict[Color, OpponentBase],
-        from_logits: torch.Tensor,
-        to_logits: torch.Tensor,
-        legal_moves: List[Move],
-    ) -> Optional[Move]:
-        """Choose move using opponent logic - OPTIMIZED."""
-        if random.random() < self.epsilon:
-            return random.choice(legal_moves) if legal_moves else None
+    return TrainingExample(
+        state_tensor=state_array,
+        from_target=from_target_np,
+        to_target=to_target_np,
+        value_target=value_pred.item(),
+        move_count=move_count,
+        player_sign=player_sign
+    )
 
-        if not legal_moves:
-            return None
 
-        # Vectorize everything
-        from_indices = np.array([coord_to_idx(mv.from_coord) for mv in legal_moves], dtype=np.int32)
-        to_indices = np.array([coord_to_idx(mv.to_coord) for mv in legal_moves], dtype=np.int32)
+def _choose_move(
+    game: OptimizedGame3D,
+    opponents: Dict[Color, OpponentBase],
+    from_logits: torch.Tensor,
+    to_logits: torch.Tensor,
+    legal_moves: List[Move],
+    epsilon: float,
+) -> Optional[Move]:
+    """Choose move using opponent logic - OPTIMIZED."""
+    if random.random() < epsilon:
+        return random.choice(legal_moves) if legal_moves else None
 
-        from_logits_np = from_logits.cpu().numpy()
-        to_logits_np = to_logits.cpu().numpy()
+    if not legal_moves:
+        return None
 
-        move_probs = from_logits_np[from_indices] + to_logits_np[to_indices]
+    # Vectorize everything
+    from_indices = np.array([coord_to_idx(mv.from_coord) for mv in legal_moves], dtype=np.int32)
+    to_indices = np.array([coord_to_idx(mv.to_coord) for mv in legal_moves], dtype=np.int32)
 
-        # Softmax
-        max_logit = np.max(move_probs)
-        exp_logit = np.exp(move_probs - max_logit)
-        sum_exp = np.sum(exp_logit)
+    from_logits_np = from_logits.numpy()
+    to_logits_np = to_logits.numpy()
 
-        if sum_exp == 0 or np.isnan(sum_exp):
-            move_probs_soft = np.ones_like(move_probs) / len(move_probs)
-        else:
-            move_probs_soft = exp_logit / sum_exp
+    move_probs = from_logits_np[from_indices] + to_logits_np[to_indices]
 
-        # Vectorized rewards (if opponent supports it)
-        color = game.state.color
-        opponent = opponents[color]
+    # Softmax
+    max_logit = np.max(move_probs)
+    exp_logit = np.exp(move_probs - max_logit)
+    sum_exp = np.sum(exp_logit)
 
-        # Try batch rewards if available
-        if hasattr(opponent, 'batch_reward'):
-            rewards_np = opponent.batch_reward(game.state, legal_moves)
-        else:
-            rewards_np = np.array([opponent.reward(game.state, mv) for mv in legal_moves])
+    if sum_exp == 0 or np.isnan(sum_exp):
+        move_probs_soft = np.ones_like(move_probs) / len(move_probs)
+    else:
+        move_probs_soft = exp_logit / sum_exp
 
-        alpha = 0.5
-        scores = move_probs_soft + alpha * rewards_np
+    # Vectorized rewards (if opponent supports it)
+    color = game.state.color
+    opponent = opponents[color]
 
-        best_idx = int(np.argmax(scores))
-        return legal_moves[best_idx]
+    # Try batch rewards if available
+    if hasattr(opponent, 'batch_reward'):
+        rewards_np = opponent.batch_reward(game.state, legal_moves)
+    else:
+        rewards_np = np.array([opponent.reward(game.state, mv) for mv in legal_moves])
 
-    def _assign_outcomes(self, game: OptimizedGame3D):
-        """Assign final outcomes to examples."""
-        if game.is_game_over():
-            result = game.result()
-            if result == Result.WHITE_WON:
-                final_outcome = 1.0
-            elif result == Result.BLACK_WON:
-                final_outcome = -1.0
-            else:
-                final_outcome = 0.0
+    alpha = 0.5
+    scores = move_probs_soft + alpha * rewards_np
+
+    best_idx = int(np.argmax(scores))
+    return legal_moves[best_idx]
+
+
+def _assign_outcomes(game: OptimizedGame3D, examples: List[TrainingExample]):
+    """Assign final outcomes to examples."""
+    if game.is_game_over():
+        result = game.result()
+        if result == Result.WHITE_WON:
+            final_outcome = 1.0
+        elif result == Result.BLACK_WON:
+            final_outcome = -1.0
         else:
             final_outcome = 0.0
+    else:
+        final_outcome = 0.0
 
-        for ex in self.examples:
-            ex.value_target = final_outcome * ex.player_sign
+    for ex in examples:
+        ex.value_target = final_outcome * ex.player_sign
 
 
 class ParallelSelfPlayGenerator:
-    """Generate training data with true parallel execution."""
+    """Generate training data with true parallel execution using processes."""
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model_path: Optional[str],
         device: str = "cuda",
         num_parallel_games: int = 8,
         temperature: float = 1.5,
         opponent_types: Optional[List[str]] = None,
         epsilon: float = 0.1,
-        batch_size: int = 8,
     ):
         self.device = device
         self.num_parallel_games = num_parallel_games
@@ -398,75 +381,54 @@ class ParallelSelfPlayGenerator:
         else:
             self.opponent_types = self.opponent_types[:2]
 
-        # Start GPU inference server
-        self.inference_server = GPUInferenceServer(model, device, batch_size)
-        self.inference_server.start()
+        self.model_path = model_path
 
         print(f"[PARALLEL] Initialized with {num_parallel_games} parallel games")
-        print(f"[GPU SERVER] Batch size: {batch_size}")
-        print(f"[DEVICE] AI model on {device}, game logic on CPU threads")
+        print(f"[DEVICE] AI model on {device}, game logic on CPU processes")
 
     def generate_games_parallel(self, max_moves: int = 100_000) -> List[TrainingExample]:
-        """Generate multiple games in parallel with true threading."""
-        workers = [
-            GameWorker(
-                game_id=i,
-                inference_server=self.inference_server,
-                opponent_types=self.opponent_types,
-                epsilon=self.epsilon,
-                max_moves=max_moves,
-            )
-            for i in range(self.num_parallel_games)
-        ]
-
-        print(f"\n[PARALLEL] Starting {self.num_parallel_games} game threads")
+        """Generate multiple games in parallel with true multiprocessing."""
+        print(f"\n[PARALLEL] Starting {self.num_parallel_games} game processes")
         start_time = time.time()
 
-        # Create threads
-        threads = []
-        results_queue = queue.Queue()
+        # Use multiprocessing Pool with limited processes to avoid resource contention
+        num_processes = min(self.num_parallel_games, mp.cpu_count() // 2)  # Don't overload CPU
+        print(f"[PARALLEL] Using {num_processes} processes out of {mp.cpu_count()} available CPUs")
 
-        def worker_wrapper(worker):
-            try:
-                examples = worker.run()
-                results_queue.put(examples)
-            except Exception as e:
-                print(f"[GAME {worker.game_id}] Fatal error: {e}")
-                import traceback
-                traceback.print_exc()
-                results_queue.put([])
+        with mp.get_context('spawn').Pool(processes=num_processes) as pool:
+            # Prepare arguments for each worker
+            worker_args = [
+                (
+                    i,  # game_id
+                    self.model_path,  # model_path
+                    self.device,  # device
+                    self.opponent_types,  # opponent_types
+                    self.epsilon,  # epsilon
+                    max_moves,  # max_moves
+                )
+                for i in range(self.num_parallel_games)
+            ]
 
-        # Start all threads
-        for worker in workers:
-            thread = threading.Thread(target=worker_wrapper, args=(worker,))
-            thread.start()
-            threads.append(thread)
-
-        # Wait for all threads
-        for thread in threads:
-            thread.join()
+            # Run games in parallel with chunks to reduce overhead
+            chunk_size = max(1, len(worker_args) // num_processes)
+            results = pool.map(_game_worker, worker_args, chunksize=chunk_size)
 
         elapsed = time.time() - start_time
 
         # Collect results
         all_examples = []
-        for _ in range(self.num_parallel_games):
-            examples = results_queue.get()
+        for examples in results:
             all_examples.extend(examples)
 
         print(f"\n[PARALLEL] All games completed in {elapsed:.2f}s")
         print(f"[PARALLEL] Total examples: {len(all_examples)}")
         print(f"[PARALLEL] Games per second: {self.num_parallel_games / elapsed:.2f}")
-        print(f"[GPU SERVER] Total batches: {self.inference_server.total_batches}")
-        print(f"[GPU SERVER] Total inferences: {self.inference_server.total_inferences}")
-        print(f"[GPU SERVER] Avg batch size: {self.inference_server.total_inferences / max(1, self.inference_server.total_batches):.2f}")
 
         return all_examples
 
-    def __del__(self):
-        """Clean up inference server."""
-        if hasattr(self, 'inference_server'):
-            self.inference_server.stop()
+    def cleanup(self):
+        """Cleanup method."""
+        pass
 
 
 def generate_training_data_parallel(
@@ -490,22 +452,28 @@ def generate_training_data_parallel(
 
         games_this_round = min(num_parallel, num_games - round_idx * num_parallel)
 
+        # Save current model state to temp file
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as temp_file:
+            torch.save(model.state_dict(), temp_file.name)
+            model_path = temp_file.name
+
         generator = ParallelSelfPlayGenerator(
-            model=model,
+            model_path=model_path,
             device=device,
             num_parallel_games=games_this_round,
             opponent_types=opponent_types,
             epsilon=epsilon,
-            batch_size=games_this_round,
         )
 
-        examples = generator.generate_games_parallel(max_moves)
-        all_examples.extend(examples)
-
-        # Clean up
-        del generator
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            examples = generator.generate_games_parallel(max_moves)
+            all_examples.extend(examples)
+        finally:
+            # Ensure cleanup happens even if there's an error
+            generator.cleanup()
+            os.unlink(model_path)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         print(f"Round {round_idx + 1} completed: {len(examples)} examples from {games_this_round} games")
 
