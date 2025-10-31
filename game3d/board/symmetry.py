@@ -1,11 +1,11 @@
+# symmetry.py - NUMPY VERSION
 from __future__ import annotations
 """
 game3d/board/symmetry.py
-Tensor-based ROTATIONAL symmetry operations for 9x9x9 3D chess board.
-Compatible with Board class tensor format: (N_TOTAL_PLANES, Z, Y, X)
+NUMPY-based ROTATIONAL symmetry operations for 9x9x9 3D chess board.
+Compatible with Board class array format: (N_TOTAL_PLANES, Z, Y, X)
 """
 
-import torch
 import numpy as np
 from typing import List, Tuple, Dict, Optional, Set, Callable, Any
 from enum import Enum
@@ -44,10 +44,10 @@ class RotationType(Enum):
     ROTATE_YmZ_EDGE = "rotate_ymz_edge"
 
 @dataclass
-class TensorTransformation:
+class ArrayTransformation:
     name: str
-    transform_fn: Callable[[torch.Tensor], torch.Tensor]
-    inverse_fn: Callable[[torch.Tensor], torch.Tensor]
+    transform_fn: Callable[[np.ndarray], np.ndarray]
+    inverse_fn: Callable[[np.ndarray], np.ndarray]
     hash_multiplier: int
 
 class SymmetryManager:
@@ -83,13 +83,13 @@ class SymmetryManager:
         self.cache_hits = 0
         self.cache_misses = 0
 
-    def _init_all_rotational_transformations(self) -> List[TensorTransformation]:
+    def _init_all_rotational_transformations(self) -> List[ArrayTransformation]:
         # Implement initialization
         return []  # Placeholder
 
     @lru_cache(maxsize=1000)
     def get_canonical_form(self, board) -> Tuple['Board', str]:
-        tensor = board.tensor()
+        array = board.array()
 
         symmetric_variants = self.get_symmetric_boards(board)
         all_variants = [("identity", board)] + symmetric_variants
@@ -106,17 +106,17 @@ class SymmetryManager:
         return canonical_board, transformation_name
 
     def _board_to_comparable(self, board) -> Tuple:
-        tensor = board.tensor()
-        flat_tensor = tensor.view(-1)
-        first_elements = tuple(flat_tensor[:100].int().tolist())
-        total_sum = int(tensor.sum().item())  # Avoid float precision
-        non_zero_count = int((tensor != 0).sum().item())
+        array = board.array()
+        flat_array = array.ravel()
+        first_elements = tuple(flat_array[:100].astype(int).tolist())
+        total_sum = int(np.sum(array))  # Avoid float precision
+        non_zero_count = int(np.count_nonzero(array))
         return (first_elements, total_sum, non_zero_count)
 
     def is_symmetric_position(self, board1, board2) -> bool:
         canonical1, _ = self.get_canonical_form(board1)
         canonical2, _ = self.get_canonical_form(board2)
-        return torch.equal(canonical1.tensor(), canonical2.tensor())
+        return np.array_equal(canonical1.array(), canonical2.array())
 
     def get_rotation_count(self) -> int:
         return len(self.transformations)
@@ -169,6 +169,6 @@ class SymmetryManager:
 
         return result
 
-    def tensor(self) -> torch.Tensor:
-        # Placeholder for board.tensor()
-        return torch.zeros(1)
+    def array(self) -> np.ndarray:
+        # Placeholder for board.array()
+        return np.zeros(1)

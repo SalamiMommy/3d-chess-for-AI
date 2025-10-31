@@ -8,7 +8,7 @@ import numpy as np
 from typing import List, Tuple, TYPE_CHECKING
 from game3d.common.enums import Color, PieceType
 from game3d.movement.registry import register
-from game3d.movement.movepiece import Move, Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move, MOVE_FLAGS
 from game3d.movement.movetypes.jumpmovement import get_integrated_jump_movement_generator
 from game3d.common.cache_utils import ensure_int_coords
 from game3d.common.coord_utils import get_aura_squares
@@ -27,7 +27,7 @@ _KING_DIRECTIONS = np.array([
 ], dtype=np.int8)
 
 def generate_bomb_moves(
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    cache_manager: 'OptimizedCacheManager',
     color: Color,
     x: int, y: int, z: int
 ) -> List[Move]:
@@ -35,7 +35,7 @@ def generate_bomb_moves(
     x, y, z = ensure_int_coords(x, y, z)
     pos = (x, y, z)
 
-    # 1. King walks using jump movement - FIXED: Use parameter name
+    # 1. King walks using jump movement
     jump_gen = get_integrated_jump_movement_generator(cache_manager)
     moves = jump_gen.generate_jump_moves(
         color=color,
@@ -46,18 +46,28 @@ def generate_bomb_moves(
 
     # 2. Self-detonation move (if it would affect enemies)
     if _detonate_would_affect_enemies(cache_manager, pos, color):
-        detonate_move = Move(
+        # FIX: Use create_batch instead of direct constructor
+        to_coords = np.array([pos], dtype=np.int32)
+        captures = np.array([False], dtype=bool)
+
+        detonate_moves = Move.create_batch(
             from_coord=pos,
-            to_coord=pos,
-            flags=MOVE_FLAGS['SELF_DETONATE']
+            to_coords=to_coords,
+            captures=captures,
+            debuffed=False
         )
-        detonate_move.metadata["detonate"] = True
-        moves.append(detonate_move)
+
+        if detonate_moves:
+            detonate_move = detonate_moves[0]
+            # Manually set the self-detonate flag since create_batch doesn't support custom flags
+            detonate_move._data |= (MOVE_FLAGS['SELF_DETONATE'] << 20)
+            detonate_move.metadata["detonate"] = True
+            moves.append(detonate_move)
 
     return moves
 
 def _detonate_would_affect_enemies(
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    cache_manager: 'OptimizedCacheManager',
     center: Tuple[int, int, int],
     current_color: Color
 ) -> bool:
@@ -65,7 +75,6 @@ def _detonate_would_affect_enemies(
     from game3d.attacks.check import _any_priest_alive
 
     for sq in get_aura_squares(center, radius=2):
-        # FIXED: Use public API instead of direct occupancy access
         victim = cache_manager.get_piece(sq)
         if victim is None or victim.color == current_color:
             continue
@@ -78,7 +87,6 @@ def _detonate_would_affect_enemies(
 @register(PieceType.BOMB)
 def bomb_move_dispatcher(state: 'GameState', x: int, y: int, z: int) -> List[Move]:
     x, y, z = ensure_int_coords(x, y, z)
-    # FIXED: Use cache_manager property
     return generate_bomb_moves(state.cache_manager, state.color, x, y, z)
 
 __all__ = ["generate_bomb_moves"]

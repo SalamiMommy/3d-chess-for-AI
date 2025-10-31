@@ -43,7 +43,7 @@ def generate_spiral_moves(
         piece_type='spiral',
         pos=(x, y, z),
         color=color,
-        max_distance=32,
+        max_distance=16,
         directions=_SPIRAL_OFFS,
         cache_manager=cache_manager,  # FIXED: Use parameter
     )

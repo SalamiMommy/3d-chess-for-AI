@@ -1,4 +1,5 @@
-import torch
+# piece.py
+import numpy as np
 from game3d.common.enums import Color, PieceType
 
 class Piece:
@@ -12,9 +13,9 @@ class Piece:
         self.ptype = ptype
         self.armoured = armoured
 
-    def to_tensor(self) -> torch.Tensor:
-        """Returns shape (2,) int8 tensor: [color_value, ptype_value]."""
-        return torch.tensor([self.color.value, self.ptype.value], dtype=torch.int8)
+    def to_array(self) -> np.ndarray:
+        """Returns shape (2,) int8 array: [color_value, ptype_value]."""
+        return np.array([self.color.value, self.ptype.value], dtype=np.int8)
 
     def __hash__(self):
         return hash((self.color, self.ptype))

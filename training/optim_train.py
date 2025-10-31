@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +26,9 @@ BATCH_SIZE = 32
 NUM_WORKERS = 0  # Changed to 0 to avoid CUDA multiprocessing issues
 PIN_MEMORY = False  # Changed to False to avoid CUDA multiprocessing issues
 
+
 class ChessDataset(Dataset):
-    """Dataset with augmentation and validation."""
+    """Dataset with augmentation and validation - converts numpy arrays to tensors."""
 
     def __init__(self, examples: List[TrainingExample], augment: bool = True):
         self.examples = examples
@@ -35,25 +37,48 @@ class ChessDataset(Dataset):
 
     def _validate_examples(self):
         for i, ex in enumerate(self.examples):
-            if ex.state_tensor.shape != (N_CHANNELS, SIZE, SIZE, SIZE):
-                raise ValueError(f"Example {i}: Invalid state shape")
-            if ex.from_target.shape != (729,):
-                raise ValueError(f"Example {i}: Invalid from_target shape")
-            if ex.to_target.shape != (729,):
-                raise ValueError(f"Example {i}: Invalid to_target shape")
+            # Check if state_tensor is numpy array and convert expectations
+            if hasattr(ex.state_tensor, 'shape'):
+                # It's a numpy array, check its shape
+                if ex.state_tensor.shape != (N_CHANNELS, SIZE, SIZE, SIZE):
+                    raise ValueError(f"Example {i}: Invalid state shape {ex.state_tensor.shape}")
+            # Check targets
+            if hasattr(ex.from_target, 'shape'):
+                if ex.from_target.shape != (729,):
+                    raise ValueError(f"Example {i}: Invalid from_target shape {ex.from_target.shape}")
+            if hasattr(ex.to_target, 'shape'):
+                if ex.to_target.shape != (729,):
+                    raise ValueError(f"Example {i}: Invalid to_target shape {ex.to_target.shape}")
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-        state = ex.state_tensor
+
+        # Convert numpy arrays to tensors
+        if isinstance(ex.state_tensor, np.ndarray):
+            state = torch.from_numpy(ex.state_tensor).float()
+        else:
+            state = ex.state_tensor
+
+        if isinstance(ex.from_target, np.ndarray):
+            from_target = torch.from_numpy(ex.from_target).float()
+        else:
+            from_target = ex.from_target
+
+        if isinstance(ex.to_target, np.ndarray):
+            to_target = torch.from_numpy(ex.to_target).float()
+        else:
+            to_target = ex.to_target
+
         if self.augment:
             state = self._augment_state(state)
+
         return (
             state,
-            ex.from_target,
-            ex.to_target,
+            from_target,
+            to_target,
             torch.tensor(ex.value_target, dtype=torch.float32)
         )
 
@@ -106,8 +131,8 @@ class TrainingConfig:
     batch_size: int = BATCH_SIZE
     learning_rate: float = 2e-4
     weight_decay: float = 1e-5
-    epochs: int = 50
-    warmup_epochs: int = 5
+    epochs: int = 5
+    warmup_epochs: int = 0
     policy_weight: float = 1.0
     value_weight: float = 1.0
     train_split: float = 0.8
@@ -142,7 +167,7 @@ class ChessTrainer:
         self.scheduler = self._create_scheduler()
         self.criterion = ChessLoss(config.policy_weight, config.value_weight)
         # Fix: Updated GradScaler to use torch.amp
-        self.scaler = torch.amp.GradScaler('cpu') if config.mixed_precision else None
+        self.scaler = torch.amp.GradScaler('cuda') if config.mixed_precision and self.device.type == 'cuda' else None
 
         if config.use_ema:
             self.ema_model = self._create_model()
@@ -209,17 +234,26 @@ class ChessTrainer:
 
             self.optimizer.zero_grad()
 
-            with torch.amp.autocast('cpu', enabled=self.config.mixed_precision):
+            # Use autocast only for CUDA
+            if self.device.type == 'cuda' and self.config.mixed_precision:
+                with torch.amp.autocast('cuda'):
+                    from_logits, to_logits, value_pred = self.model(states)
+                    loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
+
+                if self.scaler:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
+                    self.optimizer.step()
+            else:
+                # CPU or no mixed precision
                 from_logits, to_logits, value_pred = self.model(states)
                 loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
-
-            if self.scaler:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clipping)
                 self.optimizer.step()
@@ -243,7 +277,11 @@ class ChessTrainer:
                 to_targets = to_targets.to(self.device)
                 value_targets = value_targets.to(self.device)
 
-                with torch.amp.autocast('cpu', enabled=self.config.mixed_precision):
+                if self.device.type == 'cuda' and self.config.mixed_precision:
+                    with torch.amp.autocast('cuda'):
+                        from_logits, to_logits, value_pred = self.model(states)
+                        loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
+                else:
                     from_logits, to_logits, value_pred = self.model(states)
                     loss = self.criterion(from_logits, to_logits, from_targets, to_targets, value_pred, value_targets)
 

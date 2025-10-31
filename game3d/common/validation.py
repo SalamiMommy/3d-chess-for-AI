@@ -1,8 +1,8 @@
+# validation.py
 # game3d/common/validation.py
 """CONSOLIDATED MOVE VALIDATION MODULE"""
 from __future__ import annotations
 import numpy as np
-import torch
 from typing import List, Dict, Any, Tuple, Optional, Union, Set, TYPE_CHECKING
 
 from game3d.common.constants import SIZE
@@ -34,8 +34,8 @@ def validate_moves_fast(
     expected_color = piece.color if piece else state.color
 
     # Extract coordinates in single batch
-    from_coords = np.array([m.from_coord for m in moves], dtype=np.int32)
-    to_coords = np.array([m.to_coord for m in moves], dtype=np.int32)
+    from_coords = np.array([m.from_coord for m in moves], dtype=np.int8)
+    to_coords = np.array([m.to_coord for m in moves], dtype=np.int8)
 
     # Batch occupancy checks
     from_colors, _ = cache.occupancy.batch_get_colors_and_types(from_coords)
@@ -309,97 +309,63 @@ def validate_moves_batch(
     return [moves[i] for i in range(len(moves)) if valid[i]]
 
 def validate_moves_ultra_batch(
-    moves: Union[List[Move], List[List[Move]]],
+    moves: List[Move],
     state: GameState
-) -> Union[List[Move], List[List[Move]]]:
-    """
-    Ultra-batch validation for maximum performance.
-    Uses full vectorization and minimizes Python loops - supports scalar and batch mode.
-    """
-    # Handle nested batch (list of lists)
-    if moves and isinstance(moves[0], list):
-        return [validate_moves_ultra_batch(move_batch, state) for move_batch in moves]
-
-    # Single batch mode
+) -> List[Move]:
+    """ULTRA-OPTIMIZED validation with minimal overhead."""
     if not moves:
         return []
 
-    moves = filter_none_moves(moves)
-    if not moves:
-        return []
-
-    # Convert to numpy arrays for vectorized processing
-    from_coords = np.array([m.from_coord for m in moves], dtype=np.int32)
-    to_coords = np.array([m.to_coord for m in moves], dtype=np.int32)
-
+    # Skip filter_none_moves - assume caller handles None moves
     cache_manager = state.cache_manager
     expected_color = state.color
-    current_ply = getattr(state, 'ply', state.halfmove_clock)
+    current_ply = state.halfmove_clock
 
-    # 1. Batch bounds checking (fully vectorized)
-    from_bounds = np.all((from_coords >= 0) & (from_coords < SIZE), axis=1)
-    to_bounds = np.all((to_coords >= 0) & (to_coords < SIZE), axis=1)
-    bounds_valid = from_bounds & to_bounds
-
-    if not np.any(bounds_valid):
+    n = len(moves)
+    if n == 0:
         return []
 
-    # 2. Filter valid indices early
-    valid_indices = np.where(bounds_valid)[0]
-    valid_from_coords = from_coords[valid_indices]
-    valid_to_coords = to_coords[valid_indices]
+    # Pre-allocate arrays
+    from_coords = np.empty((n, 3), dtype=np.int32)
+    to_coords = np.empty((n, 3), dtype=np.int32)
 
-    # 3. Batch occupancy and color validation
-    from_colors, from_types = cache_manager.occupancy.batch_get_colors_and_types(valid_from_coords)
-    to_colors, to_types = cache_manager.occupancy.batch_get_colors_and_types(valid_to_coords)
+    # Single-pass coordinate extraction
+    for i, m in enumerate(moves):
+        # Direct attribute access - avoid property calls
+        from_coords[i] = m._cached_from
+        to_coords[i] = m._cached_to
+
+    # Batch occupancy checks - single call
+    from_colors, from_types = cache_manager.occupancy.batch_get_colors_and_types(from_coords)
+    to_colors, to_types = cache_manager.occupancy.batch_get_colors_and_types(to_coords)
 
     expected_code = 1 if expected_color == Color.WHITE else 2
 
-    # Vectorized color validation
-    color_valid = (from_colors != 0) & (from_colors == expected_code)
+    # Combined validation mask
+    valid_mask = (
+        (from_colors == expected_code) &
+        ((to_colors == 0) | (to_colors != expected_code))
+    )
 
-    # Vectorized destination validation
-    dest_valid = (to_colors == 0) | (to_colors != expected_code)
+    # Early exit
+    valid_count = np.sum(valid_mask)
+    if valid_count == 0:
+        return []
 
-    # 4. Batch effect validation using cache manager batch methods
-    frozen_valid = ~cache_manager.batch_get_frozen_status(valid_from_coords, expected_color)
-    geomancy_valid = ~cache_manager.batch_get_geomancy_blocked(valid_to_coords, current_ply)
+    # Only process valid moves for expensive checks
+    valid_indices = np.where(valid_mask)[0]
+    valid_from = from_coords[valid_mask]
+    valid_to = to_coords[valid_mask]
 
-    # 5. Combine all masks
-    final_valid_mask = color_valid & dest_valid & frozen_valid & geomancy_valid
+    # Parallel effect checks
+    frozen = cache_manager.batch_get_frozen_status(valid_from, expected_color)
+    geomancy = cache_manager.batch_get_geomancy_blocked(valid_to, current_ply)
 
-    # 6. Apply debuff effects to remaining moves
-    if np.any(final_valid_mask):
-        debuffed_coords = valid_from_coords[final_valid_mask]
-        debuffed_mask = cache_manager.batch_get_debuffed_status(debuffed_coords, expected_color)
+    # Final combination
+    effect_valid = ~(frozen | geomancy)
+    final_indices = valid_indices[effect_valid]
 
-        # For debuffed pieces, we need to filter moves that exceed reduced range
-        if np.any(debuffed_mask):
-            debuffed_indices = np.where(debuffed_mask)[0]
-            original_valid_indices = valid_indices[final_valid_mask]
-
-            # Apply range reduction for debuffed pieces
-            for debuff_subidx in debuffed_indices:
-                orig_idx = original_valid_indices[debuff_subidx]
-                move = moves[orig_idx]
-                from_arr = np.array(move.from_coord)
-                to_arr = np.array(move.to_coord)
-                distance = np.max(np.abs(to_arr - from_arr))
-
-                # If distance exceeds reduced range, mark as invalid
-                if distance > 1:  # Debuffed pieces can only move 1 square
-                    final_valid_mask[debuff_subidx] = False
-
-    # 7. Apply final mask to original indices
-    final_valid_indices = valid_indices[final_valid_mask]
-
-    result = []
-    result_append = result.append  # Cache method
-    for i in final_valid_indices:
-        result_append(moves[i])
-    return result
-
-
+    return [moves[i] for i in final_indices]
 # =============================================================================
 # Specialized Validations
 # =============================================================================

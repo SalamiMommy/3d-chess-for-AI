@@ -1,7 +1,7 @@
-# game3d/game/factory.py - FIXED
+# game3d/game/factory.py - CONVERTED TO NUMPY
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
-import torch
+import numpy as np
 
 from game3d.board.board import Board
 from game3d.common.enums import Color
@@ -38,7 +38,7 @@ def start_game_state(cache_manager: Optional['OptimizedCacheManager'] = None) ->
     )
 
 def create_game_state_from_tensor(
-    tensor: torch.Tensor,
+    tensor: np.ndarray,  # CHANGED: torch.Tensor -> np.ndarray
     color: Color,
     cache_manager: Optional['OptimizedCacheManager'] = None,
 ) -> GameState:

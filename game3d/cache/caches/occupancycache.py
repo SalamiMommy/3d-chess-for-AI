@@ -20,23 +20,23 @@ class OccupancyCache:
     __slots__ = (
         "_occ", "_ptype", "_white_pieces", "_black_pieces",
         "_valid", "_occ_view", "_lock", "_gen", "_manager",
-        "_piece_cache", "_piece_cache_max_size", "_priest_count", "_board"
+        "_piece_cache", "_priest_count", "_board"
     )
 
     def __init__(self, manager: "OptimizedCacheManager") -> None:
-        self._manager = manager          # keep the link
-        board = manager.board            # board lives on the manager
-        self._occ = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
-        self._ptype = np.zeros((SIZE_Z, SIZE_Y, SIZE_X), dtype=np.uint8)
+        self._manager = manager
+        board = manager.board
+
+        # Use uint8 for everything - most efficient for GPU transfer
+        self._occ = np.zeros((9, 9, 9), dtype=np.uint8)  # 0=empty, 1=white, 2=black
+        self._ptype = np.zeros((9, 9, 9), dtype=np.uint8)  # PieceType values
+
         self._white_pieces: Dict[Coord, PieceType] = {}
         self._black_pieces: Dict[Coord, PieceType] = {}
         self._valid = False
         self._board = board
         self._gen = -1
-        # self._board = cache_manager.board
-        self._occ_view: Optional[np.ndarray] = None
         self._piece_cache = {}
-        self._piece_cache_max_size = 8192
         self._priest_count = np.zeros(2, dtype=np.uint8)
         self.rebuild(board)
 
@@ -81,30 +81,32 @@ class OccupancyCache:
 
     def get(self, coord: Coord) -> Optional[Piece]:
         """Get piece - CONSISTENT (x,y,z) coordinate input."""
-        x, y, z = coord
+        # FIX: Convert numpy arrays to tuples for dictionary compatibility
+        if isinstance(coord, np.ndarray):
+            coord_tuple = tuple(coord.tolist())
+        else:
+            coord_tuple = coord
 
-        if not in_bounds(coord):
-            if len(self._piece_cache) < self._piece_cache_max_size:
-                self._piece_cache[coord] = None
+        x, y, z = coord_tuple
+
+        if not in_bounds(coord_tuple):
+            self._piece_cache[coord_tuple] = None
             return None
 
-        cached = self._piece_cache.get(coord)
+        cached = self._piece_cache.get(coord_tuple)
         if cached is not None:
             return cached
 
         color_code = self._occ[z, y, x]
         if color_code == 0:
-            if len(self._piece_cache) < self._piece_cache_max_size:
-                self._piece_cache[coord] = None
+            self._piece_cache[coord_tuple] = None
             return None
 
         color = Color.WHITE if color_code == 1 else Color.BLACK
         ptype = PieceType(self._ptype[z, y, x])
         piece = Piece(color, ptype)
 
-        if len(self._piece_cache) < self._piece_cache_max_size:
-            self._piece_cache[coord] = piece
-
+        self._piece_cache[coord_tuple] = piece
         return piece
 
     def get_batch(self, coords: np.ndarray, skip_validation: bool = False, return_raw: bool = False) -> list[Piece | None]:
@@ -369,8 +371,10 @@ class OccupancyCache:
                 all_types = np.concatenate([white_types, black_types])
         else:
             pieces_dict = self._white_pieces if color == Color.WHITE else self._black_pieces
-            all_coords = np.array(list(pieces_dict.keys()), dtype=np.int32)
-            all_types = np.array([pieces_dict[tuple(coord)] for coord in all_coords], dtype=np.uint8)
+            # FIX: Ensure we return numpy arrays, not lists of tuples
+            coord_list = list(pieces_dict.keys())
+            all_coords = np.array(coord_list, dtype=np.int32)
+            all_types = np.array([pieces_dict[coord] for coord in coord_list], dtype=np.uint8)
 
         return all_coords, all_types
 
@@ -385,18 +389,48 @@ class OccupancyCache:
         return colors, types
 
     def batch_is_occupied_fast(self, coords: np.ndarray) -> np.ndarray:
-        """Ultra-fast occupancy check assuming pre-validated coordinates."""
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        return self._occ[z, y, x] != 0
+        """Optimized occupancy check."""
+        if coords.size == 0:
+            return np.array([], dtype=bool)
+
+        n = len(coords)
+        result = np.zeros(n, dtype=bool)
+        occ_flat = self._occ.ravel()
+
+        for i in range(n):
+            x, y, z = coords[i]
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                idx = z * 81 + y * 9 + x
+                result[i] = occ_flat[idx] != 0
+
+        return result
 
     def batch_get_colors_and_types(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Ultra-fast batch retrieval of colors and types without bounds checking"""
+        """ULTRA-OPTIMIZED batch retrieval using direct memory access."""
         if coords.size == 0:
             return np.array([], dtype=np.uint8), np.array([], dtype=np.uint8)
 
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        colors = self._occ[z, y, x]
-        types = self._ptype[z, y, x]
+        n = len(coords)
+
+        # Pre-allocate arrays
+        colors = np.empty(n, dtype=np.uint8)
+        types = np.empty(n, dtype=np.uint8)
+
+        # Get direct references to avoid repeated attribute lookups
+        occ = self._occ
+        ptype = self._ptype
+
+        # Single-pass processing with bounds checking
+        for i in range(n):
+            x, y, z = coords[i]
+            # Manual bounds checking (faster than function calls)
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                colors[i] = occ[z, y, x]
+                types[i] = ptype[z, y, x]
+            else:
+                colors[i] = 0
+                types[i] = 0
+
         return colors, types
 
     def batch_update_piece_dicts(self, updates: List[Tuple[Coord, Optional[Piece]]]) -> None:

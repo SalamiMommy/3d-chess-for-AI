@@ -1,4 +1,4 @@
-# self_play.py - FIXED to use terminal.py properly
+# self_play.py - UPDATED to properly handle GPU inference
 """Self-play data generation with termination via terminal.py."""
 import torch
 import numpy as np
@@ -19,7 +19,7 @@ from game3d.game.terminal import (
     is_stalemate,
     is_insufficient_material,
     is_fifty_move_draw,
-    is_threefold_repetition,  # Now uses terminal.py
+    is_threefold_repetition,
 )
 from training.opponents import (
     create_opponent,
@@ -44,7 +44,7 @@ def index_to_move(idx: int) -> tuple[Coord, Coord]:
     return idx_to_coord(from_idx), idx_to_coord(to_idx)
 
 class SelfPlayGenerator:
-    """Generate training data with SINGLE cache manager reused across all games."""
+    """Generate training data with GPU acceleration for AI model."""
 
     def __init__(
         self,
@@ -54,19 +54,23 @@ class SelfPlayGenerator:
         opponent_types: Optional[List[str]] = None,
         epsilon: float = 0.1
     ):
-        self.model = model.to(device).eval()
+        # Move model to specified device (GPU)
         self.device = device
+        self.model = model.to(self.device).eval()
         self.temperature = temperature
         self.epsilon = epsilon
         self.move_encoder = MoveEncoder()
-        self._state_tensor_cache = {}
+
+        # Cache for NUMPY arrays (CPU for game logic)
+        self._state_array_cache = {}
         self._cache_hits = 0
         self._cache_misses = 0
 
-        # CRITICAL: Use factory to create initial game state with cache manager
+        # CRITICAL: Use factory to create initial game state with cache manager (CPU)
         initial_game_state = start_game_state()
         self._shared_cache_manager = initial_game_state.cache_manager
         print(f"[CACHE MANAGER] Using factory-created cache manager ID: {id(self._shared_cache_manager)}")
+        print(f"[DEVICE] AI model on {device}, game logic on CPU")
 
         # Opponent setup
         self.opponent_types = opponent_types or ["adversarial", "center_control"]
@@ -80,25 +84,29 @@ class SelfPlayGenerator:
             Color.BLACK: create_opponent(self.opponent_types[1], Color.BLACK),
         }
 
-    def _get_state_tensor(self, game_state: GameState) -> torch.Tensor:
-        """Get state tensor with caching."""
+    def _get_state_tensor_for_model(self, game_state: GameState) -> torch.Tensor:
+        """Get state tensor - converts from CPU numpy array to GPU tensor for AI."""
         state_hash = game_state.board.byte_hash()
         cache_key = (state_hash, game_state.color)
 
-        if cache_key in self._state_tensor_cache:
+        if cache_key in self._state_array_cache:
             self._cache_hits += 1
-            return self._state_tensor_cache[cache_key].to(self.device)
+            array = self._state_array_cache[cache_key]
+        else:
+            self._cache_misses += 1
+            # Use internal numpy representation (CPU)
+            array = game_state.to_array()
+            self._state_array_cache[cache_key] = array
 
-        self._cache_misses += 1
-        state_tensor = game_state.to_tensor(device=self.device).unsqueeze(0)
-        self._state_tensor_cache[cache_key] = state_tensor.cpu()
+            # Clean cache if too large
+            if len(self._state_array_cache) > 1000:
+                keys_to_remove = list(self._state_array_cache.keys())[:200]
+                for key in keys_to_remove:
+                    del self._state_array_cache[key]
 
-        if len(self._state_tensor_cache) > 1000:
-            keys_to_remove = list(self._state_tensor_cache.keys())[:200]
-            for key in keys_to_remove:
-                del self._state_tensor_cache[key]
-
-        return state_tensor
+        # Convert CPU numpy array to GPU tensor for AI model
+        tensor = torch.from_numpy(array).float().to(self.device).unsqueeze(0)
+        return tensor
 
     def _choose_move_with_opponent(self, game: OptimizedGame3D, policy_logits, legal_moves) -> Move:
         """Choose a move using opponent reward logic and policy probabilities."""
@@ -119,21 +127,31 @@ class SelfPlayGenerator:
         from_logits, to_logits = policy_logits
         move_encoder = self.move_encoder
 
+        # Move logits to CPU for processing with game logic
+        from_logits_cpu = from_logits.cpu()
+        to_logits_cpu = to_logits.cpu()
+
         move_probs = []
         for mv in legal_moves:
             f_idx = move_encoder.coord_to_index(mv.from_coord)
             t_idx = move_encoder.coord_to_index(mv.to_coord)
-            logit = from_logits[0, f_idx] + to_logits[0, t_idx]
-            move_probs.append(logit)
+            logit = from_logits_cpu[0, f_idx] + to_logits_cpu[0, t_idx]
+            move_probs.append(logit.item())
 
-        move_probs_tensor = torch.tensor(move_probs)
-        move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
+        move_probs_np = np.array(move_probs, dtype=np.float32)
+        max_logit = np.max(move_probs_np)
+        exp_logit = np.exp(move_probs_np - max_logit)
+        sum_exp = np.sum(exp_logit)
+        if sum_exp == 0 or np.isnan(sum_exp):
+            move_probs_soft = np.ones_like(move_probs_np) / len(move_probs_np)
+        else:
+            move_probs_soft = exp_logit / sum_exp
 
         rewards = [opponent.reward(game.state, mv) for mv in legal_moves]
         rewards_np = np.array(rewards)
 
         alpha = 0.5
-        scores = move_probs_tensor.cpu().numpy() + alpha * rewards_np
+        scores = move_probs_soft + alpha * rewards_np
 
         best_idx = int(np.argmax(scores))
         return legal_moves[best_idx]
@@ -141,11 +159,11 @@ class SelfPlayGenerator:
     def generate_game(self, max_moves: int = 100_000) -> List[TrainingExample]:
         """Generate ONE game - termination logic delegated to terminal.py."""
 
-        # CRITICAL: Use factory pattern to create new board with shared cache manager
+        # CRITICAL: Use factory pattern to create new board with shared cache manager (CPU)
         board = Board.empty()
         board.init_startpos()
 
-        # Rebuild the shared cache manager for this new board
+        # Rebuild the shared cache manager for this new board (CPU)
         self._shared_cache_manager.rebuild(board, Color.WHITE)
 
         game = OptimizedGame3D(board=board, cache=self._shared_cache_manager)
@@ -161,7 +179,7 @@ class SelfPlayGenerator:
 
         while move_count < max_moves and not game.is_game_over():
             try:
-                # Check termination conditions via terminal.py
+                # Check termination conditions via terminal.py (CPU)
                 if is_fifty_move_draw(game.state):
                     print(f"[GAME END] Fifty-move rule at move {move_count}")
                     break
@@ -170,7 +188,8 @@ class SelfPlayGenerator:
                     print(f"[GAME END] Threefold repetition at move {move_count}")
                     break
 
-                state_tensor = self._get_state_tensor(game.state)
+                # Convert CPU game state to GPU tensor for AI model inference
+                state_tensor = self._get_state_tensor_for_model(game.state)
                 with torch.no_grad():
                     from_logits, to_logits, value_pred = self.model(state_tensor)
                     policy_logits = (from_logits, to_logits)
@@ -188,51 +207,64 @@ class SelfPlayGenerator:
                 opponent = self.opponents[game.state.color]
                 opponent.observe(game.state, chosen_move)
 
-                # Prepare targets
+                # Prepare targets - using numpy internally (CPU)
                 from_indices = []
                 to_indices = []
                 move_probs = []
+
+                # Move logits to CPU for target processing
+                from_logits_cpu = policy_logits[0].cpu()
+                to_logits_cpu = policy_logits[1].cpu()
 
                 for mv in legal_moves:
                     if mv is None:
                         continue
                     f_idx = self.move_encoder.coord_to_index(mv.from_coord)
                     t_idx = self.move_encoder.coord_to_index(mv.to_coord)
-                    logit = policy_logits[0][0, f_idx] + policy_logits[1][0, t_idx]
-                    move_probs.append(logit)
+                    logit = from_logits_cpu[0, f_idx] + to_logits_cpu[0, t_idx]
+                    move_probs.append(logit.item())
                     from_indices.append(f_idx)
                     to_indices.append(t_idx)
 
-                move_probs_tensor = torch.stack(move_probs)
-                move_probs_tensor = torch.softmax(move_probs_tensor, dim=0)
+                move_probs_np = np.array(move_probs, dtype=np.float32)
+                max_logit = np.max(move_probs_np)
+                exp_logit = np.exp(move_probs_np - max_logit)
+                sum_exp = np.sum(exp_logit)
+                if sum_exp == 0 or np.isnan(sum_exp):
+                    move_probs_soft = np.ones_like(move_probs_np) / len(move_probs_np)
+                else:
+                    move_probs_soft = exp_logit / sum_exp
 
-                from_target = torch.zeros(729, device=self.device)
-                to_target = torch.zeros(729, device=self.device)
+                from_target_np = np.zeros(729, dtype=np.float32)
+                to_target_np = np.zeros(729, dtype=np.float32)
 
                 for i in range(len(legal_moves)):
-                    prob = move_probs_tensor[i]
-                    from_target[from_indices[i]] += prob
-                    to_target[to_indices[i]] += prob
+                    prob = move_probs_soft[i]
+                    from_target_np[from_indices[i]] += prob
+                    to_target_np[to_indices[i]] += prob
 
-                if from_target.sum() > 0:
-                    from_target /= from_target.sum()
-                if to_target.sum() > 0:
-                    to_target /= to_target.sum()
+                if np.sum(from_target_np) > 0:
+                    from_target_np /= np.sum(from_target_np)
+                if np.sum(to_target_np) > 0:
+                    to_target_np /= np.sum(to_target_np)
 
                 player_sign = 1.0 if game.state.color == Color.WHITE else -1.0
 
+                # Store as numpy arrays internally (CPU), convert to tensors only in dataset
+                state_array = game.state.to_array()  # Internal numpy representation (CPU)
+
                 examples.append(
                     TrainingExample(
-                        state_tensor=state_tensor.squeeze(0).cpu(),
-                        from_target=from_target.cpu(),
-                        to_target=to_target.cpu(),
+                        state_tensor=state_array,  # Store as numpy (CPU)
+                        from_target=from_target_np,  # Store as numpy (CPU)
+                        to_target=to_target_np,  # Store as numpy (CPU)
                         value_target=value_pred.item(),
                         move_count=move_count,
                         player_sign=player_sign
                     )
                 )
 
-                # Verify cache manager is still the same
+                # Verify cache manager is still the same (CPU)
                 if game.state.cache_manager is not self._shared_cache_manager:
                     print(f"[ERROR] Cache manager changed! Expected {id(self._shared_cache_manager)}, got {id(game.state.cache_manager)}")
                     game.state.cache_manager = self._shared_cache_manager
@@ -315,14 +347,14 @@ class SelfPlayGenerator:
 
         return examples
 
-def play_game(model: torch.nn.Module, max_moves: int = 100_000, device: str = "cpu",
+def play_game(model: torch.nn.Module, max_moves: int = 100_000, device: str = "cuda",
              opponent_types: Optional[List[str]] = None, epsilon: float = 0.1) -> List[TrainingExample]:
     """Self-play a single game - creates ONE generator (ONE cache manager)."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types, epsilon=epsilon)
     return generator.generate_game(max_moves)
 
 def generate_training_data(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000,
-                          device: str = "cpu", opponent_types: Optional[List[str]] = None,
+                          device: str = "cuda", opponent_types: Optional[List[str]] = None,
                           epsilon: float = 0.1) -> List[TrainingExample]:
     """Generate examples from multiple games - ONE generator reused for all games."""
     generator = SelfPlayGenerator(model, device=device, opponent_types=opponent_types, epsilon=epsilon)
@@ -349,10 +381,10 @@ def parallel_generate_game(args):
     return play_game(model, max_moves, device, opponent_types, epsilon)
 
 def generate_training_data_parallel(model: torch.nn.Module, num_games: int = 10, max_moves: int = 100_000,
-                                  device: str = "cpu", opponent_types: Optional[List[str]] = None,
+                                  device: str = "cuda", opponent_types: Optional[List[str]] = None,
                                   epsilon: float = 0.1, num_processes: int = 4) -> List[TrainingExample]:
     with mp.Pool(num_processes) as pool:
-        args = [(model, max_moves, device, opponent_types, epsilon) for _ in range(num_games)]  # INCLUDE epsilon in args
+        args = [(model, max_moves, device, opponent_types, epsilon) for _ in range(num_games)]
         all_games = pool.map(parallel_generate_game, args)
 
     all_examples = []

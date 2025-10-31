@@ -1,4 +1,4 @@
-# game3d/game/gamestate.py - CLEANED
+# game3d/game/gamestate.py - UPDATED TO USE NUMPY INTERNALLY
 from __future__ import annotations
 """
 Optimized 9×9×9 game state with incremental updates, caching, and performance monitoring.
@@ -8,8 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import List, Tuple, Optional, Dict, Any, TYPE_CHECKING, Set
 from enum import Enum
 from collections import defaultdict
-import torch
-import numpy as np
+import numpy as np  # Primary computation engine
 
 from game3d.board.board import Board
 from game3d.common.enums import Color, PieceType, Result
@@ -33,7 +32,7 @@ class GameMode(Enum):
 
 @dataclass(slots=True)
 class GameState:
-    """Optimized game state with caching and incremental updates."""
+    """Optimized game state with caching and incremental updates - USES NUMPY INTERNALLY."""
     board: Board
     color: Color
     cache_manager: 'OptimizedCacheManager'
@@ -42,11 +41,10 @@ class GameState:
     game_mode: GameMode = GameMode.STANDARD
     turn_number: int = 1
 
-
     _legal_moves_cache: Optional[List[Move]] = field(default=None, repr=False)
     _legal_moves_cache_key: Optional[int] = field(default=None, repr=False)
-    _tensor_cache: Optional[torch.Tensor] = field(default=None, repr=False)
-    _tensor_cache_key: Optional[int] = field(default=None, repr=False)
+    _array_cache: Optional[np.ndarray] = field(default=None, repr=False)  # CHANGED: _tensor_cache -> _array_cache
+    _array_cache_key: Optional[int] = field(default=None, repr=False)     # CHANGED: _tensor_cache_key -> _array_cache_key
     _insufficient_material_cache: Optional[bool] = field(default=None, repr=False)
     _insufficient_material_cache_key: Optional[int] = field(default=None, repr=False)
     _is_check_cache: Optional[bool] = field(default=None, repr=False)
@@ -132,23 +130,17 @@ class GameState:
         """Get current ply (half-move count)."""
         return self.halfmove_clock
 
-    # TENSOR REPRESENTATION - OPTIMIZED
-    def to_tensor(self, device: Optional[torch.device | str] = None) -> torch.Tensor:
-        from game3d.common.tensor_utils import create_occupancy_mask_tensor, get_current_player
-
+    def to_array(self) -> np.ndarray:
+        """Get internal numpy array representation - PRIMARY INTERNAL METHOD."""
         cache_key = (self.board.byte_hash(), self.color)
 
-        if (self._tensor_cache is not None and
-            self._tensor_cache_key == cache_key and
-            (device is None or self._tensor_cache.device == torch.device(device))):
-            if device is not None:
-                return self._tensor_cache.to(device)
-            return self._tensor_cache
+        if (self._array_cache is not None and
+            self._array_cache_key == cache_key):
+            return self._array_cache.copy()
 
-        tensor = torch.zeros(
+        array = np.zeros(
             (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X),
-            dtype=torch.float32,
-            device=device,
+            dtype=np.float32,
         )
 
         # Use cache_manager for efficient piece iteration
@@ -156,24 +148,37 @@ class GameState:
             for coord, piece in self.cache_manager.occupancy.iter_color(color):
                 x, y, z = coord
                 offset = 0 if piece.color == Color.WHITE else N_PIECE_TYPES
-                tensor[offset + piece.ptype.value, z, y, x] = 1.0
+                array[offset + piece.ptype.value, z, y, x] = 1.0
 
-        tensor[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
+        array[-1, :, :, :] = 1.0 if self.color == Color.WHITE else 0.0
 
-        if device is None:
-            self._tensor_cache = tensor
-            self._tensor_cache_key = cache_key
-        else:
-            self._tensor_cache = tensor.cpu()
-            self._tensor_cache_key = cache_key
+        self._array_cache = array
+        self._array_cache_key = cache_key
+
+        return array
+
+    # TENSOR REPRESENTATION - ONLY FOR AI EXPORT
+    def to_tensor(self, device: Optional[str] = None) -> 'torch.Tensor':  # type: ignore
+        """
+        Convert to PyTorch tensor for AI export ONLY.
+        This is the ONLY place where we convert to tensor.
+        """
+        import torch  # Local import to keep numpy for internal operations
+
+        # Use internal numpy array and convert to tensor
+        array = self.to_array()
+        tensor = torch.from_numpy(array)
+
+        if device is not None:
+            tensor = tensor.to(device)
 
         return tensor
 
     def _clear_caches(self) -> None:
         self._legal_moves_cache = None
         self._legal_moves_cache_key = None
-        self._tensor_cache = None
-        self._tensor_cache_key = None
+        self._array_cache = None  # CHANGED: _tensor_cache -> _array_cache
+        self._array_cache_key = None
         self._insufficient_material_cache = None
         self._insufficient_material_cache_key = None
         self._is_check_cache = None
@@ -205,7 +210,7 @@ class GameState:
         """Clone with new cache manager - only for thread safety or search."""
         from game3d.cache.manager import get_cache_manager
 
-        new_board = Board(self.board.tensor().clone())
+        new_board = Board(self.board.array().copy())  # Use array() not tensor()
         new_cache_manager = get_cache_manager(new_board, self.color)
 
         return GameState(

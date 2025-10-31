@@ -49,46 +49,42 @@ def _jump_kernel_direct(
             out.append((tx, ty, tz, True))
     return out
 # ----------  helper that builds Move objects  ----------
+@njit(cache=True, fastmath=True)
+def _build_jump_moves_fast(
+    color: int,  # Pass as int for numba
+    start: Tuple[int, int, int],
+    raw: List[Tuple[int, int, int, bool]],
+) -> Tuple[np.ndarray, np.ndarray]:  # Return arrays instead of Move objects
+    """Fast version that returns arrays for batch processing."""
+    if not raw:
+        return np.empty((0, 3), dtype=np.int32), np.empty(0, dtype=np.bool_)
+
+    n = len(raw)
+    coords = np.empty((n, 3), dtype=np.int32)
+    captures = np.empty(n, dtype=np.bool_)
+
+    for i in range(n):
+        x, y, z, cap = raw[i]
+        coords[i] = (x, y, z)
+        captures[i] = cap
+
+    return coords, captures
+
 def _build_jump_moves(
     color: Color,
     ptype: PieceType,
     start: Tuple[int, int, int],
     raw: List[Tuple[int, int, int, bool]],
 ) -> List[Move]:
+    """Optimized version using fast numba function."""
     if not raw:
         return []
-    if any(c < 0 or c >= 9 for c in start):
-        print(f"[ERROR] _build_jump_moves: invalid start position {start}")
-        return []
 
-    to_coords = np.array([[x, y, z] for x, y, z, _ in raw], dtype=np.int32)
-    to_coords = [tuple(int(c) for c in row) for row in
-                filter_valid_coords(to_coords)]
-    valid_raw = [
-        (int(x), int(y), int(z), is_cap)
-        for (x, y, z), (_, _, _, is_cap) in zip(to_coords, raw)
-        if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9
-    ]
+    # Use fast numba function for array processing
+    valid_coords, valid_caps = _build_jump_moves_fast(color.value, start, raw)
 
-    rejected = len(raw) - len(valid_raw)
-    if rejected:
-        print(f"[WARNING] _build_jump_moves rejected {rejected} OOB coords from {start}")
-
-    if not valid_raw:
-        return []
-
-    n = len(valid_raw)
-    to_coords = np.empty((n, 3), dtype=np.int32)
-    captures = np.empty(n, dtype=bool)
-    for i, (x, y, z, is_cap) in enumerate(valid_raw):
-        to_coords[i] = (x, y, z)
-        captures[i] = is_cap
-
-    try:
-        return Move.create_batch(start, to_coords, captures)
-    except (IndexError, KeyError) as e:
-        print(f"[ERROR] Move.create_batch failed for {start}: {e}")
-        return []
+    # Single batch call to Move.create_batch
+    return Move.create_batch(start, valid_coords, valid_caps)
 
 # ----------  main generator class  ----------
 class IntegratedJumpMovementGenerator:

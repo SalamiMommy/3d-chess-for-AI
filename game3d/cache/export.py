@@ -1,69 +1,60 @@
-# game3d/cache/export.py
-
-"""AI export utilities for cache manager state."""
+# game3d/cache/export.py - OPTIMIZED VERSION
 import numpy as np
 import torch
 from typing import Dict, Any, List, Tuple, Optional
 from game3d.common.enums import Color, PieceType
 from game3d.common.constants import N_TOTAL_PLANES
 
-# Updated function in export.py
-def export_state_for_ai(board, piece_cache, move_cache, zobrist_hash, current_player: Color, move_number: int = 0) -> Dict[str, Any]:
+# Use uint8 for everything possible to reduce memory and speed up transfers
+def export_state_for_ai(board, piece_cache, move_cache, zobrist_hash,
+                                current_player: Color, move_number: int = 0) -> Dict[str, Any]:
     """
-    Export core cache state safely for AI consumption.
-    Only includes essential data: pieces, occupancy, legal moves, and metadata.
-    All data is copied to prevent mutation issues.
+    Ultra-optimized export using direct cache access and minimal conversions.
     """
+    # DIRECT ACCESS to occupancy cache arrays (no reconstruction)
+    occupancy = piece_cache._occ  # shape (9,9,9) uint8
+    piece_types = piece_cache._ptype  # shape (9,9,9) uint8
 
-    # Reconstruct occupancy_arr and piece_type_arr using public methods
-    occupancy_arr = np.zeros((9, 9, 9), dtype=np.uint8)
-    piece_type_arr = np.zeros((9, 9, 9), dtype=np.uint8)
-    for color in [Color.WHITE, Color.BLACK]:
-        code = 1 if color == Color.WHITE else 2
-        for coord, piece in piece_cache.iter_color(color):
-            x, y, z = coord
-            occupancy_arr[z, y, x] = code
-            piece_type_arr[z, y, x] = piece.ptype.value
+    # Convert to piece_colors using vectorized operations
+    piece_colors = occupancy.astype(np.int8)  # Already has 0,1,2 values
 
-    piece_colors = np.zeros((9, 9, 9), dtype=np.int8)
-    for (x, y, z), piece in board.list_occupied():
-        piece_colors[x, y, z] = Color.WHITE.value if piece.color == Color.WHITE else Color.BLACK.value  # Use enum values
-
+    # Fast legal moves extraction
     legal_moves_white = []
     legal_moves_black = []
 
     if move_cache is not None:
         try:
-            white_moves = move_cache.legal_moves(Color.WHITE, parallel=False)
-            black_moves = move_cache.legal_moves(Color.BLACK, parallel=False)
+            # Use existing cached moves without regeneration
+            white_moves = move_cache._legal_by_color.get(Color.WHITE, [])
+            black_moves = move_cache._legal_by_color.get(Color.BLACK, [])
 
             legal_moves_white = [
                 (m.from_coord, m.to_coord, getattr(m, 'is_capture', False),
-                    getattr(m, 'is_promotion', False))
+                 getattr(m, 'is_promotion', False))
                 for m in white_moves
             ]
             legal_moves_black = [
                 (m.from_coord, m.to_coord, getattr(m, 'is_capture', False),
-                    getattr(m, 'is_promotion', False))
+                 getattr(m, 'is_promotion', False))
                 for m in black_moves
             ]
-        except Exception as e:
-            print(f"[AI Export] Move cache error: {e}")
+        except Exception:
             legal_moves_white = []
             legal_moves_black = []
 
+    # Fast piece counts using vectorized operations
+    white_mask = occupancy == 1
+    black_mask = occupancy == 2
+
     piece_counts = {
-        'white': {ptype: 0 for ptype in PieceType},
-        'black': {ptype: 0 for ptype in PieceType}
+        'white': {ptype: np.sum(piece_types[white_mask] == ptype.value) for ptype in PieceType},
+        'black': {ptype: np.sum(piece_types[black_mask] == ptype.value) for ptype in PieceType}
     }
-    for (coord, piece) in board.list_occupied():
-        color_key = 'white' if piece.color == Color.WHITE else 'black'
-        piece_counts[color_key][piece.ptype] += 1
 
     return {
-        'occupancy': occupancy_arr.copy(),
-        'piece_types': piece_type_arr.copy(),
-        'piece_colors': piece_colors.copy(),
+        'occupancy': occupancy,  # No copy if possible
+        'piece_types': piece_types,  # No copy if possible
+        'piece_colors': piece_colors,
         'legal_moves_white': tuple(legal_moves_white),
         'legal_moves_black': tuple(legal_moves_black),
         'piece_counts': piece_counts,
@@ -72,29 +63,86 @@ def export_state_for_ai(board, piece_cache, move_cache, zobrist_hash, current_pl
         'move_number': move_number,
     }
 
-def export_tensor_for_ai(board, piece_cache, move_cache, zobrist_hash, current_player: Color, move_number: int = 0,
-                         device: str = "cpu") -> torch.Tensor:
-    state = export_state_for_ai(board, piece_cache, move_cache, zobrist_hash, current_player, move_number)
+def export_tensor_for_ai(board, piece_cache, move_cache, zobrist_hash,
+                                 current_player: Color, move_number: int = 0,
+                                 device: str = "cpu") -> torch.Tensor:
+    """
+    Ultra-fast tensor export using vectorized operations and direct memory access.
+    """
+    # Direct access to avoid function call overhead
+    occupancy = piece_cache._occ
+    piece_types = piece_cache._ptype
 
-    tensor = torch.zeros((N_TOTAL_PLANES, 9, 9, 9), dtype=torch.float32, device=device)
+    # Pre-allocate tensor with optimal memory layout
+    tensor = torch.zeros((N_TOTAL_PLANES, 9, 9, 9), dtype=torch.bool, device=device)  # Use bool for one-hot
 
     player_offset = 0 if current_player == Color.WHITE else 40
     opponent_offset = 40 if current_player == Color.WHITE else 0
 
-    # Optimized: Vectorized assignment
-    mask = state['piece_colors'] > 0
-    coords = np.argwhere(mask)
-    for coord in coords:
-        x, y, z = coord
-        col = int(state['piece_colors'][x, y, z])
-        ptype_val = int(state['piece_types'][x, y, z])
-        if 0 <= ptype_val < 40:
-            if (col == Color.WHITE.value and current_player == Color.WHITE) or (col == Color.BLACK.value and current_player == Color.BLACK):
-                tensor[ptype_val + player_offset, z, y, x] = 1.0
-            else:
-                tensor[ptype_val + opponent_offset, z, y, x] = 1.0
+    # VECTORIZED assignment using advanced indexing
+    white_pieces = occupancy == 1
+    black_pieces = occupancy == 2
 
-    tensor[80, :, :, :] = 1.0 if current_player == Color.WHITE else 0.0
+    # Process white pieces
+    white_coords = np.argwhere(white_pieces)
+    if len(white_coords) > 0:
+        z, y, x = white_coords.T
+        types = piece_types[white_pieces]
+        if current_player == Color.WHITE:
+            indices = types + player_offset
+        else:
+            indices = types + opponent_offset
+        tensor[indices, z, y, x] = True
+
+    # Process black pieces
+    black_coords = np.argwhere(black_pieces)
+    if len(black_coords) > 0:
+        z, y, x = black_coords.T
+        types = piece_types[black_pieces]
+        if current_player == Color.BLACK:
+            indices = types + player_offset
+        else:
+            indices = types + opponent_offset
+        tensor[indices, z, y, x] = True
+
+    # Current player plane
+    tensor[80, :, :, :] = (current_player == Color.WHITE)
+
+    return tensor
+
+def export_tensor_direct(occupancy_cache, current_player: Color, device: str = "cpu") -> torch.Tensor:
+    """
+    Direct tensor export from occupancy cache - fastest possible version.
+    Assumes occupancy_cache has _occ and _ptype arrays.
+    """
+    occupancy = occupancy_cache._occ
+    piece_types = occupancy_cache._ptype
+
+    tensor = torch.zeros((N_TOTAL_PLANES, 9, 9, 9), dtype=torch.bool, device=device)
+
+    player_offset = 0 if current_player == Color.WHITE else 40
+    opponent_offset = 40 if current_player == Color.WHITE else 0
+
+    # Single pass vectorized processing
+    white_mask = occupancy == 1
+    black_mask = occupancy == 2
+
+    # White pieces
+    if np.any(white_mask):
+        z, y, x = np.where(white_mask)
+        types = piece_types[white_mask]
+        offsets = player_offset if current_player == Color.WHITE else opponent_offset
+        tensor[types + offsets, z, y, x] = True
+
+    # Black pieces
+    if np.any(black_mask):
+        z, y, x = np.where(black_mask)
+        types = piece_types[black_mask]
+        offsets = player_offset if current_player == Color.BLACK else opponent_offset
+        tensor[types + offsets, z, y, x] = True
+
+    # Current player plane
+    tensor[80, :, :, :] = (current_player == Color.WHITE)
 
     return tensor
 
@@ -202,3 +250,41 @@ def validate_export_integrity(board, piece_cache, move_cache, zobrist_hash) -> D
         results['validation_error'] = False
 
     return results
+
+def batch_export_tensors(occupancy_caches: List, current_players: List[Color],
+                        device: str = "cpu") -> torch.Tensor:
+    """
+    Batch export multiple positions for efficient training.
+    Returns tensor of shape (batch_size, N_TOTAL_PLANES, 9, 9, 9)
+    """
+    batch_size = len(occupancy_caches)
+    batch_tensor = torch.zeros((batch_size, N_TOTAL_PLANES, 9, 9, 9),
+                              dtype=torch.bool, device=device)
+
+    for i, (occ_cache, player) in enumerate(zip(occupancy_caches, current_players)):
+        occupancy = occ_cache._occ
+        piece_types = occ_cache._ptype
+
+        player_offset = 0 if player == Color.WHITE else 40
+        opponent_offset = 40 if player == Color.WHITE else 0
+
+        # White pieces
+        white_mask = occupancy == 1
+        if np.any(white_mask):
+            z, y, x = np.where(white_mask)
+            types = piece_types[white_mask]
+            offsets = player_offset if player == Color.WHITE else opponent_offset
+            batch_tensor[i, types + offsets, z, y, x] = True
+
+        # Black pieces
+        black_mask = occupancy == 2
+        if np.any(black_mask):
+            z, y, x = np.where(black_mask)
+            types = piece_types[black_mask]
+            offsets = player_offset if player == Color.BLACK else opponent_offset
+            batch_tensor[i, types + offsets, z, y, x] = True
+
+        # Current player plane
+        batch_tensor[i, 80, :, :, :] = (player == Color.WHITE)
+
+    return batch_tensor

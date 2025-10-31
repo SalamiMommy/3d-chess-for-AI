@@ -1,7 +1,6 @@
-# game3d/common/move_utils.py - ENHANCED VECTORIZED VERSION
+# game3d/common/move_utils.py - OPTIMIZED WITH BATCHING
 from __future__ import annotations
 import numpy as np
-import torch
 from typing import List, Tuple, Set, Optional, Union, TYPE_CHECKING
 
 from game3d.common.constants import SIZE, VOLUME
@@ -16,75 +15,34 @@ if TYPE_CHECKING:
 
 Coord = Tuple[int, int, int]
 
-def extract_directions_and_steps_vectorized(start: Union[Coord, torch.Tensor], to_coords: Union[np.ndarray, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
-    """Fully vectorized direction extraction - supports scalar and batch mode."""
-    if torch.is_tensor(to_coords) and to_coords.ndim > 2:
-        # Batch mode: multiple starts and multiple to_coords
-        batch_size = to_coords.shape[0] if to_coords.ndim == 3 else 1
-        if torch.is_tensor(start) and start.ndim > 1:
-            # Multiple starts
-            starts = start
-        else:
-            # Single start repeated for batch
-            starts = torch.tensor(start).unsqueeze(0).repeat(batch_size, 1)
-
-        batch_directions = []
-        batch_max_steps = []
-
-        for i in range(batch_size):
-            single_start = starts[i] if starts.shape[0] > 1 else starts[0]
-            single_to_coords = to_coords[i] if to_coords.ndim == 3 else to_coords
-            dirs, steps = extract_directions_and_steps_vectorized(single_start, single_to_coords)
-            batch_directions.append(dirs)
-            batch_max_steps.append(steps)
-
-        return batch_directions, batch_max_steps
-
-    elif torch.is_tensor(to_coords):
-        # Convert tensor to numpy for processing
-        to_coords_np = to_coords.cpu().numpy() if to_coords.is_cuda else to_coords.numpy()
-    else:
-        to_coords_np = to_coords
-
-    if to_coords_np.size == 0:
-        return np.empty((0, 3), dtype=np.int8), 0
-
-    if torch.is_tensor(start):
-        start_arr = start.cpu().numpy() if start.is_cuda else start.numpy()
-    else:
-        start_arr = np.asarray(start, dtype=np.int32)
-
-    deltas = to_coords_np.astype(np.int32) - start_arr
-
-    # Vectorized Chebyshev norm
+def extract_directions_and_steps_vectorized(start, to_coords):
+    # Always use NumPy path
+    to_coords_np = np.asarray(to_coords, dtype=np.int8)
+    start_arr = np.asarray(start, dtype=np.int8)
+    deltas = to_coords_np - start_arr
     abs_deltas = np.abs(deltas)
     norms = np.max(abs_deltas, axis=1, keepdims=True)
-
-    # Avoid division by zero and convert to int8
     norms_no_zero = np.where(norms == 0, 1, norms)
     unit_dirs = (deltas // norms_no_zero).astype(np.int8)
-
-    # Get unique directions efficiently
     uniq_dirs = np.unique(unit_dirs, axis=0) if len(unit_dirs) > 0 else unit_dirs
     max_steps = int(np.max(norms)) if len(norms) > 0 else 0
-
     return uniq_dirs, max_steps
 
-def extract_directions_and_steps(to_coords: Union[np.ndarray, torch.Tensor], start: Union[Coord, torch.Tensor]) -> Tuple[Union[np.ndarray, List[np.ndarray]], Union[int, List[int]]]:
+def extract_directions_and_steps(to_coords: np.ndarray, start: Union[Coord, np.ndarray]) -> Tuple[np.ndarray, int]:
     return extract_directions_and_steps_vectorized(start, to_coords)
 
 def rebuild_moves_from_directions(
-    starts: Union[np.ndarray, torch.Tensor, List[Coord]],
+    starts: Union[np.ndarray, List[Coord]],
     directions_batch: Union[List[np.ndarray], List[List[np.ndarray]]],
     max_steps_batch: Union[List[int], List[List[int]]],
     capture_sets: Union[List[Set[Coord]], List[List[Set[Coord]]]]
 ) -> Union[List[Move], List[List[Move]]]:
-    """Batch rebuild moves from directions for multiple pieces - supports scalar and batch mode."""
+    """Batch rebuild moves from directions for multiple pieces - OPTIMIZED WITH BATCHING."""
     from game3d.movement.movepiece import Move
 
     # Handle scalar input
-    if not isinstance(starts, (list, np.ndarray, torch.Tensor)) or (torch.is_tensor(starts) and starts.ndim == 1):
-        # Scalar mode
+    if not isinstance(starts, (list, np.ndarray)) or (isinstance(starts, np.ndarray) and starts.ndim == 1):
+        # Scalar mode - OPTIMIZED: Use batch creation
         if not isinstance(directions_batch, list) or not directions_batch:
             return []
 
@@ -95,30 +53,36 @@ def rebuild_moves_from_directions(
         if len(directions) == 0 or max_steps <= 0:
             return []
 
-        if torch.is_tensor(starts):
+        if isinstance(starts, np.ndarray):
             sx, sy, sz = starts.tolist()
         else:
             sx, sy, sz = starts
 
-        rebuilt = []
-        capture_frozen = frozenset(capture_set)
+        # Collect all target coordinates and capture flags for batch processing
+        to_coords_list = []
+        capture_flags = []
 
         for dx, dy, dz in directions:
             for step in range(1, max_steps + 1):
                 to = (sx + step * dx, sy + step * dy, sz + step * dz)
                 if all(0 <= c < SIZE for c in to):
-                    rebuilt.append(Move.create_simple((sx, sy, sz), to, to in capture_frozen))
+                    to_coords_list.append(to)
+                    capture_flags.append(to in capture_set)
 
-        return rebuilt
+        if not to_coords_list:
+            return []
+
+        # Use batch creation
+        to_coords_array = np.array(to_coords_list, dtype=np.int16)
+        captures_array = np.array(capture_flags, dtype=bool)
+        return Move.create_batch((sx, sy, sz), to_coords_array, captures_array)
     else:
-        # Batch mode
+        # Batch mode - OPTIMIZED: Use batch creation per piece
         all_moves = []
 
         # Convert to list for consistent processing
-        if torch.is_tensor(starts):
+        if isinstance(starts, np.ndarray):
             starts_list = [tuple(starts[i].tolist()) for i in range(starts.shape[0])]
-        elif isinstance(starts, np.ndarray):
-            starts_list = [tuple(starts[i]) for i in range(starts.shape[0])]
         else:
             starts_list = starts
 
@@ -130,21 +94,30 @@ def rebuild_moves_from_directions(
                 continue
 
             sx, sy, sz = start
-            rebuilt = []
-            capture_frozen = frozenset(capture_set)
+            # Collect all target coordinates and capture flags for batch processing
+            to_coords_list = []
+            capture_flags = []
 
             for dx, dy, dz in directions:
                 for step in range(1, max_steps + 1):
                     to = (sx + step * dx, sy + step * dy, sz + step * dz)
                     if all(0 <= c < SIZE for c in to):
-                        rebuilt.append(Move.create_simple(start, to, to in capture_frozen))
+                        to_coords_list.append(to)
+                        capture_flags.append(to in capture_set)
 
-            all_moves.append(rebuilt)
+            if not to_coords_list:
+                all_moves.append([])
+                continue
+
+            # Use batch creation
+            to_coords_array = np.array(to_coords_list, dtype=np.int16)
+            captures_array = np.array(capture_flags, dtype=bool)
+            all_moves.append(Move.create_batch(start, to_coords_array, captures_array))
 
         return all_moves
 
 def extend_move_range(move: Union[Move, List[Move]], start: Union[Coord, List[Coord]], max_steps: Union[int, List[int]] = 1, debuffed: Union[bool, List[bool]] = False) -> Union[List[Move], List[List[Move]]]:
-    """Extend move range for buffed/debuffed pieces - supports scalar and batch mode."""
+    """Extend move range for buffed/debuffed pieces - OPTIMIZED WITH BATCHING."""
     from game3d.movement.movepiece import Move
 
     # Handle batch mode
@@ -163,23 +136,30 @@ def extend_move_range(move: Union[Move, List[Move]], start: Union[Coord, List[Co
                 results.append(extend_move_range(m, start, max_steps, debuffed))
             return results
 
-    # Scalar mode
+    # Scalar mode - OPTIMIZED: Use batch creation
     direction = tuple((b - a) for a, b in zip(start, move.to_coord))
     norm = max(abs(d) for d in direction) if direction else 0
     if norm == 0:
         return [move]
 
     unit_dir = tuple(d // norm for d in direction)
-    extended_moves = [move]
 
-    # Precompute bounds check values
+    # Collect all extended coordinates for batch processing
+    to_coords_list = [move.to_coord]
+    capture_flags = [move.is_capture]
+
     for step in range(1, max_steps + 1):
         next_step = tuple(a + step * b for a, b in zip(move.to_coord, unit_dir))
         if all(0 <= c < SIZE for c in next_step):
-            extended_moves.append(Move.create_simple(start, next_step, is_capture=move.is_capture, debuffed=debuffed))
+            to_coords_list.append(next_step)
+            capture_flags.append(move.is_capture)
         else:
             break
-    return extended_moves
+
+    # Use batch creation
+    to_coords_array = np.array(to_coords_list, dtype=np.int16)
+    captures_array = np.array(capture_flags, dtype=bool)
+    return Move.create_batch(start, to_coords_array, captures_array)
 
 def prepare_batch_data(state: "GameState") -> Tuple[List[Coord], List[PieceType], List[int]]:
     """
@@ -410,18 +390,18 @@ def apply_trailblaze_effect(
                     board.set_piece(sq, None)
 
 def reconstruct_trailblazer_path(
-    from_coord: Union[Tuple[int, int, int], torch.Tensor],
-    to_coord: Union[Tuple[int, int, int], torch.Tensor],
+    from_coord: Union[Tuple[int, int, int], np.ndarray],
+    to_coord: Union[Tuple[int, int, int], np.ndarray],
     include_start: bool = False,
     include_end: bool = True
 ) -> Union[Set[Tuple[int, int, int]], List[Set[Tuple[int, int, int]]]]:
     """Reconstruct the path of a trailblazer move - supports scalar and batch mode."""
-    if torch.is_tensor(from_coord) and from_coord.ndim > 1:
+    if isinstance(from_coord, np.ndarray) and from_coord.ndim > 1:
         # Batch mode
         results = []
         for i in range(from_coord.shape[0]):
             single_from = tuple(from_coord[i].tolist())
-            single_to = tuple(to_coord[i].tolist()) if torch.is_tensor(to_coord) and to_coord.ndim > 1 else to_coord
+            single_to = tuple(to_coord[i].tolist()) if isinstance(to_coord, np.ndarray) and to_coord.ndim > 1 else to_coord
             results.append(reconstruct_trailblazer_path(single_from, single_to, include_start, include_end))
         return results
 
@@ -447,15 +427,15 @@ def extract_enemy_slid_path(mv: Union['Move', List['Move']]) -> Union[List[Tuple
 def apply_geomancy_effect(
     board: 'Board',
     cache: 'OptimizedCacheManager',
-    target: Union[Tuple[int, int, int], torch.Tensor],
-    halfmove_clock: Union[int, torch.Tensor]
+    target: Union[Tuple[int, int, int], np.ndarray],
+    halfmove_clock: Union[int, np.ndarray]
 ) -> None:
     """Block a square via the geomancy cache - supports scalar and batch mode."""
-    if torch.is_tensor(target) and target.ndim > 1:
+    if isinstance(target, np.ndarray) and target.ndim > 1:
         # Batch mode
         for i in range(target.shape[0]):
             single_target = tuple(target[i].tolist())
-            single_clock = halfmove_clock[i] if torch.is_tensor(halfmove_clock) and halfmove_clock.numel() > 1 else halfmove_clock
+            single_clock = halfmove_clock[i] if isinstance(halfmove_clock, np.ndarray) and halfmove_clock.size > 1 else halfmove_clock
             apply_geomancy_effect(board, cache, single_target, single_clock)
     else:
         # Scalar mode
@@ -498,7 +478,7 @@ def apply_promotion_move(board: 'Board', mv: Union['Move', List['Move']], piece:
     board.set_piece(mv.from_coord, None)
     board.set_piece(mv.to_coord, promoted)
 
-def detonate(board: 'Board', center: Union[Coord, torch.Tensor], friendly_color: Union[Color, torch.Tensor]) -> Union[Set[Coord], List[Set[Coord]]]:
+def detonate(board: 'Board', center: Union[Coord, np.ndarray], friendly_color: Union[Color, np.ndarray]) -> Union[Set[Coord], List[Set[Coord]]]:
     """
     Get all squares in Manhattan distance 1 from center.
     Returns coords of enemy pieces that would be destroyed - supports scalar and batch mode.
@@ -506,11 +486,11 @@ def detonate(board: 'Board', center: Union[Coord, torch.Tensor], friendly_color:
     from game3d.common.coord_utils import manhattan_distance, in_bounds
 
     # Handle batch mode
-    if torch.is_tensor(center) and center.ndim > 1:
+    if isinstance(center, np.ndarray) and center.ndim > 1:
         results = []
         for i in range(center.shape[0]):
             single_center = tuple(center[i].tolist())
-            single_color = friendly_color[i] if torch.is_tensor(friendly_color) and friendly_color.numel() > 1 else friendly_color
+            single_color = friendly_color[i] if isinstance(friendly_color, np.ndarray) and friendly_color.size > 1 else friendly_color
             results.append(detonate(board, single_center, single_color))
         return results
 
@@ -572,6 +552,6 @@ def create_filtered_moves_batch(
         geomancy_mask = ~cache.batch_get_geomancy_blocked(to_coords, state.ply)
         valid_mask &= geomancy_mask
         # Add debuff distance filter if needed
-    filtered_to = to_coords[valid_mask]
+    filtered_to = to_coords[valid_mask].astype(np.uint16)
     filtered_caps = captures[valid_mask]
     return Move.create_batch(from_coord, filtered_to, filtered_caps)

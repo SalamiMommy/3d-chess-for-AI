@@ -219,7 +219,8 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
         return True
 
     def undo_move(self, mv: Move, mover: Color) -> bool:
-        original_tensor = self.board.tensor().clone()
+        # Use numpy array instead of tensor for backup
+        original_array = self.board.array().copy()
 
         try:
             moving_piece = self.occupancy.get(mv.to_coord)
@@ -267,7 +268,8 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             return True
 
         except Exception as e:
-            self.board._tensor = original_tensor
+            # Restore using numpy array
+            self.board._array = original_array
             print(f"[ERROR] Undo move failed: {e}")
             return False
 
@@ -779,33 +781,53 @@ class OptimizedCacheManager(CacheManagerProtocol, CacheStatsMixin):
             # Batch processing
             return self.occupancy.batch_get_pieces_vectorized(coords)
 
-    # Keep aliases for backward compatibility
     def batch_get_frozen_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
-        """Optimized batch frozen status check."""
+        """Use precomputed frozen bitmap for ultra-fast lookups."""
         if len(coords) == 0:
             return np.array([], dtype=bool)
 
-        # Convert to tuple coordinates efficiently
-        coord_tuples = [tuple(coord) for coord in coords]
+        # Ensure cache is built and get frozen bitmap
+        frozen_bitmap = self.aura_cache.frozen_bitmap
 
-        # Use vectorized approach if available in aura cache
-        if hasattr(self.aura_cache, 'batch_is_frozen'):
-            return self.aura_cache.batch_is_frozen(coord_tuples, color)
+        n = len(coords)
+        result = np.zeros(n, dtype=bool)
 
-        # Fallback to list comprehension but with pre-check
-        return np.array([self.aura_cache.is_frozen(coord, color) for coord in coord_tuples])
+        # Direct bitmap lookup
+        for i in range(n):
+            x, y, z = coords[i]
+            if 0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9:
+                result[i] = frozen_bitmap[z, y, x]
+
+        return result
 
     def batch_get_debuffed_status(self, coords: np.ndarray, color: Color) -> np.ndarray:
         """Alias for batch processing - maintained for backward compatibility."""
         return self.get_debuffed_status(coords, color)
 
     def batch_get_geomancy_blocked(self, coords: np.ndarray, current_ply: int) -> np.ndarray:
-        """Optimized batch geomancy check."""
+        """Ultra-fast geomancy check with minimal Python overhead."""
         if len(coords) == 0:
             return np.array([], dtype=bool)
 
-        coord_tuples = [tuple(coord) for coord in coords]
-        return np.array([self.geomancy_cache.is_blocked(coord, current_ply) for coord in coord_tuples])
+        # Direct cache access (avoid method call overhead)
+        geomancy_cache = self.geomancy_cache
+
+        # Pre-allocate result
+        result = np.zeros(len(coords), dtype=bool)
+
+        # Batch check if cache is empty (fast path)
+        if not hasattr(geomancy_cache, '_blocked_squares') or not geomancy_cache._blocked_squares:
+            return result
+
+        # Vectorized lookup using dictionary
+        blocked_dict = geomancy_cache._blocked_squares
+        for i, coord in enumerate(coords):
+            coord_tuple = tuple(coord)
+            if coord_tuple in blocked_dict:
+                block_ply = blocked_dict[coord_tuple]
+                result[i] = (current_ply - block_ply) < 3
+
+        return result
 
     def batch_apply_effects_to_moves(self, moves: List[Move], mover: Color, current_ply: int) -> List[Move]:
         """Alias for batch processing - maintained for backward compatibility."""

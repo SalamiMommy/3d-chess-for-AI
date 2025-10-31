@@ -1,11 +1,14 @@
-# game3d/game/turnmove.py - FIXED
+# game3d/game/turnmove.py - OPTIMIZED FOR NUMPY
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
+import numpy as np
+from numba import jit, njit
+import time
 
 from game3d.board.board import Board
-from game3d.movement.movepiece import Move, Move
-from game3d.movement.generator import generate_legal_moves, generate_legal_moves_for_piece  # UPDATED: Use legal moves generator
+from game3d.movement.movepiece import Move
+from game3d.movement.generator import generate_legal_moves, generate_legal_moves_for_piece
 from game3d.common.enums import Color, PieceType
 from game3d.pieces.piece import Piece
 
@@ -22,6 +25,29 @@ from game3d.common.debug_utils import UndoSnapshot
 if TYPE_CHECKING:
     from .gamestate import GameState
 
+# Constants for 9x9x9 board with 600 pieces
+BOARD_SIZE = (9, 9, 9)
+MAX_PIECES = 462
+PIECE_TYPES = 40
+
+# Optimized numpy operations using numba for speed
+@njit
+def create_board_tensor_copy(board_array: np.ndarray) -> np.ndarray:
+    """Create a fast copy of board tensor using numpy."""
+    return board_array.copy()
+
+@njit
+def validate_coordinates_numba(coords: np.ndarray) -> bool:
+    """Fast coordinate validation using numba."""
+    x, y, z = coords
+    return (0 <= x < 9 and 0 <= y < 9 and 0 <= z < 9)
+
+@njit
+def get_piece_at_numba(board_array: np.ndarray, coord: Tuple[int, int, int]) -> int:
+    """Fast piece lookup using numpy indexing."""
+    x, y, z = coord
+    return board_array[x, y, z]
+
 # ------------------------------------------------------------------
 # VALIDATION (use common modules)
 # ------------------------------------------------------------------
@@ -33,7 +59,7 @@ def validate_legal_moves(game_state: 'GameState', moves: List[Move], color: Colo
 # MOVE GENERATION WITH ADVANCED CACHING
 # ------------------------------------------------------------------
 def legal_moves(game_state: 'GameState') -> List[Move]:
-    """Optimized legal move generation with smart validation."""
+    """Optimized legal move generation with smart validation using numpy."""
     with track_operation_time(game_state._metrics, 'total_legal_moves_time'):
         game_state = game_state._with_metrics(
             legal_moves_calls=game_state._metrics.legal_moves_calls + 1
@@ -57,7 +83,7 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
 
             moves = move_cache._legal_by_color[game_state.color].copy()
         else:
-            moves = generate_legal_moves(game_state)  # UPDATED: Using legal moves generator
+            moves = generate_legal_moves(game_state)
             # Cache in move cache through manager
             move_cache._legal_by_color[game_state.color] = moves
             move_cache._rebuild_color_lists()
@@ -78,10 +104,10 @@ def legal_moves(game_state: 'GameState') -> List[Move]:
 
 def legal_moves_for_piece(game_state: 'GameState', coord: Tuple[int, int, int]) -> List[Move]:
     """Get legal moves for a specific piece."""
-    return generate_legal_moves_for_piece(game_state, coord)  # UPDATED: Using legal moves generator
+    return generate_legal_moves_for_piece(game_state, coord)
 
 # ------------------------------------------------------------------
-# OPTIMIZED MOVE MAKING WITH INCREMENTAL UPDATES
+# OPTIMIZED MOVE MAKING WITH NUMPY
 # ------------------------------------------------------------------
 def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     from .gamestate import GameState
@@ -92,8 +118,12 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
     with track_operation_time(game_state._metrics, 'total_make_move_time'):
         game_state._metrics.make_move_calls += 1
 
-        # Clone board but REUSE cache manager
-        new_board = Board(game_state.board.tensor().clone())
+        # Use numpy array instead of torch tensor
+        board_array = game_state.board.array()  # Assuming Board now has array() method
+        new_board_array = board_array.copy()  # Fast numpy copy
+
+        # Create new board with numpy array
+        new_board = Board(new_board_array)
 
         # CRITICAL: Reuse existing cache manager with new board
         cache_manager = game_state.cache_manager
@@ -129,7 +159,7 @@ def make_move(game_state: 'GameState', mv: Move) -> 'GameState':
         return new_state
 
 # ------------------------------------------------------------------
-# UNDO MOVE IMPLEMENTATION
+# UNDO MOVE IMPLEMENTATION WITH NUMPY
 # ------------------------------------------------------------------
 def undo_move(game_state: 'GameState') -> 'GameState':
     if not game_state.history:
@@ -141,14 +171,15 @@ def undo_move(game_state: 'GameState') -> 'GameState':
         return _fast_undo(game_state)
 
 def _fast_undo(game_state: 'GameState') -> 'GameState':
-    """Revert last move using cached tensors + cache-manager undo."""
+    """Revert last move using cached numpy arrays + cache-manager undo."""
     from .gamestate import GameState
 
     undo_info = game_state._undo_info
     last_mv   = game_state.history[-1]
 
-    # Restore board tensor
-    new_board = Board(undo_info.original_board_tensor.clone())
+    # Restore board array using numpy copy
+    new_board_array = undo_info.original_board_array.copy()
+    new_board = Board(new_board_array)
 
     # Update cache manager with restored board
     game_state.cache_manager.board = new_board
@@ -169,7 +200,6 @@ def _fast_undo(game_state: 'GameState') -> 'GameState':
         game_mode=game_state.game_mode,
         turn_number=undo_info.original_turn_number,
     )
-    # REMOVED: prev_state._zkey = undo_info.original_zkey - Zobrist is now managed by cache_manager
     prev_state._clear_caches()
     return prev_state
 
@@ -177,13 +207,15 @@ def _compute_undo_info(game_state: 'GameState',
                        mv: Move,
                        moving_piece: Piece,
                        captured_piece: Optional[Piece]) -> UndoSnapshot:
-    """Snapshot everything needed for a one-step undo."""
+    """Snapshot everything needed for a one-step undo using numpy."""
+    # Use numpy array instead of torch tensor
+    board_array = game_state.board.array()
+
     return UndoSnapshot(
-        original_board_tensor=game_state.board.tensor().clone().cpu(),
+        original_board_array=board_array.copy(),  # numpy copy instead of torch clone
         original_halfmove_clock=game_state.halfmove_clock,
         original_turn_number=game_state.turn_number,
-        # FIX: Use zkey property instead of _zkey attribute
-        original_zkey=game_state.zkey,  # CHANGED: game_state._zkey -> game_state.zkey
+        original_zkey=game_state.zkey,
         moving_piece=moving_piece,
         captured_piece=captured_piece,
         # ADD these for cache manager undo
@@ -191,6 +223,46 @@ def _compute_undo_info(game_state: 'GameState',
         original_trailblaze_state=getattr(game_state.cache_manager.trailblaze_cache, '_state', None),
         original_geomancy_state=getattr(game_state.cache_manager.geomancy_cache, '_state', None),
     )
+
+# Optimized helper functions for 9x9x9 board
+@njit
+def is_valid_position(x: int, y: int, z: int) -> bool:
+    """Fast position validation for 9x9x9 board."""
+    return (0 <= x < 9) and (0 <= y < 9) and (0 <= z < 9)
+
+@njit
+def get_adjacent_positions(x: int, y: int, z: int) -> List[Tuple[int, int, int]]:
+    """Get all valid adjacent positions in 3D space."""
+    positions = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if is_valid_position(nx, ny, nz):
+                    positions.append((nx, ny, nz))
+    return positions
+
+def batch_validate_moves(moves: List[Move], board_array: np.ndarray) -> List[Move]:
+    """Batch validate moves using numpy operations."""
+    valid_moves = []
+
+    for move in moves:
+        from_coord = move.from_coord
+        to_coord = move.to_coord
+
+        # Fast coordinate validation
+        if not (is_valid_position(*from_coord) and is_valid_position(*to_coord)):
+            continue
+
+        # Check if from position has a piece
+        if board_array[from_coord] == 0:  # 0 represents empty
+            continue
+
+        valid_moves.append(move)
+
+    return valid_moves
 
 @dataclass(slots=True)
 class EnrichedMove:
@@ -208,3 +280,32 @@ class EnrichedMove:
                 f"moved_pieces={len(self.moved_pieces)}, "
                 f"is_pawn_move={self.is_pawn_move}, "
                 f"is_capture={self.is_capture})")
+
+# Performance optimization: Precompute common coordinate patterns
+def precompute_3d_patterns():
+    """Precompute common 3D movement patterns for 9x9x9 board."""
+    patterns = {}
+
+    # Straight lines in 3D
+    for axis in range(3):
+        for direction in (-1, 1):
+            pattern = []
+            for i in range(1, 9):  # Maximum 8 steps in any direction
+                offset = [0, 0, 0]
+                offset[axis] = i * direction
+                pattern.append(tuple(offset))
+            patterns[f'straight_{axis}_{direction}'] = pattern
+
+    # Diagonals in 3D
+    for dx in (-1, 1):
+        for dy in (-1, 1):
+            for dz in (-1, 1):
+                pattern = []
+                for i in range(1, 9):
+                    pattern.append((i * dx, i * dy, i * dz))
+                patterns[f'diagonal_{dx}_{dy}_{dz}'] = pattern
+
+    return patterns
+
+# Precompute patterns at module load
+_3D_PATTERNS = precompute_3d_patterns()

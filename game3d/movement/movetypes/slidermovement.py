@@ -1,4 +1,4 @@
-# slidermovement.py - FIXED (parameter name consistency)
+# slidermovement.py - OPTIMIZED WITH BATCHING
 """Slider movement – use only public cache manager API."""
 from __future__ import annotations
 import numpy as np
@@ -20,9 +20,9 @@ def generate_moves(
     max_distance: int = 8,
     *,
     directions: np.ndarray,
-    cache_manager: 'OptimizedCacheManager',  # FIXED: Consistent parameter name
+    cache_manager: 'OptimizedCacheManager',
 ) -> List[Move]:
-    """Generate every slider move using cache manager's public API."""
+    """Generate every slider move using cache manager's public API - OPTIMIZED WITH BATCHING."""
     pos = ensure_int_coords(*pos)
 
     # Use public API to get occupancy array
@@ -32,18 +32,18 @@ def generate_moves(
         pos=pos,
         directions=directions,
         occupancy=occupancy,
-        color=color.value,  # Convert to int for kernel
+        color=color.value,
         max_distance=max_distance,
     )
 
-    return [
-        Move.create_simple(
-            from_coord=pos,
-            to_coord=(nx, ny, nz),
-            is_capture=is_cap,
-        )
-        for nx, ny, nz, is_cap in raw
-    ]
+    if not raw:
+        return []
+
+    # OPTIMIZED FIX: Use int16 instead of int8 - sufficient for our coordinate range
+    to_coords = np.array([(x, y, z) for x, y, z, _ in raw], dtype=np.int16)  # CHANGED: np.int8 -> np.int16
+    captures = np.array([is_cap for _, _, _, is_cap in raw], dtype=bool)
+
+    return Move.create_batch(from_coord=pos, to_coords=to_coords, captures=captures)
 # ------------------------------------------------------------------
 # 2.  Hot Numba kernel (unchanged)
 # ------------------------------------------------------------------
