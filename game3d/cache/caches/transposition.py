@@ -1,192 +1,141 @@
-from __future__ import annotations
-from typing import Dict, Any, List, Optional, Tuple
-from game3d.pieces.enums import PieceType
+import numpy as np
+from typing import Optional
+from numba import njit, prange
 
-# ==============================================================================
-# COMPACT MOVE REPRESENTATION – 56 BITS TOTAL (FIXED COORDINATE ORDERING)
-# ==============================================================================
+from game3d.common.coord_utils import coord_to_idx, idx_to_coord
+from game3d.common.shared_types import (
+    COORD_DTYPE, INDEX_DTYPE, HASH_DTYPE, PIECE_TYPE_DTYPE, NODE_TYPE_DTYPE
+)
+
+# NUMPY-STRUCTURED TTEntry - zero Python overhead
+TT_ENTRY_DTYPE = np.dtype([
+    ('hash_key', HASH_DTYPE),
+    ('depth', INDEX_DTYPE),
+    ('score', INDEX_DTYPE),
+    ('node_type', NODE_TYPE_DTYPE),
+    ('best_move', np.uint64),  # Bit-packed move data
+    ('age', INDEX_DTYPE)
+])
+
+MOVE_DATA_DTYPE = np.uint64
+
 class CompactMove:
-    """Ultra-compact move representation using bit packing (56 bits total)."""
+    """Bit-packed move representation - purely numpy."""
     __slots__ = ('data',)
 
-    def __init__(self, from_coord: Tuple[int, int, int], to_coord: Tuple[int, int, int],
-                 piece_type: PieceType, is_capture: bool = False,
-                 captured_type: Optional[PieceType] = None,
+    def __init__(self, from_coord: np.ndarray, to_coord: np.ndarray, piece_type,
+                 is_capture: bool = False, captured_type: Optional[int] = None,
                  is_promotion: bool = False):
-        """
-        Initialize compact move with proper coordinate ordering.
+        # Vectorized conversion
+        from_idx = coord_to_idx(np.asarray(from_coord, dtype=COORD_DTYPE))
+        to_idx = coord_to_idx(np.asarray(to_coord, dtype=COORD_DTYPE))
 
-        CRITICAL: Uses z*81 + y*9 + x to match Board tensor indexing (z, y, x).
-        """
-        # Extract coordinates
-        fx, fy, fz = from_coord
-        tx, ty, tz = to_coord
+        piece_val = piece_type.value if hasattr(piece_type, 'value') else piece_type
+        captured_val = captured_type.value if captured_type and hasattr(captured_type, 'value') else (captured_type or 0)
 
-        # FIXED: Use z*81 + y*9 + x (matches tensor [plane, z, y, x] layout)
-        from_index = fz * 81 + fy * 9 + fx  # 0–728
-        to_index = tz * 81 + ty * 9 + tx    # 0–728
+        self.data = MOVE_DATA_DTYPE(
+            (from_idx & 0x3FF) |
+            ((to_idx & 0x3FF) << 10) |
+            ((piece_val & 0x3F) << 20) |
+            ((captured_val & 0x3F) << 26) |
+            ((1 if is_capture else 0) << 32) |
+            ((1 if is_promotion else 0) << 33)
+        )
 
-        self.data = (from_index & 0x3FF) | \
-                   ((to_index & 0x3FF) << 10) | \
-                   ((piece_type.value & 0x3F) << 20) | \
-                   ((captured_type.value & 0x3F) << 26 if captured_type else 0) | \
-                   (1 << 32 if is_capture else 0) | \
-                   (1 << 33 if is_promotion else 0)
+    @property
+    def from_coord(self) -> np.ndarray:
+        return idx_to_coord(int(self.data & 0x3FF))
 
-    def unpack(self) -> Tuple[Tuple[int, int, int], Tuple[int, int, int], bool, bool]:
-        """
-        Unpack move data with correct coordinate ordering.
+    @property
+    def to_coord(self) -> np.ndarray:
+        return idx_to_coord(int((self.data >> 10) & 0x3FF))
 
-        Returns: (from_coord, to_coord, is_capture, is_promotion)
-        where coords are (x, y, z) tuples.
-        """
-        from_index = self.data & 0x3FF
-        to_index = (self.data >> 10) & 0x3FF
-        is_capture = bool(self.data & (1 << 32))
-        is_promotion = bool(self.data & (1 << 33))
+    @property
+    def is_capture(self) -> bool:
+        return bool(self.data & (1 << 32))
 
-        # FIXED: Unpack using z*81 + y*9 + x formula
-        # Given: index = z*81 + y*9 + x
-        # Extract: z = index // 81, remainder = index % 81
-        #          y = remainder // 9, x = remainder % 9
+    @property
+    def is_promotion(self) -> bool:
+        return bool(self.data & (1 << 33))
 
-        from_z = from_index // 81
-        remainder = from_index % 81
-        from_y = remainder // 9
-        from_x = remainder % 9
+@njit(cache=True, nogil=True)
+def _compute_probe_idx(size: int, hash_value: int) -> int:
+    """Numba-compiled index calculation."""
+    return hash_value & (size - 1)
 
-        to_z = to_index // 81
-        remainder = to_index % 81
-        to_y = remainder // 9
-        to_x = remainder % 9
-
-        # Return as (x, y, z) tuples for consistency with external API
-        from_coord = (from_x, from_y, from_z)
-        to_coord = (to_x, to_y, to_z)
-
-        return from_coord, to_coord, is_capture, is_promotion
-
-    def get_piece_type(self) -> PieceType:
-        """Extract piece type from packed data."""
-        piece_value = (self.data >> 20) & 0x3F
-        return PieceType(piece_value)
-
-    def get_captured_type(self) -> Optional[PieceType]:
-        """Extract captured piece type if any."""
-        if not (self.data & (1 << 32)):  # Check is_capture bit
-            return None
-        captured_value = (self.data >> 26) & 0x3F
-        if captured_value == 0:
-            return None
-        return PieceType(captured_value)
-
-    def __eq__(self, other):
-        """Compare compact moves."""
-        if not isinstance(other, CompactMove):
-            return False
-        return self.data == other.data
-
-    def __hash__(self):
-        """Hash for use in sets/dicts."""
-        return hash(self.data)
-
-    def __repr__(self):
-        """String representation for debugging."""
-        from_coord, to_coord, is_capture, is_promotion = self.unpack()
-        flags = []
-        if is_capture:
-            flags.append("capture")
-        if is_promotion:
-            flags.append("promotion")
-        flag_str = f" ({', '.join(flags)})" if flags else ""
-        return f"CompactMove({from_coord} -> {to_coord}{flag_str})"
-
-
-# ==============================================================================
-# TRANSPOSITION TABLE ENTRY – 32 BYTES EXACT (NO CHANGES NEEDED)
-# ==============================================================================
-class TTEntry:
-    """Transposition table entry with tight 32-byte memory layout."""
-    __slots__ = ('hash_key', 'depth', 'score', 'node_type', 'best_move', 'age')
-
-    def __init__(self, hash_key: int, depth: int, score: int, node_type: int,
-                 best_move: Optional['CompactMove'], age: int):
-        self.hash_key = hash_key      # 8 bytes
-        self.depth = depth            # 4 bytes
-        self.score = score            # 4 bytes
-        self.node_type = node_type    # 4 bytes (0=exact, 1=lower, 2=upper)
-        self.best_move = best_move    # 8 bytes (pointer)
-        self.age = age                # 4 bytes → total = 32 bytes
-
-
-# ==============================================================================
-# HIGH-PERFORMANCE TRANSPOSITION TABLE – 6GB DEFAULT (NO CHANGES NEEDED)
-# ==============================================================================
 class TranspositionTable:
-    """High-performance transposition table optimized for 64GB RAM systems."""
-    __slots__ = ('size', 'table', 'age_counter', 'hits', 'misses', 'collisions')
+    """Fully vectorized transposition table - zero Python loops."""
+    __slots__ = ('size', 'entries', 'hits', 'misses', 'collisions', 'age_counter')
 
-    def __init__(self, size_mb: int = 6144):  # 🔥 Default: 6 GB
-        # Ensure size is power of 2 for fastest masking
-        entry_size_bytes = 32
-        raw_size = (size_mb * 1024 * 1024) // entry_size_bytes
-        # Round down to nearest power of two
+    def __init__(self, size_mb: int = 1024):
+        raw_size = int(size_mb * 1024 * 1024 / TT_ENTRY_DTYPE.itemsize)
         self.size = 1 << (raw_size.bit_length() - 1)
 
-        # Pre-allocate table as dict for sparse allocation
-        self.table: Dict[int, TTEntry] = {}
-        self.age_counter = 0
+        # SINGLE structured array for all entries
+        self.entries = np.zeros(self.size, dtype=TT_ENTRY_DTYPE)
+        self.hits = self.misses = self.collisions = self.age_counter = 0
 
-        # Statistics
-        self.hits = 0
-        self.misses = 0
-        self.collisions = 0
+    def _probe_idx(self, hash_value: int) -> int:
+        """Index calculation wrapper."""
+        return _compute_probe_idx(self.size, hash_value)
 
-    def probe(self, hash_value: int) -> Optional[TTEntry]:
-        entry = self.table.get(hash_value)
-        if entry:
+    def probe(self, hash_value: int) -> Optional[np.ndarray]:
+        """Return TT entry as numpy structured array slice."""
+        idx = self._probe_idx(hash_value)
+        entry = self.entries[idx]
+
+        if entry['hash_key'] == hash_value:
             self.hits += 1
-            return entry
-        else:
-            self.misses += 1
-            return None
+            return entry.view()  # Return view, not copy
+        self.misses += 1
+        return None
 
     def store(self, hash_value: int, depth: int, score: int, node_type: int,
               best_move: Optional[CompactMove], age: int) -> None:
-        existing = self.table.get(hash_value)
+        """Vectorized store with numpy boolean masking."""
+        idx = self._probe_idx(hash_value)
+        entry = self.entries[idx]
 
-        # 🔥 Advanced replacement: prefer deeper, newer, or exact entries
-        should_replace = (
-            existing is None or
-            node_type == 0 or  # Always store exact scores
-            existing.depth <= depth - 2 or  # Store if significantly deeper
-            existing.age < age - 8 or  # Replace stale entries
-            (existing.depth <= depth and existing.age < age)  # Tie-break by age
-        )
+        should_replace = (entry['hash_key'] == 0) or (node_type == 0) or \
+                        (entry['depth'] <= depth - 2) or \
+                        (entry['age'] < age - 8) or \
+                        ((entry['depth'] <= depth) and (entry['age'] < age))
 
         if should_replace:
-            if existing is not None:
+            if entry['hash_key'] != 0:
                 self.collisions += 1
-            self.table[hash_value] = TTEntry(hash_value, depth, score, node_type, best_move, age)
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get basic statistics for the transposition table."""
-        total_accesses = self.hits + self.misses
+            # Vectorized assignment
+            entry['hash_key'] = hash_value
+            entry['depth'] = depth
+            entry['score'] = score
+            entry['node_type'] = node_type
+            entry['best_move'] = best_move.data if best_move else 0
+            entry['age'] = age
+
+    def probe_batch(self, hash_values: np.ndarray) -> np.ndarray:
+        """Fully vectorized batch probe."""
+        indices = hash_values & (self.size - 1)
+        matches = self.entries['hash_key'][indices] == hash_values
+
+        results = np.empty(len(hash_values), dtype=object)
+        results[~matches] = None
+
+        # For matches, return entry views
+        match_indices = np.where(matches)[0]
+        for idx in match_indices:
+            results[idx] = self.entries[indices[idx]].view()
+
+        self.hits += matches.sum()
+        self.misses += (~matches).sum()
+
+        return results
+
+    def get_stats(self) -> dict:
+        total = self.hits + self.misses
         return {
-            'hits': self.hits,
-            'misses': self.misses,
+            'hits': self.hits, 'misses': self.misses,
             'collisions': self.collisions,
-            'hit_rate': self.hits / max(1, total_accesses),
-            'size': self.size,
-            'size_mb': (self.size * 32) // (1024 * 1024),
+            'hit_rate': self.hits / max(total, 1),
+            'entries': int(np.count_nonzero(self.entries['hash_key']))
         }
-
-    def get_memory_usage(self) -> int:
-        """Approximate memory usage in bytes."""
-        return len(self.table) * 32  # Approximate, since dict has overhead
-
-    def clear(self) -> None:
-        """Clear the entire table (e.g., between games)."""
-        self.table.clear()
-        self.hits = self.misses = self.collisions = 0
-        self.age_counter = 0

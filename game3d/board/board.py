@@ -1,323 +1,330 @@
-from __future__ import annotations
-"""
-game3d/board/board.py
-9×9×9 board – tensor-first, zero-copy, training-ready.
-"""
-import torch
+# game3d/board/board.py
+"""Fully optimized numpy-native board with vectorized operations."""
+
 import numpy as np
-from typing import Optional, Tuple, Iterable, List
-from game3d.common.common import (
-    SIZE_X, SIZE_Y, SIZE_Z, SIZE, VOLUME,
-    N_PIECE_TYPES, N_COLOR_PLANES, N_TOTAL_PLANES,
-    Coord, in_bounds, coord_to_idx, idx_to_coord,
-    hash_board_tensor, PIECE_SLICE, COLOR_SLICE, CURRENT_SLICE, EFFECT_SLICE, N_CHANNELS
+from typing import Optional, Union, Tuple
+from numba import njit, prange
+import logging
+logger = logging.getLogger(__name__)
+
+from game3d.common.shared_types import (
+    SIZE, N_TOTAL_PLANES, COORD_DTYPE, FLOAT_DTYPE, INDEX_DTYPE, VECTORIZATION_THRESHOLD,
+    COLOR_WHITE, COLOR_BLACK, MAX_COORD_VALUE, N_PIECE_TYPES, PieceType, Color, COLOR_DTYPE,
+    PIECE_TYPE_DTYPE
 )
-from game3d.pieces.enums import Color, PieceType
-from game3d.pieces.piece import Piece
-from game3d.board.symmetry import SymmetryManager
-from game3d.movement.movepiece import Move
+from game3d.common.coord_utils import in_bounds_vectorized
+from game3d.common.validation import validate_coords_batch as validate_coords
 
-class Board:
-    __slots__ = (
-        "_tensor", "_hash", "_symmetry_manager",
-        "_occupancy_mask", "_occupied_list", "_gen", "cache_manager"  # Added cache_manager
-    )
+# =============================================================================
+# VECTORIZED BOARD UTILITIES
+# =============================================================================
 
-    def __init__(self, tensor: Optional[torch.Tensor] = None) -> None:
-        if tensor is None:
-            self._tensor = torch.zeros(N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X, dtype=torch.float32)
+@njit(cache=True, fastmath=True, parallel=True)
+def _batch_get_pieces_at_coords(board: np.ndarray, coords: np.ndarray) -> np.ndarray:
+    """Get pieces at multiple coordinates - fully vectorized."""
+    n_coords = coords.shape[0]
+    results = np.empty(n_coords, dtype=FLOAT_DTYPE)
+
+    for i in prange(n_coords):
+        x, y, z = coords[i]
+        if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
+            results[i] = board[:, x, y, z].max()
         else:
-            if tensor.shape != (N_TOTAL_PLANES, SIZE_Z, SIZE_Y, SIZE_X):
-                raise ValueError("Board tensor must be (C,9,9,9)")
-            self._tensor = tensor
-        self._hash: Optional[int] = None
-        self._occupancy_mask: Optional[torch.Tensor] = None
-        self._occupied_list: Optional[List[Tuple[Coord, Piece]]] = None
-        self._gen = 0
-        # FIXED: Don't initialize here to avoid circular imports
-        self._symmetry_manager: Optional[SymmetryManager] = None
-        self.cache_manager = None
+            results[i] = 0.0
 
-    def _ensure_symmetry_manager(self) -> SymmetryManager:
-        """Lazy initialization of symmetry manager to avoid circular imports."""
-        if self._symmetry_manager is None:
-            self._symmetry_manager = SymmetryManager()
-        return self._symmetry_manager
+    return results
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _batch_set_pieces_at_coords(board: np.ndarray, coords: np.ndarray,
+                              piece_values: np.ndarray) -> None:
+    """Set pieces at multiple coordinates - fully vectorized."""
+    n_coords = coords.shape[0]
+
+    for i in prange(n_coords):
+        x, y, z = coords[i]
+        if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
+            board[:, x, y, z] = 0.0
+            if piece_values[i] > 0:
+                board[0, x, y, z] = piece_values[i]
+
+# =============================================================================
+# OPTIMIZED BOARD CLASS
+# =============================================================================
+class Board:
+    """Pure numpy board storage - no logic."""
+    __slots__ = ('_array', '_cache_manager', 'generation')
+
+    def __init__(self, array=None):
+        if array is None:
+            self._array = np.zeros((N_TOTAL_PLANES, SIZE, SIZE, SIZE), dtype=FLOAT_DTYPE)
+        else:
+            self._array = array.astype(FLOAT_DTYPE, copy=False)
+        self._cache_manager = None
+        self.generation = 0  # Track board modifications for cache invalidation
 
     @property
-    def symmetry_manager(self) -> SymmetryManager:
-        """Get symmetry manager, initializing lazily if needed."""
-        return self._ensure_symmetry_manager()
+    def cache_manager(self):
+        """Get the cache manager associated with this board."""
+        return self._cache_manager
 
-    # UPDATE all symmetry methods to use the property:
-    def get_symmetric_variants(self) -> List[Tuple[str, 'Board']]:
-        """Get all symmetric variants of current board position."""
-        return self.symmetry_manager.get_symmetric_boards(self)
+    @cache_manager.setter
+    def cache_manager(self, value):
+        """Set the cache manager for this board."""
+        self._cache_manager = value
 
-    def get_canonical_form(self) -> Tuple['Board', str]:
-        """Get canonical (normalized) form of board position."""
-        return self.symmetry_manager.get_canonical_form(self)
+    # CRITICAL: This method is required by many modules
+    def array(self) -> np.ndarray:
+        """Get underlying board array."""
+        return self._array
 
-    def is_symmetric_to(self, other: 'Board') -> bool:
-        """Check if this board is symmetrically equivalent to another."""
-        return self.symmetry_manager.is_symmetric_position(self, other)
+    def get_board_array(self) -> np.ndarray:
+        """Get board array (alias for array())."""
+        return self._array
 
     @staticmethod
-    def empty() -> Board:
+    def empty() -> 'Board':
+        """Create empty board."""
         return Board()
 
-
-    def init_startpos(self) -> None:
-        """Set up the initial position with full 9x9 ranks."""
-
-        # Quick name → PieceType lookup
-        name_to_pt = {pt.name.lower(): pt for pt in PieceType}
-        def parse(name: str) -> PieceType:
-            try:
-                return name_to_pt[name.lower()]
-            except KeyError as e:
-                raise ValueError(f"Unknown piece name in template: {name}") from e
-
-        # Helper to place a piece
-        def put(x: int, y: int, z: int, pt: PieceType, color: Color) -> None:
-            self.set_piece((x, y, z), Piece(color, pt))
-
-        # ------------------------------------------------------------------
-        # 1st Rank (z=0 for White, z=8 for Black)
-        # ------------------------------------------------------------------
-        rank1 = [
-            ["reflector", "coneslider", "edgerook", "echo", "orbiter", "echo", "edgerook", "coneslider", "reflector"],
-            ["spiral", "xzzigzag", "xzqueen", "yzqueen", "mirror", "yzqueen", "xzqueen", "xzzigzag", "spiral"],
-            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31", "hive", "panel", "friendlyteleporter", "yzzigzag"],
-            ["bomb", "swapper", "nebula", "knight32", "trailblazer", "knight32", "nebula", "swapper", "bomb"],
-            ["orbiter", "mirror", "knight31", "trailblazer", "king", "trailblazer", "knight31", "mirror", "orbiter"],
-            ["bomb", "swapper", "nebula", "knight32", "trailblazer", "knight32", "nebula", "swapper", "bomb"],
-            ["yzzigzag", "friendlyteleporter", "panel", "hive", "knight31", "hive", "panel", "friendlyteleporter", "yzzigzag"],
-            ["spiral", "xzzigzag", "xzqueen", "yzqueen", "mirror", "yzqueen", "xzqueen", "xzzigzag", "spiral"],
-            ["reflector", "coneslider", "edgerook", "echo", "orbiter", "echo", "edgerook", "coneslider", "reflector"],
-        ]
-
-        for y in range(9):
-            for x in range(9):
-                pt = parse(rank1[y][x])
-                put(x, y, 0, pt, Color.WHITE)
-                put(x, y, 8, pt, Color.BLACK)
-
-        # ------------------------------------------------------------------
-        # 2nd Rank (z=1 for White, z=7 for Black)
-        # ------------------------------------------------------------------
-        rank2 = [
-            ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
-            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
-            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
-            ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
-            ["bishop", "trigonalbishop", "knight", "xyqueen", "vectorslider", "xyqueen", "knight", "trigonalbishop", "bishop"],
-            ["queen", "archer", "infiltrator", "rook", "xyqueen", "rook", "infiltrator", "archer", "queen"],
-            ["whitehole", "wall", "wall", "priest", "knight", "priest", "wall", "wall", "whitehole"],
-            ["speeder", "wall", "wall", "armour", "trigonalbishop", "armour", "wall", "wall", "speeder"],
-            ["freezer", "slower", "blackhole", "geomancer", "bishop", "geomancer", "blackhole", "slower", "freezer"],
-        ]
-
-        for y in range(9):
-            for x in range(9):
-                pt = parse(rank2[y][x])
-                put(x, y, 1, pt, Color.WHITE)
-                put(x, y, 7, pt, Color.BLACK)
-
-        # ------------------------------------------------------------------
-        # 3rd Rank - Pawns (z=2 for White, z=6 for Black)
-        # ------------------------------------------------------------------
-        for x in range(9):
-            for y in range(9):
-                put(x, y, 2, PieceType.PAWN, Color.WHITE)
-                put(x, y, 6, PieceType.PAWN, Color.BLACK)
-
-        # ------------------------------------------------------------------
-        # z=3,4,5 remain empty
-        # ------------------------------------------------------------------
-        assert self.validate_tensor(), "Board tensor is invalid after init!"
-
-    def tensor(self) -> torch.Tensor:
-        return self._tensor.contiguous()
-
-    def byte_hash(self) -> int:
-        if self._hash is None:
-            self._hash = hash_board_tensor(self._tensor)
-        return self._hash
-
-    def set_piece(self, c: Coord, p: Optional[Piece]) -> None:
-        x, y, z = c
-        # Clear all piece planes at this coordinate
-        self._tensor[PIECE_SLICE, z, y, x] = 0.0
-        if p is not None:
-            idx = p.ptype.value  # Use .value for IntEnum
-            self._tensor[idx, z, y, x] = 1.0
-            # Set color in the color mask plane
-            if p.color == Color.WHITE:
-                self._tensor[N_PIECE_TYPES, z, y, x] = 1.0
-            else:
-                self._tensor[N_PIECE_TYPES, z, y, x] = 0.0
-        self._hash = None
-        self._occupancy_mask = None  # Invalidate cache
-        self._occupied_list = None   # Invalidate cache
-
-    def piece_at(self, c: Coord) -> Optional[Piece]:
-        # Check if cache_manager exists and has piece_cache
-        if hasattr(self, 'cache_manager') and self.cache_manager and hasattr(self.cache_manager, 'piece_cache'):
-            return self.cache_manager.piece_cache.get(c)
-
-        # Fallback to direct tensor access if cache isn't ready
-        x, y, z = c
-        piece_planes = self._tensor[PIECE_SLICE, z, y, x]
-        max_val, max_idx = torch.max(piece_planes, dim=0)
-
-        if max_val == 1.0:
-            ptype = PieceType(max_idx.item())
-            color_val = self._tensor[N_PIECE_TYPES, z, y, x]
-            color = Color.WHITE if color_val > 0.5 else Color.BLACK
-            return Piece(color, ptype)
-
-        return None
-
-    def multi_piece_at(self, sq: Tuple[int, int, int]) -> List[Piece]:
-        if hasattr(self, 'cache_manager') and self.cache_manager:
-            return self.cache_manager.effects._effect_caches["share_square"].pieces_at(sq)
-        else:
-            # Fallback for cases without cache manager
-            piece = self.piece_at(sq)
-            return [piece] if piece else []
-
-    def mirror_z(self) -> Board:
-        # Mirror all planes (piece planes, color plane, current player, effect planes)
-        mirrored_tensor = self._tensor.flip(dims=(1,))
-        return Board(mirrored_tensor)
-
-    def rotate_90(self, k: int = 1) -> Board:
-        # Rotate all planes (piece planes, color plane, current player, effect planes)
-        rotated_tensor = torch.rot90(self._tensor, k, dims=(2, 3))
-        return Board(rotated_tensor)
-
-    def apply_player_plane(self, color: Color) -> None:
-        self._tensor[CURRENT_SLICE] = float(color.value)  # Use .value if Color is IntEnum
-
-    def occupancy_mask(self) -> torch.Tensor:
-        if self._occupancy_mask is None:
-            # Sum all piece planes to get occupancy
-            piece_sum = self._tensor[PIECE_SLICE].sum(dim=0)
-            self._occupancy_mask = piece_sum > 0
-        return self._occupancy_mask
-
-    def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]:
-        if self._occupied_list is None:
-            occ = self.occupancy_mask()
-            indices = torch.nonzero(occ, as_tuple=False)  # (N, 3) with z, y, x
-            self._occupied_list = []
-            for idx in indices:
-                z, y, x = idx.tolist()
-                c = (x, y, z)
-                p = self.piece_at(c)
-                if p is not None:  # Safety check
-                    self._occupied_list.append((c, p))
-        return iter(self._occupied_list)
-
-    def clone(self) -> Board:
-        """
-        Create a deep copy of the board with all internal state.
-
-        CRITICAL: This method uses __new__ to bypass __init__, so ALL
-        attributes must be explicitly copied or initialized.
-        """
-        clone = Board.__new__(Board)
-
-        # Core tensor data
-        clone._tensor = self._tensor.clone()
-
-        # Hash state (can be reused since tensor is cloned)
-        clone._hash = self._hash
-
-        # Generation counter
-        clone._gen = getattr(self, '_gen', 0)
-
-        # FIXED: Properly handle symmetry manager
-        clone._symmetry_manager = None  # Force lazy init on first use
-
-        # Cache invalidation (force rebuild on first access)
-        clone._occupancy_mask = None
-        clone._occupied_list = None
-
-        # Do not copy cache_manager
-        if hasattr(clone, 'cache_manager'):
-            del clone.cache_manager
-
-        return clone
-
-    def share_memory_(self) -> Board:
-        self._tensor.share_memory_()
-        return self
-
-    def __repr__(self) -> str:
-        return f"Board(tensor={self._tensor.shape}, hash={self.byte_hash()})"
-
-    def apply_move(self, mv: Move) -> bool:
-        """
-        Apply the move to the tensor.
-        Returns True  -> move was really executed
-               False -> move was ignored (empty square)
-        """
-        from_coord = mv.from_coord
-        to_coord   = mv.to_coord
-
-        piece = self.piece_at(from_coord)
-        if piece is None:               # 🔥 guard
-            return False                # ← tell caller "nothing happened"
-
-        # ----------  original logic unchanged  ----------
-        if mv.is_capture:
-            self.set_piece(to_coord, None)
-
-        if getattr(mv, "is_promotion", False) and getattr(mv, "promotion_type", None):
-            promoted_piece = Piece(piece.color, mv.promotion_type)
-            self.set_piece(from_coord, None)
-            self.set_piece(to_coord, promoted_piece)
-        else:
-            self.set_piece(from_coord, None)
-            self.set_piece(to_coord, piece)
-
-        self._hash = None
-        self._gen += 1
-        return True                     # ← success
-
-    def validate_tensor(self) -> bool:
-        """Check that every (x,y,z) has at most one 1.0 in piece planes."""
-        valid = True
-        invalid_positions = []
-        for z in range(SIZE_Z):
-            for y in range(SIZE_Y):
-                for x in range(SIZE_X):
-                    piece_vals = self._tensor[PIECE_SLICE, z, y, x]
-                    total_ones = (piece_vals == 1.0).sum().item()
-                    if total_ones > 1:
-                        invalid_positions.append((x, y, z))
-                        valid = False
-        if invalid_positions:
-            print(f"Invalid positions found: {invalid_positions}")  # Or log; for debugging
-        return valid
-
     @classmethod
-    def startpos(cls) -> "Board":
-        """Return a board set up for the initial position."""
-        b = cls.empty()   # Goes through __init__
+    def startpos(cls) -> 'Board':
+        """Create board with starting position."""
+        b = cls.empty()
         b.init_startpos()
         return b
 
-    def _validate_board_state(self) -> None:
-        """Validate that all required attributes are present."""
-        required_attrs = ['_tensor', '_hash', '_gen', '_occupancy_mask', '_occupied_list', '_symmetry_manager']
-        missing = [attr for attr in required_attrs if not hasattr(self, attr)]
-        if missing:
-            raise AttributeError(f"Board missing required attributes: {missing}")
+    def init_startpos(self) -> None:
+        """Initialize 3-rank starting position with vectorized operations."""
+        self._array[:] = 0.0
 
-    @property
-    def generation(self) -> int:
-        """Get the current generation number of the board."""
-        return self._gen
+        # Define layouts as direct integer arrays (PieceType enum values)
+        # This eliminates string parsing entirely
+
+        # Rank 1 layout (back rank) - 9x9 grid of piece types
+        rank1_layout = np.array([
+            [35, 21, 16, 14, 12, 14, 16, 21, 35],  # Top row: reflector, coneslider, etc.
+            [40, 33, 18, 19, 22, 19, 18, 33, 40],
+            [34, 27, 15, 11, 9, 11, 15, 27, 34],
+            [26, 32, 13, 8, 39, 8, 13, 32, 26],
+            [12, 22, 9, 39, 6, 39, 9, 22, 12],
+            [26, 32, 13, 8, 39, 8, 13, 32, 26],
+            [34, 27, 15, 11, 9, 11, 15, 27, 34],
+            [40, 33, 18, 19, 22, 19, 18, 33, 40],
+            [35, 21, 16, 14, 12, 14, 16, 21, 35],
+        ], dtype=PIECE_TYPE_DTYPE)
+
+        # Rank 2 layout (second rank)
+        rank2_layout = np.array([
+            [23, 30, 36, 31, 3, 31, 36, 30, 23],
+            [29, 24, 0, 28, 10, 28, 24, 0, 29],
+            [37, 0, 0, 7, 2, 7, 0, 0, 37],
+            [5, 25, 38, 4, 17, 4, 38, 25, 5],
+            [3, 10, 2, 17, 20, 17, 2, 10, 3],
+            [5, 25, 38, 4, 17, 4, 38, 25, 5],
+            [37, 24, 0, 7, 2, 7, 0, 24, 37],
+            [29, 0, 0, 28, 10, 28, 0, 0, 29],
+            [23, 30, 36, 31, 3, 31, 36, 30, 23],
+        ], dtype=PIECE_TYPE_DTYPE)
+
+        # Pre-allocate arrays for maximum possible pieces
+        max_pieces = 500
+        coords = np.empty((max_pieces, 3), dtype=COORD_DTYPE)
+        types = np.empty(max_pieces, dtype=PIECE_TYPE_DTYPE)
+        colors = np.empty(max_pieces, dtype=COLOR_DTYPE)
+        idx = 0
+
+        # Process Rank 1 (z=0 for white, z=8 for black)
+        self._vectorized_place_rank(coords, types, colors, rank1_layout, 0, idx)
+        idx += rank1_layout.size * 2  # *2 for both colors
+
+        # Process Rank 2 (z=1 for white, z=7 for black)
+        self._vectorized_place_rank(coords, types, colors, rank2_layout, 1, idx)
+        idx += rank2_layout.size * 2
+
+        # Process Rank 3 - ALL PAWNS (z=2 for white, z=6 for black)
+        pawn_type = int(PieceType.PAWN)
+        pawn_coords = np.mgrid[0:9, 0:9, 2:3].reshape(3, -1).T.astype(COORD_DTYPE)
+
+        n_pawns = pawn_coords.shape[0]
+        coords[idx:idx+n_pawns] = pawn_coords
+        types[idx:idx+n_pawns] = pawn_type
+        colors[idx:idx+n_pawns] = Color.WHITE
+        idx += n_pawns
+
+        # Black pawns at z=6
+        pawn_coords_black = pawn_coords.copy()
+        pawn_coords_black[:, 2] = 6
+        coords[idx:idx+n_pawns] = pawn_coords_black
+        types[idx:idx+n_pawns] = pawn_type
+        colors[idx:idx+n_pawns] = Color.BLACK
+        idx += n_pawns
+
+        # Trim arrays to actual size
+        coords = coords[:idx]
+        types = types[:idx]
+        colors = colors[:idx]
+
+        # Batch place all pieces
+        if len(coords) > 0:
+            self._place_pieces_vectorized(coords, types, colors)
+            self.generation += 1
+
+    def _vectorized_place_rank(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray,
+                               layout: np.ndarray, z: int, start_idx: int) -> None:
+        """Vectorized placement of a single rank."""
+        n_squares = layout.size
+        y_coords, x_coords = np.divmod(np.arange(n_squares, dtype=INDEX_DTYPE), 9)
+
+        # Place white pieces
+        end_idx = start_idx + n_squares
+        coords[start_idx:end_idx, 0] = x_coords
+        coords[start_idx:end_idx, 1] = y_coords
+        coords[start_idx:end_idx, 2] = z
+        types[start_idx:end_idx] = layout.flat
+        colors[start_idx:end_idx] = Color.WHITE
+
+        # Place black pieces
+        start_idx = end_idx
+        end_idx = start_idx + n_squares
+        coords[start_idx:end_idx, 0] = x_coords
+        coords[start_idx:end_idx, 1] = y_coords
+        coords[start_idx:end_idx, 2] = 8 - z
+        types[start_idx:end_idx] = layout.flat
+        colors[start_idx:end_idx] = Color.BLACK
+
+    def _place_pieces_vectorized(self, coords: np.ndarray, piece_types: np.ndarray, colors: np.ndarray) -> None:
+        """Place pieces at coordinates - fully vectorized."""
+        if coords.shape[0] == 0:
+            return
+
+        # Convert color values to plane offsets (0 for white, 1 for black)
+        color_offsets = (colors - Color.WHITE).astype(INDEX_DTYPE)
+        plane_indices = (piece_types - 1) + (color_offsets * N_PIECE_TYPES)
+
+        # Ensure correct dtypes for indexing
+        plane_indices = plane_indices.astype(INDEX_DTYPE)
+        x = coords[:, 0].astype(INDEX_DTYPE)
+        y = coords[:, 1].astype(INDEX_DTYPE)
+        z = coords[:, 2].astype(INDEX_DTYPE)
+
+        # Vectorized assignment
+        self._array[plane_indices, x, y, z] = 1.0
+
+    def get_piece_at(self, coord) -> tuple:
+        """Vectorized piece lookup. Returns (piece_type, color) or (None, None)"""
+        coord_arr = np.asarray(coord, dtype=COORD_DTYPE).reshape(3)
+        x, y, z = coord_arr
+
+        if in_bounds_vectorized(coord_arr.reshape(1, 3))[0]:
+            planes = self._array[:, x, y, z]
+            plane_idx = np.argmax(planes)
+            if planes[plane_idx] > 0:
+                color = COLOR_WHITE if plane_idx < N_PIECE_TYPES else COLOR_BLACK
+                piece_type = (plane_idx % N_PIECE_TYPES) + 1
+                return piece_type, color
+        return None, None
+
+    def get_pieces_at_vectorized(self, coords: np.ndarray) -> np.ndarray:
+        """Public interface with LOUD error detection."""
+        coords_arr = validate_coords(coords)
+
+        if coords_arr.shape[0] > VECTORIZATION_THRESHOLD:
+            results = self._batch_get_pieces_optimized(self._array, coords_arr)
+        else:
+            results = self._batch_get_pieces_fallback(coords_arr)
+
+        # LOUD FAILURE: Check for sentinel values
+        if np.any(results == -1.0):
+            invalid_indices = np.where(results == -1.0)[0]
+            logger.critical(f"🚨 NUMBA PROCESSED INVALID COORDINATES: {coords_arr[invalid_indices]}")
+            raise ValueError(f"Numba bounds error at indices: {invalid_indices}")
+
+        return results
+
+    @staticmethod
+    @njit(cache=True, fastmath=True, parallel=True)
+    def _batch_get_pieces_optimized(board: np.ndarray, coords: np.ndarray) -> np.ndarray:
+        """Optimized batch retrieval with bounds checking."""
+        assert board.ndim == 4, f"Board must be 4D, got {board.ndim}"
+        assert board.shape[0] == N_TOTAL_PLANES, f"Board planes mismatch: {board.shape[0]} != {N_TOTAL_PLANES}"
+        assert coords.ndim == 2, f"Coords must be 2D, got {coords.ndim}"
+        assert coords.shape[1] == 3, f"Coords must be (N,3), got {coords.shape}"
+
+        n_coords = coords.shape[0]
+        results = np.empty(n_coords, dtype=FLOAT_DTYPE)
+
+        for i in prange(n_coords):
+            x, y, z = coords[i]
+            if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
+                results[i] = board[:, x, y, z].max()
+            else:
+                results[i] = -1.0  # Sentinel for invalid
+
+        return results
+
+    def _batch_get_pieces_fallback(self, coords: np.ndarray) -> np.ndarray:
+        """Fallback for small batches."""
+        results = np.empty(coords.shape[0], dtype=FLOAT_DTYPE)
+        for i, (x, y, z) in enumerate(coords):
+            if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
+                results[i] = self._array[:, x, y, z].max()
+            else:
+                results[i] = -1.0
+        return results
+
+    def set_piece_at(self, coord, piece_type: int, color: int) -> None:
+        """Vectorized piece placement with generation tracking."""
+        coord_arr = np.asarray(coord, dtype=COORD_DTYPE).reshape(3)
+        x, y, z = coord_arr
+
+        if in_bounds_vectorized(coord_arr.reshape(1, 3))[0]:
+            self._array[:, x, y, z] = 0.0
+            if piece_type > 0:
+                # Calculate plane index
+                color_offset = 0 if color == Color.WHITE else N_PIECE_TYPES
+                plane_idx = (piece_type - 1) + color_offset
+                if 0 <= plane_idx < N_TOTAL_PLANES:
+                    self._array[plane_idx, x, y, z] = 1.0
+            self.generation += 1  # CRITICAL: Track board modifications
+
+    def batch_set_pieces_at(self, coords: np.ndarray, piece_types: np.ndarray, colors: np.ndarray) -> None:
+        """Set multiple pieces at once - increments generation only once."""
+        if coords.shape[0] == 0:
+            return
+
+        # Validate all coordinates
+        valid_mask = in_bounds_vectorized(coords)
+        valid_coords = coords[valid_mask]
+        valid_types = piece_types[valid_mask]
+        valid_colors = colors[valid_mask]
+
+        if len(valid_coords) == 0:
+            return
+
+        # Clear all target squares first
+        for i in range(len(valid_coords)):
+            x, y, z = valid_coords[i]
+            self._array[:, x, y, z] = 0.0
+
+        # Set new pieces
+        color_offsets = (valid_colors - Color.WHITE).astype(INDEX_DTYPE)
+        plane_indices = (valid_types - 1) + (color_offsets * N_PIECE_TYPES)
+
+        plane_indices = plane_indices.astype(INDEX_DTYPE)
+        x = valid_coords[:, 0].astype(INDEX_DTYPE)
+        y = valid_coords[:, 1].astype(INDEX_DTYPE)
+        z = valid_coords[:, 2].astype(INDEX_DTYPE)
+
+        self._array[plane_indices, x, y, z] = 1.0
+        self.generation += 1
+
+    def copy(self) -> 'Board':
+        """Create a copy of the board."""
+        new_board = Board(self._array.copy())
+        new_board.generation = self.generation
+        return new_board
+
+    def byte_hash(self) -> int:
+        """Get a hash of the board state for repetition detection."""
+        # Use a fast hash that can handle numpy arrays
+        return hash(self._array.tobytes())

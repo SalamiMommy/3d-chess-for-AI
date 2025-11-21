@@ -1,257 +1,192 @@
-from __future__ import annotations
-"""Optimized symmetry-aware transposition table – tuned for Ryzen 5 5600X + 64GB RAM."""
-# game3d/cache/symmetry_tt.py
+# symmetry_tt.py - NUMPY-NATIVE SYMMETRY-AWARE TRANSPOSITION TABLE
 
-from typing import Optional, Dict, Any, Set, Tuple, List
-from dataclasses import dataclass
+import numpy as np
+from numba import njit, prange
+from typing import Optional, Dict
 import time
-from collections import OrderedDict
 
-from game3d.cache.caches.transposition import TranspositionTable, TTEntry, CompactMove
-from game3d.board.symmetry import SymmetryManager, RotationType
-from game3d.pieces.enums import Color
-from game3d.game.zobrist import compute_zobrist
-
-@dataclass
-class SymmetryStats:
-    """Statistics for symmetry operations."""
-    __slots__ = ("probe_count", "hit_count", "store_count", "transform_time", "canonical_hits")
-    probe_count: int
-    hit_count: int
-    store_count: int
-    transform_time: float
-    canonical_hits: int
-
-    def __init__(self):
-        self.probe_count = 0
-        self.hit_count = 0
-        self.store_count = 0
-        self.transform_time = 0.0
-        self.canonical_hits = 0
-
-
-class LRUCache:
-    """Simple LRU cache with size limit."""
-    def __init__(self, maxsize: int = 5000):
-        self.maxsize = maxsize
-        self.cache = OrderedDict()
-
-    def get(self, key: int) -> Optional[Tuple[int, str]]:
-        if key in self.cache:
-            self.cache.move_to_end(key)
-            return self.cache[key]
-        return None
-
-    def put(self, key: int, value: Tuple[int, str]) -> None:
-        if key in self.cache:
-            self.cache.move_to_end(key)
-        elif len(self.cache) >= self.maxsize:
-            self.cache.popitem(last=False)
-        self.cache[key] = value
-
-    def clear(self) -> None:
-        self.cache.clear()
-
+from game3d.cache.caches.transposition import TranspositionTable, TT_ENTRY_DTYPE, MOVE_DATA_DTYPE
+from game3d.board.symmetry import SymmetryManager
+from game3d.cache.caches.zobrist import compute_zobrist
+from game3d.common.shared_types import Color, HASH_DTYPE, INDEX_DTYPE
+from game3d.common.coord_utils import idx_to_coord, coord_to_idx
 
 class SymmetryAwareTranspositionTable(TranspositionTable):
-    """High-performance symmetry-aware TT – 6GB default, Zobrist-based, 3D-optimized."""
-    __slots__ = (
-        "_symmetry_manager", "_symmetry_stats", "_canonical_cache",
-        "_inverse_transform_map", "_zobrist"
-    )
+    """Fully vectorized symmetry-aware transposition table."""
+
+    __slots__ = ("_sym", "_stats", "_sym_cache_keys", "_sym_cache_values", "_sym_cache_size", "_transform_mats", "_inv_transforms")
+
+    # Pre-computed transform metadata
+    _TMAP = {
+        "identity": 0, "rotate_x_90": 1, "rotate_x_270": 2, "rotate_x_180": 3,
+        "rotate_y_90": 4, "rotate_y_270": 5, "rotate_y_180": 6,
+        "rotate_z_90": 7, "rotate_z_270": 8, "rotate_z_180": 9
+    }
+    _INV = np.array([0, 2, 1, 3, 5, 4, 6, 8, 7, 9], dtype=INDEX_DTYPE)  # Inverses
 
     def __init__(self, symmetry_manager: SymmetryManager, size_mb: int = 6144):
-        super().__init__(size_mb)
-        self._symmetry_manager = symmetry_manager
-        self._symmetry_stats = SymmetryStats()
-        self._canonical_cache = LRUCache(maxsize=10000)
+        # Initialize base table with smaller size (symmetry expands coverage)
+        super().__init__(size_mb=512)
+        self._sym = symmetry_manager
 
-        # Precompute inverse transforms for all 24 rotations
-        self._inverse_transform_map = {
-            RotationType.IDENTITY: RotationType.IDENTITY,
-            RotationType.ROTATE_X_90: RotationType.ROTATE_X_270,
-            RotationType.ROTATE_X_270: RotationType.ROTATE_X_90,
-            RotationType.ROTATE_X_180: RotationType.ROTATE_X_180,
-            RotationType.ROTATE_Y_90: RotationType.ROTATE_Y_270,
-            RotationType.ROTATE_Y_270: RotationType.ROTATE_Y_90,
-            RotationType.ROTATE_Y_180: RotationType.ROTATE_Y_180,
-            RotationType.ROTATE_Z_90: RotationType.ROTATE_Z_270,
-            RotationType.ROTATE_Z_270: RotationType.ROTATE_Z_90,
-            RotationType.ROTATE_Z_180: RotationType.ROTATE_Z_180,
-            # Vertex rotations
-            RotationType.ROTATE_XYZ_120: RotationType.ROTATE_XYZ_240,
-            RotationType.ROTATE_XYZ_240: RotationType.ROTATE_XYZ_120,
-            RotationType.ROTATE_XYmZ_120: RotationType.ROTATE_XYmZ_240,
-            RotationType.ROTATE_XYmZ_240: RotationType.ROTATE_XYmZ_120,
-            RotationType.ROTATE_XmYZ_120: RotationType.ROTATE_XmYZ_240,
-            RotationType.ROTATE_XmYZ_240: RotationType.ROTATE_XmYZ_120,
-            RotationType.ROTATE_XmYmZ_120: RotationType.ROTATE_XmYmZ_240,
-            RotationType.ROTATE_XmYmZ_240: RotationType.ROTATE_XmYmZ_120,
-            # Edge rotations (self-inverse)
-            RotationType.ROTATE_XY_EDGE: RotationType.ROTATE_XY_EDGE,
-            RotationType.ROTATE_XmY_EDGE: RotationType.ROTATE_XmY_EDGE,
-            RotationType.ROTATE_XZ_EDGE: RotationType.ROTATE_XZ_EDGE,
-            RotationType.ROTATE_XmZ_EDGE: RotationType.ROTATE_XmZ_EDGE,
-            RotationType.ROTATE_YZ_EDGE: RotationType.ROTATE_YZ_EDGE,
-            RotationType.ROTATE_YmZ_EDGE: RotationType.ROTATE_YmZ_EDGE,
-        }
+        # Vectorized statistics: [probes, hits, stores, time, cache_hits]
+        self._stats = np.zeros(5, dtype=np.float64)
 
-    # --------------------------------------------------------------------------
-    # PUBLIC API
-    # --------------------------------------------------------------------------
-    def probe_with_symmetry(self, hash_value: int, board) -> Optional[TTEntry]:
-        # Fast path: exact match
-        exact_hit = self.probe(hash_value)
-        if exact_hit:
-            return exact_hit
+        # Numpy-native symmetry cache: hash -> (entry_idx, transform_idx)
+        cache_capacity = 100000
+        self._sym_cache_keys = np.empty(cache_capacity, dtype=HASH_DTYPE)
+        self._sym_cache_values = np.empty((cache_capacity, 2), dtype=INDEX_DTYPE)
+        self._sym_cache_size = 0
 
-        self._symmetry_stats.probe_count += 1
+        # Pre-computed transformation matrices (10, 3, 3)
+        self._transform_mats = np.array([
+            np.eye(3, dtype=INDEX_DTYPE),  # identity
+            np.array([[1,0,0],[0,0,-1],[0,1,0]], dtype=INDEX_DTYPE),  # x90
+            np.array([[1,0,0],[0,0,1],[0,-1,0]], dtype=INDEX_DTYPE),  # x270
+            np.array([[1,0,0],[0,-1,0],[0,0,-1]], dtype=INDEX_DTYPE), # x180
+            np.array([[0,0,1],[0,1,0],[-1,0,0]], dtype=INDEX_DTYPE),  # y90
+            np.array([[0,0,-1],[0,1,0],[1,0,0]], dtype=INDEX_DTYPE),  # y270
+            np.array([[-1,0,0],[0,1,0],[0,0,-1]], dtype=INDEX_DTYPE), # y180
+            np.array([[0,-1,0],[1,0,0],[0,0,1]], dtype=INDEX_DTYPE),  # z90
+            np.array([[0,1,0],[-1,0,0],[0,0,1]], dtype=INDEX_DTYPE),  # z270
+            np.array([[-1,0,0],[0,-1,0],[0,0,1]], dtype=INDEX_DTYPE)  # z180
+        ])
 
-        # Check canonical cache
-        canonical_result = self._canonical_cache.get(hash_value)
-        if canonical_result:
-            canonical_hash, transform_name = canonical_result
-            canonical_entry = self.probe(canonical_hash)
-            if canonical_entry:
-                self._symmetry_stats.canonical_hits += 1
-                return self._transform_entry_back(canonical_entry, transform_name)
+    @njit(cache=True, nogil=True)
+    def _apply_transform_vectorized(self, coord: np.ndarray, transform_idx: int) -> np.ndarray:
+        """Apply 3D transformation to coordinate."""
+        # Center at origin, apply matrix, recenter
+        centered = coord - 4
+        transformed = self._transform_mats[transform_idx] @ centered
+        new_coord = np.round(transformed) + 4
+        return np.clip(new_coord, 0, 8).astype(coord.dtype)
 
-        # Compute canonical form ONCE
+    def _transform_entry_back(self, entry: np.ndarray, transform_idx: int) -> np.ndarray:
+        """Transform move coordinates from canonical back to original orientation."""
+        if transform_idx == 0 or entry['best_move'] == 0:
+            return entry
+
+        # Decompose move data
+        move_data = entry['best_move']
+        from_idx = move_data & 0x3FF
+        to_idx = (move_data >> 10) & 0x3FF
+
+        # Convert to coordinates
+        from_coord = idx_to_coord(from_idx)
+        to_coord = idx_to_coord(to_idx)
+
+        # Apply inverse transform
+        inv_idx = self._INV[transform_idx]
+        if inv_idx != 0:
+            from_coord = self._apply_transform_vectorized(from_coord, inv_idx)
+            to_coord = self._apply_transform_vectorized(to_coord, inv_idx)
+
+        # Reconstruct move data with transformed coordinates
+        new_move_data = MOVE_DATA_DTYPE(
+            (coord_to_idx(from_coord) & 0x3FF) |
+            ((coord_to_idx(to_coord) & 0x3FF) << 10) |
+            (move_data & ~0xFFFFFFFFFF)  # Preserve flags/metadata
+        )
+
+        # Return transformed entry view
+        new_entry = entry.copy()
+        new_entry['best_move'] = new_move_data
+        return new_entry.view()
+
+    def probe_with_symmetry(self, hash_value: int, board) -> Optional[np.ndarray]:
+        """
+        Probe transposition table with symmetry-aware lookup.
+
+        This method checks for equivalent positions under board symmetries
+        by finding the canonical (smallest hash) representation.
+
+        Args:
+            hash_value: Zobrist hash of the current board orientation
+            board: Board object OR numpy array
+
+        Returns:
+            View into TT entry structured array, or None
+        """
+        # 1. Fast path: Check exact hash match
+        exact_idx = self._probe_idx(hash_value)
+        if self.entries[exact_idx]['hash_key'] == hash_value:
+            return self.entries[exact_idx].view()
+
+        self._stats[0] += 1  # probes
+
+        # 2. Vectorized symmetry cache lookup
+        if self._sym_cache_size > 0:
+            cache_mask = self._sym_cache_keys[:self._sym_cache_size] == hash_value
+            if np.any(cache_mask):
+                self._stats[4] += 1  # cache_hits
+                cache_idx = np.flatnonzero(cache_mask)[0]
+                entry_idx, transform_idx = self._sym_cache_values[cache_idx]
+                return self._transform_entry_back(self.entries[entry_idx].view(), transform_idx)
+
+        # 3. Compute canonical form using symmetry manager
+        # Must return board array and transform index
         start = time.perf_counter()
-        try:
-            canonical_board, canonical_transform = self._symmetry_manager.get_canonical_form(board)
-            canonical_hash = self._compute_zobrist_hash(canonical_board)
-        except Exception:
-            self._symmetry_stats.transform_time += time.perf_counter() - start
-            return None
-        self._symmetry_stats.transform_time += time.perf_counter() - start
+        canonical_board, transform_idx = self._sym.get_canonical_form(board)
+        self._stats[3] += time.perf_counter() - start
 
-        # Probe canonical form
-        canonical_entry = self.probe(canonical_hash)
-        if canonical_entry:
-            self._symmetry_stats.hit_count += 1
-            self._canonical_cache.put(hash_value, (canonical_hash, canonical_transform))
-            return self._transform_entry_back(canonical_entry, canonical_transform)
+        # Compute hash of canonical form (WHITE perspective for consistency)
+        canonical_hash = compute_zobrist(canonical_board, Color.WHITE)
+
+        # 4. Probe transposition table with canonical hash
+        canon_idx = self._probe_idx(canonical_hash)
+        canonical_entry = self.entries[canon_idx]
+
+        if canonical_entry['hash_key'] == canonical_hash:
+            self._stats[1] += 1  # hits
+
+            # 5. Cache this mapping for future queries
+            if self._sym_cache_size < len(self._sym_cache_keys):
+                self._sym_cache_keys[self._sym_cache_size] = hash_value
+                self._sym_cache_values[self._sym_cache_size] = [canon_idx, transform_idx]
+                self._sym_cache_size += 1
+
+            # 6. Transform move coordinates back to original orientation
+            return self._transform_entry_back(canonical_entry.view(), transform_idx)
 
         return None
 
-    def store_with_symmetry(self, hash_value: int, board, depth: int,
-                        score: int, node_type: int, best_move: Optional[CompactMove] = None) -> None:
-        # Store original
-        self.store(hash_value, depth, score, node_type, best_move, self.age_counter)
-        self._symmetry_stats.store_count += 1
+    def store_with_symmetry(self, hash_value: int, board, depth: int, score: int,
+                           node_type: int, best_move: Optional[object] = None) -> None:
+        """Store entry with symmetry canonicalization."""
+        # Store in original orientation
+        super().store(hash_value, depth, score, node_type, best_move, self.age_counter)
+        self._stats[2] += 1  # stores
 
-        # Store canonical form for depth ≥ 3
+        # Store in canonical orientation for deep entries
         if depth >= 3:
-            try:
-                canonical_board, canonical_transform = self._symmetry_manager.get_canonical_form(board)
-                canonical_hash = self._compute_zobrist_hash(canonical_board)
-                canonical_move = best_move
-                if best_move and canonical_transform != "identity":
-                    canonical_move = self._transform_move(best_move, canonical_transform)
-                self.store(canonical_hash, depth, score, node_type, canonical_move, self.age_counter)
-                self._canonical_cache.put(hash_value, (canonical_hash, canonical_transform))
-            except Exception:
-                pass
+            canonical_board, canonical_transform = self._sym.get_canonical_form(board)
+            canonical_hash = compute_zobrist(canonical_board, Color.WHITE)
 
-    def get_symmetry_stats(self) -> Dict[str, Any]:
-        total_probes = max(1, self._symmetry_stats.probe_count)
+            # Transform move if needed
+            canonical_move = best_move
+            if canonical_transform != "identity":
+                # Transform move coordinates
+                from_coord = self._apply_transform_vectorized(
+                    best_move.from_coord, self._TMAP[canonical_transform]
+                )
+                to_coord = self._apply_transform_vectorized(
+                    best_move.to_coord, self._TMAP[canonical_transform]
+                )
+                canonical_move = type(best_move)(from_coord, to_coord, best_move.piece_type,
+                                               best_move.is_capture, best_move.captured_type,
+                                               best_move.is_promotion)
+
+            super().store(canonical_hash, depth, score, node_type, canonical_move, self.age_counter)
+
+    def get_symmetry_stats(self) -> Dict[str, float]:
+        """Return statistics as numpy-compatible dictionary."""
+        total_probes = int(self._stats[0])
         return {
-            'symmetry_probes': self._symmetry_stats.probe_count,
-            'symmetry_hits': self._symmetry_stats.hit_count,
-            'symmetry_hit_rate': self._symmetry_stats.hit_count / total_probes,
-            'canonical_hits': self._symmetry_stats.canonical_hits,
-            'transform_time': self._symmetry_stats.transform_time,
-            'cache_size': len(self._canonical_cache.cache),
-            'memory_usage_mb': self.get_memory_usage() / (1024 * 1024),
+            'probes': total_probes,
+            'hits': int(self._stats[1]),
+            'stores': int(self._stats[2]),
+            'time_ms': self._stats[3] * 1000,
+            'cache_hits': int(self._stats[4]),
+            'hit_rate': self._stats[1] / max(total_probes, 1),
+            'cache_size': self._sym_cache_size
         }
-
-    # --------------------------------------------------------------------------
-    # INTERNAL HELPERS
-    # --------------------------------------------------------------------------
-    def _compute_zobrist_hash(self, board) -> int:
-        """Compute Zobrist hash without side-to-move (for canonical form)."""
-        return compute_zobrist(board, Color.WHITE)
-
-    def _transform_entry_back(self, entry: TTEntry, transform_name: str) -> TTEntry:
-        """Transform entry back using transformation name (string)."""
-        if transform_name == "identity" or not entry.best_move:
-            return entry
-        original_move = self._transform_move_back(entry.best_move, transform_name)
-        return TTEntry(
-            hash_key=entry.hash_key,
-            depth=entry.depth,
-            score=entry.score,
-            node_type=entry.node_type,
-            best_move=original_move,
-            age=entry.age
-        )
-
-    def _transform_move(self, move: CompactMove, transform_name: str) -> CompactMove:
-        """Transform move TO canonical coordinates using string name."""
-        if transform_name == "identity":
-            return move
-        from_coord, to_coord, is_capture, is_promotion = move.unpack()
-        from_canon = self._apply_transform_to_coord(from_coord, transform_name)
-        to_canon = self._apply_transform_to_coord(to_coord, transform_name)
-        # Reconstruct with proper piece type handling
-        from game3d.pieces.enums import PieceType
-        piece_type_value = (move.data >> 20) & 0x3F
-        piece_type = PieceType(piece_type_value)
-        captured_type_value = (move.data >> 26) & 0x3F
-        captured_type = PieceType(captured_type_value) if is_capture and captured_type_value > 0 else None
-        return CompactMove(from_canon, to_canon, piece_type, is_capture, captured_type, is_promotion)
-
-    def _transform_move_back(self, move: CompactMove, transform_name: str) -> CompactMove:
-        """Transform move FROM canonical back to original using string name."""
-        if transform_name == "identity":
-            return move
-        inverse_name = self._get_inverse_transform_name(transform_name)
-        return self._transform_move(move, inverse_name)
-
-    def _get_inverse_transform_name(self, transform_name: str) -> str:
-        """Get inverse transformation name from string."""
-        for rot_type in RotationType:
-            if rot_type.value == transform_name:
-                inverse_type = self._inverse_transform_map.get(rot_type, rot_type)
-                return inverse_type.value
-        return "identity"
-
-    def _apply_transform_to_coord(self, coord: Tuple[int, int, int], transform_name: str) -> Tuple[int, int, int]:
-        """Apply 3D rotation to coordinate using symmetry manager's matrices."""
-        R = None
-        for rot_type in RotationType:
-            if rot_type.value == transform_name:
-                R = self._symmetry_manager.rotation_matrices[rot_type]
-                break
-        if R is None:
-            return coord
-
-        x, y, z = coord
-        center = 4  # (9-1)//2
-        centered = [x - center, y - center, z - center]
-        rotated = [
-            R[0][0]*centered[0] + R[0][1]*centered[1] + R[0][2]*centered[2],
-            R[1][0]*centered[0] + R[1][1]*centered[1] + R[1][2]*centered[2],
-            R[2][0]*centered[0] + R[2][1]*centered[1] + R[2][2]*centered[2],
-        ]
-        new_coord = (
-            int(round(rotated[0])) + center,
-            int(round(rotated[1])) + center,
-            int(round(rotated[2])) + center,
-        )
-        # Clamp to board
-        return (
-            max(0, min(8, new_coord[0])),
-            max(0, min(8, new_coord[1])),
-            max(0, min(8, new_coord[2]))
-        )
-
-    def clear_symmetry_cache(self) -> None:
-        self._canonical_cache.clear()
-        self._symmetry_stats = SymmetryStats()
-
-    def get_detailed_stats(self) -> Dict[str, Any]:
-        base = self.get_stats()
-        sym = self.get_symmetry_stats()
-        return {**base, **sym}

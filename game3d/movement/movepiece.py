@@ -1,304 +1,65 @@
-"""
-Optimized Move class with object pooling and minimal overhead
-Reduces Move.__init__ time from ~47s to <5s
-"""
-import struct
-from typing import Optional, Tuple, Dict, Any
-from enum import IntEnum
+# Eliminate Move class entirely - use structured arrays
 import numpy as np
-from game3d.common.common import coord_to_idx, idx_to_coord, _COORD_TO_IDX  # Added _COORD_TO_IDX import
+from numba import njit, prange
+from dataclasses import dataclass
+from typing import Optional
+from game3d.common.shared_types import COORD_DTYPE, MOVE_DTYPE
 
+# Flags for move types
 MOVE_FLAGS = {
-    'CAPTURE': 1 << 0,
-    'PROMOTION': 1 << 1,
-    'EN_PASSANT': 1 << 2,
-    'CASTLE': 1 << 3,
-    'ARCHERY': 1 << 4,
-    'HIVE': 1 << 5,
-    'SELF_DETONATE': 1 << 6,
-    'EXTENDED': 1 << 7
+    'QUIET': 0,
+    'CAPTURE': 1,
+    'PROMOTION': 2,
+    'EN_PASSANT': 3,
+    'CASTLE': 4
 }
 
-class MovePool:
-    """Object pool for Move instances to reduce allocation overhead."""
-
-    def __init__(self, initial_size: int = 10000):
-        self._pool = []
-        self._in_use = set()
-        self._initial_size = initial_size
-        self._initialized = False
-
-    def _initialize_pool(self):
-        """Initialize the pool with Move instances if not already done."""
-        if not self._initialized:
-            # Pre-allocate moves
-            for _ in range(self._initial_size):
-                self._pool.append(Move.__new__(Move))
-            self._initialized = True
-
-    def acquire(self):
-        """Get a move from the pool or create new one."""
-        self._initialize_pool()  # Ensure pool is initialized
-
-        if self._pool:
-            move = self._pool.pop()
-        else:
-            move = Move.__new__(Move)
-        self._in_use.add(id(move))
-        return move
-
-    def release(self, move):
-        """Return a move to the pool."""
-        move_id = id(move)
-        if move_id in self._in_use:
-            self._in_use.remove(move_id)
-            self._pool.append(move)
-
-    def release_all(self, moves):
-        """Release multiple moves at once."""
-        for move in moves:
-            self.release(move)
-
-# Global move pool
-_move_pool = MovePool()
-
+@dataclass
 class Move:
-    def __init__(
-        self,
-        from_coord: Tuple[int, int, int],
-        to_coord: Tuple[int, int, int],
-        flags: int = 0,
-        captured_piece: Optional[int] = None,
-        promotion_type: Optional[int] = None
-    ):
-        # Use struct for faster bit packing
-        from_idx = coord_to_idx(from_coord)
-        to_idx = coord_to_idx(to_coord)
-        cap = captured_piece or 0
-        prom = promotion_type or 0
-        self._data = struct.pack('Q', from_idx | (to_idx << 10) | (flags << 20) | (cap << 28) | (prom << 34))[0]
-        self._cached_hash = None  # Lazy hash computation
-        self.metadata = {}
-
-    def _compute_hash(self):
-        if self._cached_hash is None:
-            self._cached_hash = hash(self._data)
-        return self._cached_hash
-
-    @property
-    def from_coord(self) -> Tuple[int, int, int]:
-        return idx_to_coord(self._data & 0x3FF)
-
-    @property
-    def to_coord(self) -> Tuple[int, int, int]:
-        return idx_to_coord((self._data >> 10) & 0x3FF)
-
-    @classmethod
-    def create_simple(cls, from_coord: Tuple[int, int, int],
-                     to_coord: Tuple[int, int, int],
-                     is_capture: bool = False):
-        """Factory method for simple moves (most common case)."""
-        move = _move_pool.acquire()
-
-        from_idx = _COORD_TO_IDX[from_coord]
-        to_idx = _COORD_TO_IDX[to_coord]
-        flags = MOVE_FLAGS['CAPTURE'] if is_capture else 0
-
-        move._data = from_idx | (to_idx << 10) | (flags << 20)
-        move._cached_hash = None  # Lazy
-        return move
-
-    @classmethod
-    def create_batch(cls, from_coord: Tuple[int, int, int],
-                    to_coords: np.ndarray,
-                    captures: np.ndarray) -> list:
-        """
-        Create multiple moves from one source in batch.
-        Much faster than individual creation.
-        """
-        n = len(to_coords)
-        if n == 0:
-            return []
-
-        # Compute from_idx once
-        from_idx = from_coord[0] + from_coord[1] * 9 + from_coord[2] * 81
-
-        # Vectorized to_idxs
-        to_idxs = to_coords[:, 0] + to_coords[:, 1] * 9 + to_coords[:, 2] * 81
-
-        # Vectorized flags
-        capture_flag = MOVE_FLAGS['CAPTURE']
-        flags = np.where(captures, capture_flag << 20, 0)
-
-        # Vectorized _data computation (use int64 for safety)
-        datas = np.int64(from_idx) | (np.int64(to_idxs) << 10) | np.int64(flags)
-
-        # Now create instances in a tight loop
-        moves = [None] * n
-        for i in range(n):
-            move = _move_pool.acquire()
-            move._data = datas[i]
-            move._cached_hash = None  # Lazy
-            moves[i] = move
-
-        return moves
-
-    @property
-    def is_capture(self) -> bool:
-        return bool(self._data & (MOVE_FLAGS['CAPTURE'] << 20))
-
-    @property
-    def is_promotion(self) -> bool:
-        return bool(self._data & (MOVE_FLAGS['PROMOTION'] << 20))
-
-    @property
-    def flags(self) -> int:
-        return (self._data >> 20) & 0xFF
-
-    def __hash__(self):
-        return self._compute_hash()
-
-    def __eq__(self, other):
-        if not isinstance(other, Move):
-            return False
-        return self._data == other._data
-
-    def __repr__(self):
-        fx, fy, fz = self.from_coord
-        tx, ty, tz = self.to_coord
-        capture = "x" if self.is_capture else "-"
-        return f"({fx},{fy},{fz}){capture}({tx},{ty},{tz})"
-
-    def release(self):
-        _move_pool.release(self)
-
-    @property
-    def captured_piece_type(self) -> Optional[int]:
-        val = (self._data >> 28) & 0x3F
-        return val if val != 0 else None
-
-    @property
-    def promotion_type(self) -> Optional[int]:
-        val = (self._data >> 34) & 0x3F
-        return val if val != 0 else None
-
-
-def convert_legacy_move_args(
-    from_coord,
-    to_coord,
-    flags=0,  # Unused now, since we build it
-    captured_piece=None,
-    is_promotion=False,
-    promotion_type=None,
-    is_en_passant=False,
-    is_castle=False,
-    is_archery=False,
-    is_hive=False,
-    is_self_detonate=False,
-    is_capture=False,  # Add missing param
-    **kwargs
-):
     """
-    Convert legacy Move constructor arguments to optimized format.
+    Temporary Move class to satisfy existing imports.
+    Wraps numpy coordinates.
     """
-    flags = 0
-    if is_capture:
-        flags |= MOVE_FLAGS['CAPTURE']
-    if is_promotion:
-        flags |= MOVE_FLAGS['PROMOTION']
-    if is_en_passant:
-        flags |= MOVE_FLAGS['EN_PASSANT']
-    if is_castle:
-        flags |= MOVE_FLAGS['CASTLE']
-    if is_archery:
-        flags |= MOVE_FLAGS['ARCHERY']
-    if is_hive:
-        flags |= MOVE_FLAGS['HIVE']
-    if is_self_detonate:
-        flags |= MOVE_FLAGS['SELF_DETONATE']
+    from_coord: np.ndarray
+    to_coord: np.ndarray
+    promotion: Optional[int] = None
+    
+    def __post_init__(self):
+        # Ensure numpy arrays
+        if not isinstance(self.from_coord, np.ndarray):
+            self.from_coord = np.array(self.from_coord, dtype=COORD_DTYPE)
+        if not isinstance(self.to_coord, np.ndarray):
+            self.to_coord = np.array(self.to_coord, dtype=COORD_DTYPE)
 
-    # Fix: Use .ptype.value for Piece
-    captured_int = captured_piece.ptype.value if captured_piece and hasattr(captured_piece, 'ptype') else (captured_piece.value if captured_piece else None)
-    promotion_int = promotion_type.ptype.value if promotion_type and hasattr(promotion_type, 'ptype') else (promotion_type.value if promotion_type else None)
+# Structured move dtype - no Python objects
+MOVE_STRUCT_DTYPE = np.dtype([
+    ('from_x', COORD_DTYPE), ('from_y', COORD_DTYPE), ('from_z', COORD_DTYPE),
+    ('to_x', COORD_DTYPE), ('to_y', COORD_DTYPE), ('to_z', COORD_DTYPE),
+    ('flags', np.uint8),
+    ('piece_type', np.uint8),
+    ('captured_type', np.uint8)
+])
 
-    return Move(from_coord, to_coord, flags, captured_int, promotion_int)
+@njit(cache=True, parallel=True)
+def create_move_structures(
+    from_coords: np.ndarray,
+    to_coords: np.ndarray,
+    piece_types: np.ndarray,
+    capture_flags: np.ndarray
+) -> np.ndarray:
+    """Vectorized move structure creation."""
+    n = from_coords.shape[0]
+    moves = np.zeros(n, dtype=MOVE_STRUCT_DTYPE)
 
+    for i in prange(n):
+        moves[i]['from_x'] = from_coords[i, 0]
+        moves[i]['from_y'] = from_coords[i, 1]
+        moves[i]['from_z'] = from_coords[i, 2]
+        moves[i]['to_x'] = to_coords[i, 0]
+        moves[i]['to_y'] = to_coords[i, 1]
+        moves[i]['to_z'] = to_coords[i, 2]
+        moves[i]['piece_type'] = piece_types[i]
+        moves[i]['flags'] = capture_flags[i]
 
-# Monkey-patch replacement for existing Move class
-def optimize_move_creation():
-    """
-    Replace the existing Move class with Move.
-    Call this once at startup.
-    """
-    import game3d.movement.movepiece as movepiece_module
+    return moves.view(np.ndarray).reshape(-1, MOVE_STRUCT_DTYPE.itemsize // np.dtype(np.uint8).itemsize)
 
-    # Save original Move class
-    original_move = movepiece_module.Move
-
-    # Create wrapper that converts calls
-    class MoveWrapper:
-
-        def __new__(cls, *args, **kwargs):
-            if len(args) >= 2 and not kwargs:
-                # Simple case: Move(from_coord, to_coord)
-                return Move.create_simple(args[0], args[1])
-            else:
-                # Complex case: convert all arguments
-                return convert_legacy_move_args(*args, **kwargs)
-
-        # Copy over class methods from original
-        @classmethod
-        def create_archery_move(cls, *args, **kwargs):
-            return original_move.create_archery_move(*args, **kwargs)
-
-        @classmethod
-        def create_hive_move(cls, *args, **kwargs):
-            return original_move.create_hive_move(*args, **kwargs)
-
-        @classmethod
-        def create_castle_move(cls, *args, **kwargs):
-            return original_move.create_castle_move(*args, **kwargs)
-
-    # Replace the module's Move class
-    movepiece_module.Move = MoveWrapper
-
-    print("Move class optimized - using object pooling and bit packing")
-
-
-# ==============================================================================
-# MOVE RECEIPT - Result object for move submission
-# ==============================================================================
-
-class MoveReceipt:
-    """Receipt returned after move submission with validation results."""
-
-    __slots__ = (
-        'new_state', 'is_legal', 'is_game_over', 'result',
-        'message', 'move_time_ms', 'cache_stats'
-    )
-
-    def __init__(
-        self,
-        new_state: Any,  # GameState type hint causes circular import
-        is_legal: bool,
-        is_game_over: bool,
-        result: Optional[Any],  # Result enum
-        message: str = "",
-        move_time_ms: float = 0.0,
-        cache_stats: Optional[Dict[str, Any]] = None
-    ):
-        self.new_state = new_state
-        self.is_legal = is_legal
-        self.is_game_over = is_game_over
-        self.result = result
-        self.message = message
-        self.move_time_ms = move_time_ms
-        self.cache_stats = cache_stats or {}
-
-    def __repr__(self) -> str:
-        status = "LEGAL" if self.is_legal else "ILLEGAL"
-        return f"MoveReceipt({status}, {self.move_time_ms:.2f}ms, {self.message})"
-
-    def __bool__(self) -> bool:
-        """Allow boolean checks: if receipt: ..."""
-        return self.is_legal

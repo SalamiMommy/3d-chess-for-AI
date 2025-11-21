@@ -1,23 +1,59 @@
-import torch
-from .enums import Color, PieceType
+"""Optimized piece module with numpy-native operations."""
 
-class Piece:
-    """Immutable piece descriptor."""
-    __slots__ = ("color", "ptype")
+import numpy as np
+from game3d.common.shared_types import COLOR_DTYPE, PIECE_TYPE_DTYPE, PieceDtype
+from game3d.common.shared_types import Color, PieceType
 
-    def __init__(self, color: Color, ptype: PieceType):
-        self.color = color
-        self.ptype = ptype
+def get_piece_by_index_optimized(index: int, pieces_array: np.ndarray) -> np.ndarray:
+    """Get piece at specific index from pieces array."""
+    if index < 0 or index >= len(pieces_array):
+        return np.array([], dtype=PieceDtype)
+    return pieces_array[index:index+1]
 
-    def to_tensor(self) -> torch.Tensor:
-        """Returns shape (2,) int8 tensor: [color_value, ptype_value]."""
-        return torch.tensor([self.color.value, self.ptype.value], dtype=torch.int8)
+# Constants using proper enums
+WHITE = Color.WHITE
+BLACK = Color.BLACK
+PAWN = PieceType.PAWN
+KNIGHT = PieceType.KNIGHT
+BISHOP = PieceType.BISHOP
+ROOK = PieceType.ROOK
+QUEEN = PieceType.QUEEN
+KING = PieceType.KING
+EMPTY = Color.EMPTY
 
-    def __hash__(self):
-        return hash((self.color, self.ptype))
+def create_piece_from_array(piece_data: np.ndarray) -> np.ndarray:
+    """Create validated piece from numpy array."""
+    if piece_data.shape != () or piece_data.dtype != PieceDtype:
+        raise ValueError("Invalid piece data")
+    return piece_data.copy()
 
-    def __eq__(self, other):
-        return isinstance(other, Piece) and self.color == other.color and self.ptype == other.ptype
+def extract_piece_properties(pieces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Extract color and type arrays from piece array."""
+    return pieces['color'].copy(), pieces['piece_type'].copy()
 
-    def __repr__(self) -> str:
-        return f"Piece({self.color.name}, {self.ptype.name})"
+def compare_pieces(pieces1: np.ndarray, pieces2: np.ndarray) -> np.ndarray:
+    """Compare piece arrays."""
+    if pieces1.shape != pieces2.shape:
+        raise ValueError("pieces1 and pieces2 must have same shape")
+    return (pieces1['color'] == pieces2['color']) & (pieces1['piece_type'] == pieces2['piece_type'])
+
+def count_piece_types(pieces: np.ndarray) -> np.ndarray:
+    """Count occurrences of each piece type."""
+    return np.bincount(pieces['piece_type'], minlength=256)
+
+def get_piece_stats(pieces: np.ndarray) -> dict:
+    """Get comprehensive statistics."""
+    colors = pieces['color']
+    return {
+        'total': len(pieces),
+        'white_pieces': int(np.sum(colors == WHITE)),
+        'black_pieces': int(np.sum(colors == BLACK)),
+        'piece_counts': count_piece_types(pieces)
+    }
+
+# Export
+__all__ = [
+    'PieceDtype', 'create_piece_from_array', 'extract_piece_properties',
+    'compare_pieces', 'count_piece_types', 'get_piece_stats', 'get_piece_by_index_optimized',
+    'WHITE', 'BLACK', 'PAWN', 'KNIGHT', 'BISHOP', 'ROOK', 'QUEEN', 'KING', 'EMPTY'
+]

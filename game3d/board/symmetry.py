@@ -1,373 +1,300 @@
-from __future__ import annotations
-"""
-game3d/board/symmetry.py
-Tensor-based ROTATIONAL symmetry operations for 9x9x9 3D chess board.
-Compatible with Board class tensor format: (N_TOTAL_PLANES, Z, Y, X)
-"""
+# game3d/board/symmetry.py
+"""Numpy-native symmetry transformations for 3D chess board - pure array operations."""
 
-import torch
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Set, Callable, Any
-from enum import Enum
-from dataclasses import dataclass
+from numba import njit, prange
+from typing import Tuple, Union, Optional
+import logging
 
-from game3d.common.common import (
-    SIZE_X, SIZE_Y, SIZE_Z, N_TOTAL_PLANES, N_COLOR_PLANES
+from game3d.common.shared_types import (
+    SIZE, N_TOTAL_PLANES, N_PIECE_TYPES, N_COLOR_PLANES,
+    COORD_DTYPE, INDEX_DTYPE, HASH_DTYPE, Color, COLOR_DTYPE, PIECE_TYPE_DTYPE
 )
-from game3d.pieces.enums import Color, PieceType
 
-class RotationType(Enum):
-    """24 ROTATIONAL symmetry operations only (full octahedral group)."""
-    IDENTITY = "identity"
+logger = logging.getLogger(__name__)
 
-    # Face rotations (9 total)
-    ROTATE_X_90 = "rotate_x_90"
-    ROTATE_X_180 = "rotate_x_180"
-    ROTATE_X_270 = "rotate_x_270"
-    ROTATE_Y_90 = "rotate_y_90"
-    ROTATE_Y_180 = "rotate_y_180"
-    ROTATE_Y_270 = "rotate_y_270"
-    ROTATE_Z_90 = "rotate_z_90"
-    ROTATE_Z_180 = "rotate_z_180"
-    ROTATE_Z_270 = "rotate_z_270"
+# =============================================================================
+# TRANSFORMATION MATRICES
+# =============================================================================
 
-    # Vertex rotations (8 total) - 120° around space diagonals
-    ROTATE_XYZ_120 = "rotate_xyz_120"
-    ROTATE_XYZ_240 = "rotate_xyz_240"
-    ROTATE_XYmZ_120 = "rotate_xymz_120"
-    ROTATE_XYmZ_240 = "rotate_xymz_240"
-    ROTATE_XmYZ_120 = "rotate_xmyz_120"
-    ROTATE_XmYZ_240 = "rotate_xmyz_240"
-    ROTATE_XmYmZ_120 = "rotate_xmymz_120"
-    ROTATE_XmYmZ_240 = "rotate_xmymz_240"
+# Pre-computed 3D rotation matrices for cube symmetries (10 unique transformations)
+# Each is a 3x3 integer matrix representing rotations around x, y, z axes
+TRANSFORM_MATRICES = np.array([
+    # 0: identity
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    # 1: rotate_x_90 (90° around x-axis)
+    [[1, 0, 0], [0, 0, -1], [0, 1, 0]],
+    # 2: rotate_x_270 (270° around x-axis)
+    [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+    # 3: rotate_x_180 (180° around x-axis)
+    [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+    # 4: rotate_y_90 (90° around y-axis)
+    [[0, 0, 1], [0, 1, 0], [-1, 0, 0]],
+    # 5: rotate_y_270 (270° around y-axis)
+    [[0, 0, -1], [0, 1, 0], [1, 0, 0]],
+    # 6: rotate_y_180 (180° around y-axis)
+    [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
+    # 7: rotate_z_90 (90° around z-axis)
+    [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+    # 8: rotate_z_270 (270° around z-axis)
+    [[0, 1, 0], [-1, 0, 0], [0, 0, 1]],
+    # 9: rotate_z_180 (180° around z-axis)
+    [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]
+], dtype=INDEX_DTYPE)
 
-    # Edge rotations (6 total) - 180° around edge midpoints
-    ROTATE_XY_EDGE = "rotate_xy_edge"
-    ROTATE_XmY_EDGE = "rotate_xmy_edge"
-    ROTATE_XZ_EDGE = "rotate_xz_edge"
-    ROTATE_XmZ_EDGE = "rotate_xmz_edge"
-    ROTATE_YZ_EDGE = "rotate_yz_edge"
-    ROTATE_YmZ_EDGE = "rotate_ymz_edge"
+N_SYMMETRIES = len(TRANSFORM_MATRICES)
 
-@dataclass
-class TensorTransformation:
-    """Represents a tensor ROTATIONAL transformation (no reflections)."""
-    name: str
-    transform_fn: Callable[[torch.Tensor], torch.Tensor]
-    inverse_fn: Callable[[torch.Tensor], torch.Tensor]
-    hash_multiplier: int
+# Center point for transformations (4,4,4 for 9x9x9 board)
+TRANSFORM_CENTER = np.array([(SIZE - 1) // 2] * 3, dtype=np.float32)
+
+
+# =============================================================================
+# VECTORIZED COORDINATE TRANSFORMATIONS
+# =============================================================================
+
+@njit(cache=True, nogil=True)
+def transform_coordinate_numba(coord: np.ndarray, transform_idx: int) -> np.ndarray:
+    """
+    Apply 3D rotation to a single coordinate using numpy operations.
+
+    Args:
+        coord: Shape (3,) array [x, y, z]
+        transform_idx: Which transformation to apply (0-9)
+
+    Returns:
+        Transformed coordinate as shape (3,) array
+    """
+    # Convert to float for precise rotation
+    coord_float = coord.astype(np.float32)
+
+    # Center the coordinate around origin
+    centered = coord_float - TRANSFORM_CENTER
+
+    # Apply rotation matrix (3x3 @ (3,) -> (3,))
+    matrix = TRANSFORM_MATRICES[transform_idx]
+    rotated_x = matrix[0, 0] * centered[0] + matrix[0, 1] * centered[1] + matrix[0, 2] * centered[2]
+    rotated_y = matrix[1, 0] * centered[0] + matrix[1, 1] * centered[1] + matrix[1, 2] * centered[2]
+    rotated_z = matrix[2, 0] * centered[0] + matrix[2, 1] * centered[1] + matrix[2, 2] * centered[2]
+
+    # Translate back to board coordinates
+    result_x = rotated_x + TRANSFORM_CENTER[0]
+    result_y = rotated_y + TRANSFORM_CENTER[1]
+    result_z = rotated_z + TRANSFORM_CENTER[2]
+
+    # Round and clip to valid board coordinates
+    result = np.empty(3, dtype=COORD_DTYPE)
+    result[0] = int(round(result_x))
+    result[1] = int(round(result_y))
+    result[2] = int(round(result_z))
+
+    # Safety: ensure in bounds (should not be needed but guards against rounding errors)
+    if result[0] < 0: result[0] = 0
+    if result[0] >= SIZE: result[0] = SIZE - 1
+    if result[1] < 0: result[1] = 0
+    if result[1] >= SIZE: result[1] = SIZE - 1
+    if result[2] < 0: result[2] = 0
+    if result[2] >= SIZE: result[2] = SIZE - 1
+
+    return result
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def transform_coordinates_batch(coords: np.ndarray, transform_idx: int) -> np.ndarray:
+    """
+    Apply transformation to batch of coordinates in parallel.
+
+    Args:
+        coords: Shape (N, 3) array of coordinates
+        transform_idx: Which transformation to apply
+
+    Returns:
+        Shape (N, 3) array of transformed coordinates
+    """
+    n_coords = coords.shape[0]
+    result = np.empty_like(coords)
+
+    for i in prange(n_coords):
+        result[i] = transform_coordinate_numba(coords[i], transform_idx)
+
+    return result
+
+
+# =============================================================================
+# BOARD ARRAY TRANSFORMATION
+# =============================================================================
+@njit(cache=True, nogil=True)
+def transform_board_array(board_array: np.ndarray, transform_idx: int) -> np.ndarray:
+    transformed = np.zeros_like(board_array)
+
+    for plane in range(N_TOTAL_PLANES):
+        for z in range(SIZE):
+            for y in range(SIZE):
+                for x in range(SIZE):
+                    value = board_array[plane, z, y, x]
+                    if value != 0:
+                        # ✅ FIX 1: Create array in correct order directly
+                        coord_xyz = np.array([x, y, z], dtype=COORD_DTYPE)
+
+                        transformed_xyz = transform_coordinate_numba(coord_xyz, transform_idx)
+
+                        # ✅ FIX 2: Extract components directly instead of fancy indexing
+                        tz, ty, tx = transformed_xyz[2], transformed_xyz[1], transformed_xyz[0]
+
+                        if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                            transformed[plane, tz, ty, tx] = value
+
+    return transformed
+# =============================================================================
+# SYMMETRY MANAGER CLASS
+# =============================================================================
 
 class SymmetryManager:
-    _rotation_matrices = None
-    _initialized = False
+    """Numpy-native symmetry manager for 3D chess boards."""
 
-    def __init__(self):
-        if not SymmetryManager._initialized:
-            SymmetryManager._rotation_matrices = self._build_rotation_matrices()
-            SymmetryManager._initialized = True
-        self.rotation_matrices = SymmetryManager._rotation_matrices
-        self.size_x = SIZE_X
-        self.size_y = SIZE_Y
-        self.size_z = SIZE_Z
-        self.n_planes = N_TOTAL_PLANES
+    def __init__(self, cache_manager=None):
+        """
+        Initialize symmetry manager.
 
-        # Pre-compute all 24 rotational transformations
-        self.transformations = self._init_all_rotational_transformations()
-        self.canonical_cache = {}
-        self.rotation_matrices = self._build_rotation_matrices()
+        Args:
+            cache_manager: Optional cache manager for integration
+        """
+        self.cache_manager = cache_manager
+        self.transform_matrices = TRANSFORM_MATRICES
+        self.n_symmetries = N_SYMMETRIES
 
-        # Performance tracking
-        self.symmetry_operations = 0
-        self.cache_hits = 0
-        self.cache_misses = 0
+        # For this set of rotations, each transform is its own inverse
+        self.inverse_transforms = np.arange(N_SYMMETRIES, dtype=INDEX_DTYPE)
 
-    def _build_rotation_matrices(self) -> Dict[RotationType, np.ndarray]:
-        """Build matrices for all 24 rotational symmetries."""
-        matrices = {}
+    def get_canonical_form(self, board) -> Tuple[np.ndarray, int]:
+        """
+        Find canonical form of board by testing all symmetry transformations.
+        The canonical form is the one with the smallest Zobrist hash.
 
-        # Identity
-        matrices[RotationType.IDENTITY] = np.eye(3, dtype=np.int32)
+        Args:
+            board: Board object with .array() method OR 4D numpy array
 
-        # Face rotations
-        matrices[RotationType.ROTATE_X_90] = np.array([[1,0,0],[0,0,-1],[0,1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_X_180] = np.array([[1,0,0],[0,-1,0],[0,0,-1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_X_270] = np.array([[1,0,0],[0,0,1],[0,-1,0]], dtype=np.int32)
+        Returns:
+            Tuple of:
+            - canonical_board_array: Shape (N_TOTAL_PLANES, SIZE, SIZE, SIZE)
+            - transform_index: Integer 0-9 indicating which transformation yields canonical form
+        """
+        # Extract board array from any board-like object
+        if hasattr(board, 'array'):
+            board_array = board.array()
+        elif isinstance(board, np.ndarray):
+            board_array = board
+        else:
+            raise TypeError(f"Board must provide array() or be ndarray, got {type(board)}")
 
-        matrices[RotationType.ROTATE_Y_90] = np.array([[0,0,1],[0,1,0],[-1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_Y_180] = np.array([[-1,0,0],[0,1,0],[0,0,-1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_Y_270] = np.array([[0,0,-1],[0,1,0],[1,0,0]], dtype=np.int32)
+        # Validate shape
+        if board_array.shape != (N_TOTAL_PLANES, SIZE, SIZE, SIZE):
+            raise ValueError(
+                f"Board array must be shape {(N_TOTAL_PLANES, SIZE, SIZE, SIZE)}, "
+                f"got {board_array.shape}"
+            )
 
-        matrices[RotationType.ROTATE_Z_90] = np.array([[0,-1,0],[1,0,0],[0,0,1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_Z_180] = np.array([[-1,0,0],[0,-1,0],[0,0,1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_Z_270] = np.array([[0,1,0],[-1,0,0],[0,0,1]], dtype=np.int32)
+        # Special case: empty board is its own canonical form
+        if np.sum(board_array) == 0:
+            return board_array, 0
 
-        # Vertex rotations (120° around diagonals)
-        matrices[RotationType.ROTATE_XYZ_120] = np.array([[0,0,1],[1,0,0],[0,1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XYZ_240] = np.array([[0,1,0],[0,0,1],[1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XYmZ_120] = np.array([[0,0,-1],[1,0,0],[0,-1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XYmZ_240] = np.array([[0,-1,0],[0,0,-1],[1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmYZ_120] = np.array([[0,0,1],[-1,0,0],[0,-1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmYZ_240] = np.array([[0,-1,0],[0,0,1],[-1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmYmZ_120] = np.array([[0,0,-1],[-1,0,0],[0,1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmYmZ_240] = np.array([[0,1,0],[0,0,-1],[-1,0,0]], dtype=np.int32)
+        # Initialize with original board
+        from game3d.cache.caches.zobrist import compute_zobrist
+        min_hash = compute_zobrist(board_array, Color.WHITE)
+        min_transform = 0
+        min_array = board_array
 
-        # Edge rotations (180° around edges)
-        matrices[RotationType.ROTATE_XY_EDGE] = np.array([[0,1,0],[1,0,0],[0,0,-1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmY_EDGE] = np.array([[0,-1,0],[-1,0,0],[0,0,-1]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XZ_EDGE] = np.array([[0,0,1],[0,-1,0],[1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_XmZ_EDGE] = np.array([[0,0,-1],[0,-1,0],[-1,0,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_YZ_EDGE] = np.array([[-1,0,0],[0,0,1],[0,1,0]], dtype=np.int32)
-        matrices[RotationType.ROTATE_YmZ_EDGE] = np.array([[-1,0,0],[0,0,-1],[0,-1,0]], dtype=np.int32)
+        # Test all symmetry transformations
+        for i in range(1, self.n_symmetries):
+            # Apply transformation
+            transformed = transform_board_array(board_array, i)
 
-        return matrices
+            # Compute hash (use WHITE perspective for consistency)
+            hash_val = compute_zobrist(transformed, Color.WHITE)
 
-    def _init_all_rotational_transformations(self) -> List[TensorTransformation]:
-        """Initialize all 24 rotational transformations."""
-        transformations = []
-        primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
-                 53, 59, 61, 67, 71, 73, 79, 83, 89]
+            # Keep the smallest hash (canonical form)
+            if hash_val < min_hash:
+                min_hash = hash_val
+                min_transform = i
+                min_array = transformed
 
-        # Create transformations for each rotation type
-        for i, rotation_type in enumerate(RotationType):
-            transform_fn, inverse_fn = self._create_rotation_functions(rotation_type)
+        return min_array, min_transform
 
-            transformations.append(TensorTransformation(
-                name=rotation_type.value,
-                transform_fn=transform_fn,
-                inverse_fn=inverse_fn,
-                hash_multiplier=primes[i]
-            ))
+    def transform_move(self, move: 'CompactMove', transform_idx: int) -> 'CompactMove':
+        """
+        Transform a move's coordinates according to symmetry.
 
-        return transformations
+        Args:
+            move: CompactMove object to transform
+            transform_idx: Which transformation to apply (0-9)
 
-    def _create_rotation_functions(self, rotation_type: RotationType) -> Tuple[Callable, Callable]:
-        """Create transform and inverse functions for a specific rotation type."""
-        if rotation_type == RotationType.IDENTITY:
-            return lambda t: t, lambda t: t
+        Returns:
+            New CompactMove with transformed coordinates
+        """
+        # Import here to avoid circular imports
+        from game3d.cache.caches.transposition import CompactMove
 
-        # For all rotations, use coordinate mapping that works with (C, Z, Y, X) format
-        def transform_fn(tensor):
-            return self._apply_rotation_by_type(tensor, rotation_type)
+        from_coord = move.from_coord
+        to_coord = move.to_coord
 
-        def inverse_fn(tensor):
-            inverse_type = self._get_inverse_rotation(rotation_type)
-            return self._apply_rotation_by_type(tensor, inverse_type)
+        # Transform coordinates
+        transformed_from = transform_coordinate_numba(from_coord, transform_idx)
+        transformed_to = transform_coordinate_numba(to_coord, transform_idx)
 
-        return transform_fn, inverse_fn
+        # Create new move with transformed coordinates
+        return CompactMove(
+            transformed_from,
+            transformed_to,
+            move.get_piece_type(),
+            move.is_capture,
+            move.get_captured_type(),
+            move.is_promotion
+        )
 
-    def _get_inverse_rotation(self, rotation_type: RotationType) -> RotationType:
-        """Get the inverse rotation type."""
-        inverse_map = {
-            RotationType.ROTATE_X_90: RotationType.ROTATE_X_270,
-            RotationType.ROTATE_X_270: RotationType.ROTATE_X_90,
-            RotationType.ROTATE_Y_90: RotationType.ROTATE_Y_270,
-            RotationType.ROTATE_Y_270: RotationType.ROTATE_Y_90,
-            RotationType.ROTATE_Z_90: RotationType.ROTATE_Z_270,
-            RotationType.ROTATE_Z_270: RotationType.ROTATE_Z_90,
-            RotationType.ROTATE_XYZ_120: RotationType.ROTATE_XYZ_240,
-            RotationType.ROTATE_XYZ_240: RotationType.ROTATE_XYZ_120,
-            RotationType.ROTATE_XYmZ_120: RotationType.ROTATE_XYmZ_240,
-            RotationType.ROTATE_XYmZ_240: RotationType.ROTATE_XYmZ_120,
-            RotationType.ROTATE_XmYZ_120: RotationType.ROTATE_XmYZ_240,
-            RotationType.ROTATE_XmYZ_240: RotationType.ROTATE_XmYZ_120,
-            RotationType.ROTATE_XmYmZ_120: RotationType.ROTATE_XmYmZ_240,
-            RotationType.ROTATE_XmYmZ_240: RotationType.ROTATE_XmYmZ_120,
-        }
-        # 180° rotations and edge rotations are their own inverses
-        return inverse_map.get(rotation_type, rotation_type)
+    def invert_move_transform(self, move: 'CompactMove', transform_idx: int) -> 'CompactMove':
+        """
+        Transform a move back from canonical to original orientation.
 
-    def _apply_rotation_by_type(self, tensor: torch.Tensor, rotation_type: RotationType) -> torch.Tensor:
-        """Apply a specific rotation type to the tensor using coordinate mapping."""
-        if rotation_type == RotationType.IDENTITY:
-            return tensor.clone()
+        Args:
+            move: CompactMove in canonical orientation
+            transform_idx: Transform index used to create canonical form
 
-        # Get rotation matrix for this rotation type
-        R = self.rotation_matrices[rotation_type]
-        return self._apply_rotation_matrix(tensor, R)
+        Returns:
+            CompactMove in original board orientation
+        """
+        # Since our transforms are self-inverse, we can reuse transform_move
+        # For non-self-inverse transforms, use: inverse_idx = self.inverse_transforms[transform_idx]
+        return self.transform_move(move, transform_idx)
 
-    def _apply_rotation_matrix(self, tensor: torch.Tensor, R: np.ndarray) -> torch.Tensor:
-        """Apply a rotation matrix to the tensor using coordinate mapping."""
-        R_tensor = torch.tensor(R, dtype=torch.float32, device=tensor.device)
+    def get_transform_matrix(self, transform_idx: int) -> np.ndarray:
+        """
+        Get the 3x3 rotation matrix for a transform index.
 
-        # Create coordinate grid for SPATIAL dimensions (Z, Y, X)
-        coords = torch.stack(torch.meshgrid(
-            torch.arange(self.size_z, device=tensor.device),  # Z dimension
-            torch.arange(self.size_y, device=tensor.device),  # Y dimension
-            torch.arange(self.size_x, device=tensor.device),  # X dimension
-            indexing='ij'
-        ), dim=-1).float()  # Shape: (Z, Y, X, 3)
+        Args:
+            transform_idx: Integer 0-9
 
-        # Center coordinates
-        center = torch.tensor([(self.size_z-1)/2, (self.size_y-1)/2, (self.size_x-1)/2],
-                            device=tensor.device)
-        centered_coords = coords - center
+        Returns:
+            Shape (3, 3) rotation matrix
+        """
+        if not (0 <= transform_idx < self.n_symmetries):
+            raise ValueError(f"Transform index must be 0-{self.n_symmetries-1}, got {transform_idx}")
 
-        # Apply rotation
-        rotated_coords = torch.einsum('ij,zyxj->zyxi', R_tensor, centered_coords)
-        new_coords = rotated_coords + center
+        return self.transform_matrices[transform_idx].copy()
 
-        # Round to nearest integer and clamp to bounds
-        new_coords = torch.round(new_coords).long()
-        new_coords = torch.clamp(new_coords, 0, torch.tensor([self.size_z-1, self.size_y-1, self.size_x-1],
-                                                        device=tensor.device))
+    def get_inverse_transform(self, transform_idx: int) -> int:
+        """
+        Get the inverse transform index.
 
-        # Create new tensor by gathering from original
-        channels = tensor.shape[0]
-        result = torch.zeros_like(tensor)
+        Note: For rotation matrices, the inverse is the transpose.
+        Our rotation matrices are orthogonal, so inverse = transpose.
+        Many are self-inverse (transpose = original).
 
-        # For each channel, gather values from rotated coordinates
-        for c in range(channels):
-            # Use advanced indexing to remap values
-            result[c] = tensor[c, new_coords[..., 0], new_coords[..., 1], new_coords[..., 2]]
+        Args:
+            transform_idx: Integer 0-9
 
-        return result
+        Returns:
+            Integer inverse transform index
+        """
+        if not (0 <= transform_idx < self.n_symmetries):
+            raise ValueError(f"Transform index must be 0-{self.n_symmetries-1}, got {transform_idx}")
 
-    def apply_transformation(self, tensor: torch.Tensor,
-                           transformation: TensorTransformation) -> torch.Tensor:
-        """Apply rotational transformation to tensor."""
-        self.symmetry_operations += 1
-        return transformation.transform_fn(tensor)
-
-    def get_symmetric_boards(self, board) -> List[Tuple[str, 'Board']]:
-        """Generate all rotationally symmetric variants of a board."""
-        from game3d.board.board import Board
-        tensor = board.tensor()
-        symmetric_boards = []
-
-        for transformation in self.transformations:
-            if transformation.name == "identity":
-                continue
-
-            cache_key = (hash(tensor.tobytes()), transformation.name)
-            if cache_key in self.canonical_cache:
-                sym_board = self.canonical_cache[cache_key]
-                symmetric_boards.append((transformation.name, sym_board))
-                self.cache_hits += 1
-                continue
-
-            # Apply transformation to tensor
-            transformed_tensor = self.apply_transformation(tensor, transformation)
-            sym_board = Board(transformed_tensor)
-
-            symmetric_boards.append((transformation.name, sym_board))
-            self.canonical_cache[cache_key] = sym_board
-            self.cache_misses += 1
-
-            if len(self.canonical_cache) > 5000:
-                oldest_key = next(iter(self.canonical_cache))
-                del self.canonical_cache[oldest_key]
-
-        return symmetric_boards
-
-    def get_canonical_form(self, board) -> Tuple['Board', str]:
-        """Return canonical form using all 24 rotational symmetries."""
-        from game3d.board.board import Board
-        tensor = board.tensor()
-
-        cache_key = tensor.data_ptr()
-        if cache_key in self.canonical_cache:
-            canonical_data = self.canonical_cache[cache_key]
-            return canonical_data['board'], canonical_data['transformation']
-
-        # Generate all symmetric variants
-        symmetric_variants = self.get_symmetric_boards(board)
-        all_variants = [("identity", board)] + symmetric_variants
-
-        # Convert to comparable format
-        variant_representations = []
-        for name, sym_board in all_variants:
-            representation = self._board_to_comparable(sym_board)
-            variant_representations.append((representation, name, sym_board))
-
-        # Sort to find "smallest" representation
-        variant_representations.sort(key=lambda x: x[0])
-
-        # Return canonical form and transformation used
-        canonical_rep, transformation_name, canonical_board = variant_representations[0]
-
-        # Cache the result
-        self.canonical_cache[cache_key] = {
-            'board': canonical_board,
-            'transformation': transformation_name
-        }
-
-        return canonical_board, transformation_name
-
-    def _board_to_comparable(self, board) -> Tuple:
-        """Convert board to comparable representation."""
-        tensor = board.tensor()
-        flat_tensor = tensor.flatten()
-        first_elements = tuple(int(val) for val in flat_tensor[:100].tolist())  # Use int for better comparison
-        total_sum = float(tensor.sum())
-        non_zero_count = int((tensor != 0).sum())
-        return (first_elements, total_sum, non_zero_count)
-
-    def is_symmetric_position(self, board1, board2) -> bool:
-        """Check if two board positions are rotationally equivalent."""
-        canonical1, _ = self.get_canonical_form(board1)
-        canonical2, _ = self.get_canonical_form(board2)
-        return torch.equal(canonical1.tensor(), canonical2.tensor())
-
-    def get_rotation_count(self) -> int:
-        """Return the number of rotational symmetries (24)."""
-        return len(self.transformations)
-
-    def clear_cache(self) -> None:
-        """Clear symmetry cache."""
-        self.canonical_cache.clear()
-        self.cache_hits = 0
-        self.cache_misses = 0
-
-    def get_performance_stats(self) -> Dict[str, int]:
-        """Get performance statistics."""
-        total_operations = self.symmetry_operations
-        total_cache_accesses = self.cache_hits + self.cache_misses
-        hit_rate = self.cache_hits / max(1, total_cache_accesses)
-
-        return {
-            'symmetry_operations': total_operations,
-            'cache_hits': self.cache_hits,
-            'cache_misses': self.cache_misses,
-            'cache_hit_rate': hit_rate,
-            'cache_size': len(self.canonical_cache),
-            'rotation_count': self.get_rotation_count()
-        }
-
-    # Add these methods to SymmetryManager class:
-
-    def normalize_position(self, position: Tuple[int, int, int]) -> Tuple[int, int, int]:
-        """Normalize position using board symmetry."""
-        x, y, z = position
-        center = (self.size_x - 1) // 2
-
-        # Map to first octant using symmetry
-        norm_x = min(x, self.size_x - 1 - x) if x < center else max(x, self.size_x - 1 - x)
-        norm_y = min(y, self.size_y - 1 - y) if y < center else max(y, self.size_y - 1 - y)
-        norm_z = min(z, self.size_z - 1 - z) if z < center else max(z, self.size_z - 1 - z)
-
-        return (norm_x, norm_y, norm_z)
-
-    def create_movement_symmetry_key(self, piece_type: Any, position: Tuple[int, int, int],
-                                    color: Any) -> Tuple:
-        """Create symmetry-aware cache key for movement generation."""
-        norm_pos = self.normalize_position(position)
-        return (piece_type, norm_pos, color)
-
-    def get_or_compute_with_symmetry(self, key: Any, compute_fn: Callable,
-                                    use_symmetry: bool = True) -> Any:
-        """Generic symmetry-aware caching with LRU eviction."""
-        if use_symmetry and key in self.canonical_cache:
-            self.cache_hits += 1
-            return self.canonical_cache[key]
-
-        self.cache_misses += 1
-        result = compute_fn()
-
-        if use_symmetry:
-            self.canonical_cache[key] = result
-            # LRU eviction if needed
-            if len(self.canonical_cache) > 5000:
-                oldest_key = next(iter(self.canonical_cache))
-                del self.canonical_cache[oldest_key]
-
-        return result
+        return int(self.inverse_transforms[transform_idx])

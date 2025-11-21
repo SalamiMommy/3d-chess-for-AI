@@ -1,296 +1,184 @@
-# game3d/attacks/check.py
 from __future__ import annotations
-from typing import Protocol, Optional, runtime_checkable, Dict, Set, Tuple, List, Any
-from dataclasses import dataclass
-from enum import Enum
-import weakref
-from typing import Iterable
-from threading import local
+from typing import Protocol, Optional, Dict, List, Any, NamedTuple, TYPE_CHECKING, Union
+from enum import IntEnum
+import numpy as np
+from numba import njit, prange
 
-# -----------  bring in the constants that live in common  -----------
-from game3d.common.common import (
-    Coord,
-    in_bounds,
-    N_PIECE_TYPES,
-    N_COLOR_PLANES,
-    N_TOTAL_PLANES,
-    PIECE_SLICE,
-    COLOR_SLICE,
+from game3d.common.shared_types import (
+    PieceType, Color, SIZE, COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
+    COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, MAX_COORD_VALUE, MIN_COORD_VALUE
 )
-# --------------------------------------------------------------------
+from game3d.common.coord_utils import in_bounds_vectorized
 
-from game3d.pieces.piece import Piece
-from game3d.pieces.enums import PieceType, Color, Result
-from game3d.movement.movepiece import MOVE_FLAGS
+if TYPE_CHECKING:
+    from game3d.attacks.movepiece import Move
+    from game3d.cache.manager import CacheManager
 
-# ==============================================================================
-# OPTIMIZATION CONSTANTS
-# ==============================================================================
-_thread_local = local()
+Coord = np.ndarray  # Shape: (3,)
 
-@runtime_checkable
-class BoardProto(Protocol):
-    def list_occupied(self) -> Iterable[Tuple[Coord, Piece]]: ...
-    def piece_at(self, coord: Coord) -> Optional[Piece]: ...
-
-@dataclass(slots=True)
-class CheckCache:
-    """Optimized cache for check detection results."""
-    king_position: Optional[Tuple[int, int, int]] = None
-    priests_alive: bool = False
-    last_board_hash: int = 0
-    last_player: Color = Color.WHITE
-
-class CheckStatus(Enum):
-    """Check status enumeration."""
+class CheckStatus(IntEnum):
+    """Check status for game state evaluation."""
     SAFE = 0
     CHECK = 1
     CHECKMATE = 2
     STALEMATE = 3
 
-# ==============================================================================
-# OPTIMIZED CHECK DETECTION USING MOVE CACHE
-# ==============================================================================
-def _get_cache_from_board(board: BoardProto) -> Optional[Any]:
-    """Try to get cache manager from board if available."""
-    if hasattr(board, 'cache_manager'):
-        return board.cache_manager
-    return None
+class KingInCheckInfo(NamedTuple):
+    """Information about king in check."""
+    king_coord: np.ndarray
+    color: int
 
-def _any_priest_alive(board: BoardProto, king_color: Color | None = None, cache=None) -> bool:
-    """Check if any priest is alive for the given color."""
-    # Fast path: if we're already in move generation, use simple check
-    if getattr(_thread_local, 'in_move_generation', False):
-        return _simple_priest_check(board, king_color)
-
-    # Ensure we have a cache
+def _get_priest_count(board, king_color: Optional[Color] = None, cache: Any = None) -> int:
+    """Get count of priests for the given king color."""
+    cache = cache or getattr(board, 'cache_manager', None)
     if cache is None:
-        cache = _get_cache_from_board(board)
-
-    # Use cache if available
-    if cache and hasattr(cache, 'move'):
-        # Check if we have priest counts cached
-        if hasattr(cache.move, '_priest_count'):
-            if king_color is None:
-                return any(count > 0 for count in cache.move._priest_count.values())
-            return cache.move._priest_count.get(king_color, 0) > 0
-
-    # Fallback to simple check
-    return _simple_priest_check(board, king_color)
-
-def _simple_priest_check(board: BoardProto, king_color: Color | None = None) -> bool:
-    """Simple priest check that doesn't generate moves."""
-    for coord, piece in board.list_occupied():
-        if piece.ptype == PieceType.PRIEST:
-            if king_color is None or piece.color == king_color:
-                return True
-    return False
-
-def _find_king_position(board: BoardProto, king_color: Color, cache=None) -> Optional[Tuple[int, int, int]]:
-    """Find king position with caching."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
-
-    # Try move cache first
-    if cache and hasattr(cache, 'move'):
-        king_pos = cache.move._king_pos.get(king_color)
-        if king_pos:
-            # Verify the king is still there
-            piece = board.piece_at(king_pos)
-            if piece and piece.color == king_color and piece.ptype == PieceType.KING:
-                return king_pos
-
-    # Standard search
-    for coord, piece in board.list_occupied():
-        if piece.color == king_color and piece.ptype == PieceType.KING:
-            # Update cache if available
-            if cache and hasattr(cache, 'move'):
-                cache.move._king_pos[king_color] = coord
-            return coord
-    return None
-
-def _get_attacked_squares_from_move_cache(
-    board: BoardProto,
-    attacker_color: Color,
-    cache=None
-) -> Set[Tuple[int, int, int]]:
-    """Get all squares attacked by attacker_color using move cache."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
-
-    if cache and hasattr(cache, 'move'):
-        # Use the move cache to get attacked squares
-        return cache.move.get_attacked_squares(attacker_color)
-
-    # Fallback to calculation (should rarely happen)
-    return _calculate_attacked_squares_fallback(board, attacker_color, cache)
-
-def _calculate_attacked_squares_fallback(
-    board: BoardProto,
-    attacker_color: Color,
-    cache=None
-) -> Set[Tuple[int, int, int]]:
-    """Fallback calculation of attacked squares when move cache isn't available."""
-    attacked = set()
-
-    # Get all pieces of the attacker color
-    for coord, piece in board.list_occupied():
-        if piece.color != attacker_color:
-            continue
-
-        # Generate moves for this piece
-        moves = _generate_piece_moves(board, coord, piece, cache)
-        for move in moves:
-            attacked.add(move.to_coord)
-
-    _stats.attack_calculations += 1
-    return attacked
-
-def _generate_piece_moves(
-    board: BoardProto,
-    coord: Coord,
-    piece: Piece,
-    cache=None
-) -> List['Move']:
-    """Generate moves for a single piece."""
-    from game3d.movement.registry import get_dispatcher
-
-    dispatcher = get_dispatcher(piece.ptype)
-    if dispatcher is None:
-        return []
-
-    # Create minimal state for move generation
-    from game3d.game.gamestate import GameState
-    tmp_state = GameState.__new__(GameState)
-    tmp_state.board = board
-    tmp_state.color = piece.color
-
-    # Try to use cache if available
-    if cache is not None:
-        tmp_state.cache = cache
-    else:
-        # Create a minimal cache if none provided
         from game3d.cache.manager import get_cache_manager
-        tmp_state.cache = get_cache_manager(board, piece.color)
+        cache = get_cache_manager(board, king_color or Color.WHITE)
 
-    try:
-        return dispatcher(tmp_state, *coord)
-    except Exception:
+    if cache is not None and hasattr(cache, 'has_priest'):
+        # Check if any priest exists for this color
+        return 0 if not cache.has_priest(king_color) else 1
+    return 0
+
+
+def _find_king_position(board, king_color: int, cache=None) -> Optional[np.ndarray]:
+    """Find king position using cache manager's occupancy cache exclusively."""
+    cache = cache or getattr(board, 'cache_manager', None)
+
+    # Use cache manager's occupancy cache - this is the primary and only method
+    if cache is not None and hasattr(cache, 'occupancy_cache') and hasattr(cache.occupancy_cache, 'find_king'):
+        king_pos = cache.occupancy_cache.find_king(king_color)
+        if king_pos is not None:
+            return king_pos.astype(COORD_DTYPE)
+    
+    # If cache manager or occupancy cache is not available, raise an error
+    # This ensures check detection always uses the optimized cache-based approach
+    if cache is None:
+        raise RuntimeError("Cache manager not available for king position lookup")
+    elif not hasattr(cache, 'occupancy_cache'):
+        raise RuntimeError("Cache manager does not have occupancy cache for king position lookup")
+    elif not hasattr(cache.occupancy_cache, 'find_king'):
+        raise RuntimeError("Occupancy cache does not have find_king method for king position lookup")
+    
+    return None
+
+
+def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None) -> np.ndarray:
+    """Get attacked squares using move cache - calculates from cached moves."""
+    mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+
+    # Use move cache for optimal attack calculation
+    if cache and hasattr(cache, 'move_cache'):
+        cached_moves = cache.move_cache.get_cached_moves(attacker_color)
+        if cached_moves is None or len(cached_moves) == 0:
+            return mask
+
+        # Extract destination coordinates from cached moves to determine attacked squares
+        for move in cached_moves:
+            dest = move.to_coord.astype(COORD_DTYPE)
+            if (0 <= dest[0] < SIZE and 0 <= dest[1] < SIZE and 0 <= dest[2] < SIZE):
+                mask[dest[2], dest[1], dest[0]] = True
+
+        return mask
+
+    return mask
+
+
+def _generate_piece_moves(board, coord: np.ndarray, piece: np.ndarray, cache=None) -> List['Move']:
+    """Generate moves for a piece using cache manager.
+
+    This function leverages the move cache for optimal performance.
+    """
+    cache = cache or getattr(board, 'cache_manager', None)
+
+    if cache is None or not hasattr(cache, 'move_cache'):
         return []
 
-def square_attacked_by(
-    board: BoardProto,
-    current_player: Color,
-    square: Tuple[int, int, int],
-    attacker_color: Color,
-    cache=None
-) -> bool:
-    """Optimized square attack detection using move cache."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
+    # Get cached moves from move cache
+    cached_moves = cache.move_cache.get_cached_moves(piece["color"])
+    if cached_moves is None or len(cached_moves) == 0:
+        return []
 
-    # Use attacked squares from move cache
-    attacked_squares = _get_attacked_squares_from_move_cache(board, attacker_color, cache)
-    return square in attacked_squares
+    # Filter moves for this specific piece
+    piece_moves = []
+    for move in cached_moves:
+        if np.array_equal(move.from_coord, coord):
+            piece_moves.append(move)
 
-def king_in_check(
-    board: BoardProto,
-    current_player: Color,
-    king_color: Color,
-    cache=None
-) -> bool:
-    """Check if king is in check using move cache."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
+    return piece_moves
 
-    # Fast path: if priests are alive, no check
-    if _any_priest_alive(board, king_color, cache):
+def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None) -> bool:
+    """Check if a square is attacked by a specific color."""
+    square = square.astype(COORD_DTYPE)
+
+    # Vectorized bounds checking
+    if not in_bounds_vectorized(square.reshape(1, -1))[0]:
         return False
 
-    # Find king position
+    attacked_mask = _get_attacked_squares_from_move_cache(board, attacker_color, cache)
+    x, y, z = square[0], square[1], square[2]
+    return bool(attacked_mask[z, y, x])
+
+def king_in_check(board, current_player: Color, king_color: int, cache=None) -> bool:
+    """Check if king is in check - only when king has 0 priests."""
+    # Skip check if king has any priests
+    if _get_priest_count(board, king_color, cache) > 0:
+        return False
+
     king_pos = _find_king_position(board, king_color, cache)
     if king_pos is None:
         return False
+    return square_attacked_by(board, current_player, king_pos, 1 - king_color, cache)
 
-    # Check if king is attacked using move cache
-    return square_attacked_by(board, current_player, king_pos, king_color.opposite(), cache)
+def get_check_status(board, current_player: Color, king_color: int, cache=None) -> CheckStatus:
+    """Get check status - only when king has 0 priests."""
+    cache = cache or getattr(board, 'cache_manager', None)
 
-def get_check_status(
-    board: BoardProto,
-    current_player: Color,
-    king_color: Color,
-    cache=None
-) -> CheckStatus:
-    """Get detailed check status including checkmate detection."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
-
-    # Quick check for priests
-    if _any_priest_alive(board, king_color, cache):
+    # Skip check if king has any priests
+    if _get_priest_count(board, king_color, cache) > 0:
         return CheckStatus.SAFE
 
-    # Find king
     king_pos = _find_king_position(board, king_color, cache)
-    if king_pos is None:
+    if king_pos is None or not square_attacked_by(board, current_player, king_pos, 1 - king_color, cache):
         return CheckStatus.SAFE
 
-    # Check if in check
-    if not square_attacked_by(board, current_player, king_pos, king_color.opposite(), cache):
-        return CheckStatus.SAFE
-
-    # In check - determine if checkmate
-    # This would require legal move generation to check for escape moves
-    # For now, we'll return CHECK and let the caller determine checkmate
     return CheckStatus.CHECK
 
-def get_all_pieces_in_check(
-    board: BoardProto,
-    current_player: Color,
-    cache=None
-) -> List[Tuple[Tuple[int, int, int], Color]]:
-    """Get all pieces that are in check (useful for multi-king variants)."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
+def get_all_pieces_in_check(board, current_player: Color, cache=None) -> List[KingInCheckInfo]:
+    """Get all kings in check with vectorized operations."""
+    cache = cache or getattr(board, 'cache_manager', None)
 
     pieces_in_check = []
 
-    # Check each color
-    for color in [Color.WHITE, Color.BLACK]:
+    # Vectorized check for both colors
+    for color in (Color.WHITE, Color.BLACK):
         if king_in_check(board, current_player, color, cache):
             king_pos = _find_king_position(board, color, cache)
-            if king_pos:
-                pieces_in_check.append((king_pos, color))
+            if king_pos is not None:
+                pieces_in_check.append(KingInCheckInfo(king_coord=king_pos, color=color))
 
     return pieces_in_check
 
-def batch_king_check_detection(
-    boards: List[BoardProto],
-    players: List[Color],
-    king_colors: List[Color],
-    cache=None
-) -> List[bool]:
-    """Batch check detection for multiple positions."""
-    results = []
+def batch_king_check_detection(boards: List, players: List[Color], king_colors: List[Color], cache=None) -> List[bool]:
+    """Batch check multiple boards for king safety."""
+    if not boards or not players or not king_colors:
+        return []
 
-    for board, player, king_color in zip(boards, players, king_colors):
-        results.append(king_in_check(board, player, king_color, cache))
+    # Ensure all lists have the same length
+    min_length = min(len(boards), len(players), len(king_colors))
+    if min_length == 0:
+        return []
+
+    results = []
+    for i in range(min_length):
+        result = king_in_check(boards[i], players[i], king_colors[i], cache)
+        results.append(result)
 
     return results
 
-def get_check_summary(
-    board: BoardProto,
-    cache=None
-) -> Dict[str, any]:
-    """Get comprehensive check information."""
-    # Ensure we have a cache
-    if cache is None:
-        cache = _get_cache_from_board(board)
+def get_check_summary(board, cache=None) -> Dict[str, Any]:
+    """Get comprehensive check status summary."""
+    cache = cache or getattr(board, 'cache_manager', None)
 
     summary = {
         'white_check': False,
@@ -299,65 +187,44 @@ def get_check_summary(
         'black_priests_alive': False,
         'white_king_position': None,
         'black_king_position': None,
-        'attacked_squares_white': set(),
-        'attacked_squares_black': set(),
+        'attacked_mask_white': np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE),
+        'attacked_mask_black': np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE),
     }
 
-    # Check priests
-    summary['white_priests_alive'] = _any_priest_alive(board, Color.WHITE, cache)
-    summary['black_priests_alive'] = _any_priest_alive(board, Color.BLACK, cache)
+    # Get priest counts
+    white_priests = _get_priest_count(board, Color.WHITE, cache)
+    black_priests = _get_priest_count(board, Color.BLACK, cache)
 
-    # Find kings
+    summary['white_priests_alive'] = white_priests > 0
+    summary['black_priests_alive'] = black_priests > 0
+
+    # Get king positions using cache manager exclusively
     summary['white_king_position'] = _find_king_position(board, Color.WHITE, cache)
     summary['black_king_position'] = _find_king_position(board, Color.BLACK, cache)
 
-    # Get attacked squares from move cache
-    summary['attacked_squares_white'] = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
-    summary['attacked_squares_black'] = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
+    # Get attacked squares
+    summary['attacked_mask_white'] = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
+    summary['attacked_mask_black'] = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
 
-    # Check king status
-    if summary['white_king_position'] and not summary['white_priests_alive']:
-        summary['white_check'] = summary['white_king_position'] in summary['attacked_squares_black']
+    # Determine check status
+    wk = summary['white_king_position']
+    bk = summary['black_king_position']
 
-    if summary['black_king_position'] and not summary['black_priests_alive']:
-        summary['black_check'] = summary['black_king_position'] in summary['attacked_squares_white']
+    # Check white king safety (only when no priests)
+    if wk is not None and white_priests == 0:
+        wk_coords = wk.astype(COORD_DTYPE)
+        summary['white_check'] = bool(summary['attacked_mask_black'][wk_coords[2], wk_coords[1], wk_coords[0]])
+
+    # Check black king safety (only when no priests)
+    if bk is not None and black_priests == 0:
+        bk_coords = bk.astype(COORD_DTYPE)
+        summary['black_check'] = bool(summary['attacked_mask_white'][bk_coords[2], bk_coords[1], bk_coords[0]])
 
     return summary
 
-# ==============================================================================
-# PERFORMANCE MONITORING
-# ==============================================================================
-
-class CheckDetectorStats:
-    """Statistics for check detection performance."""
-
-    def __init__(self):
-        self.total_checks = 0
-        self.cache_hits = 0
-        self.cache_misses = 0
-        self.king_searches = 0
-        self.priest_scans = 0
-        self.attack_calculations = 0
-
-    def get_stats(self) -> Dict[str, int]:
-        return {
-            'total_checks': self.total_checks,
-            'cache_hits': self.cache_hits,
-            'cache_misses': self.cache_misses,
-            'cache_hit_rate': self.cache_hits / max(1, self.total_checks),
-            'king_searches': self.king_searches,
-            'priest_scans': self.priest_scans,
-            'attack_calculations': self.attack_calculations,
-        }
-
-# Global stats instance
-_stats = CheckDetectorStats()
-
-def get_check_detector_stats() -> Dict[str, int]:
-    """Get check detector performance statistics."""
-    return _stats.get_stats()
-
-def reset_check_detector_stats() -> None:
-    """Reset performance statistics."""
-    global _stats
-    _stats = CheckDetectorStats()
+# Update __all__ exports
+__all__ = [
+    'CheckStatus', 'KingInCheckInfo',
+    'king_in_check', 'get_check_status', 'get_all_pieces_in_check',
+    'batch_king_check_detection', 'get_check_summary'
+]

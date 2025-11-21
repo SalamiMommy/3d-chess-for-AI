@@ -1,701 +1,530 @@
-# manager.py
-# game3d/cache/manager.py (optimized)
-
+# manager.py - FULLY NUMPY-NATIVE OPTIMIZED CACHE MANAGER
 from __future__ import annotations
-"""Optimized Central cache manager - reduced background thread overhead."""
-# game3d/cache/manager.py
-
-import gc
-import time
-from typing import Dict, List, Tuple, Optional, Set, Any, TYPE_CHECKING
-from dataclasses import dataclass
-from functools import lru_cache
 import numpy as np
+from numba import njit, prange
 import threading
+import os
+from typing import Optional, Dict, Any
+import logging
+import weakref
 
-from game3d.common.common import N_TOTAL_PLANES
-from game3d.pieces.enums import Color, PieceType
-from game3d.pieces.piece import Piece
+logger = logging.getLogger(__name__)
 
-# TYPE_CHECKING imports - no runtime fallbacks needed
-if TYPE_CHECKING:
-    from game3d.board.board import Board
-    from game3d.movement.movepiece import Move
-    from game3d.cache.caches.transposition import CompactMove
-
-# Import the optimized cache
-from game3d.cache.caches.movecache import (
-    OptimizedMoveCache,
-    CompactMove,
-    create_optimized_move_cache
+from game3d.common.shared_types import (
+    COORD_DTYPE, BOOL_DTYPE, FLOAT_DTYPE, SIZE, VOLUME, PIECE_TYPE_DTYPE,
+    INDEX_DTYPE, COLOR_DTYPE, HASH_DTYPE, Color, N_PIECE_TYPES, MOVE_DTYPE,
+    MAX_COORD_VALUE, MIN_COORD_VALUE, VECTORIZATION_THRESHOLD, TRAILBLAZER,
+    PIECE_SLICE
 )
-
+from game3d.common.coord_utils import coord_to_idx, idx_to_coord, ensure_coords, in_bounds_vectorized
+from game3d.cache.managerconfig import ManagerConfig
 from game3d.cache.caches.occupancycache import OccupancyCache
-from game3d.game.zobrist import compute_zobrist, ZobristHash
-
-# Refactored imports
-from .managerconfig import ManagerConfig
-from .managerperformance import CachePerformanceMonitor, CacheEventType, MemoryManager
-from .effects_cache import EffectsCache
-from .parallelmanager import ParallelManager
-from .export import (
-    export_state_for_ai,
-    export_tensor_for_ai,
-    get_legal_move_indices,
-    get_legal_moves_as_policy_target,
-    validate_export_integrity
-)
+from game3d.cache.caches.zobrist import ZobristHash
+from game3d.cache.caches.movecache import create_move_cache
+from game3d.cache.effectscache.trailblazecache import TrailblazeCache
+from game3d.cache.effectscache.geomancycache import GeomancyCache
+from game3d.cache.effectscache.auracache import ConsolidatedAuraCache
+from game3d.board.symmetry import SymmetryManager
+from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
 
 
-class CacheDesyncError(Exception):
-    """Exception raised when cache desynchronization is detected."""
-    pass
+# =============================================================================
+# GLOBAL REGISTRY - NUMPY-NATIVE IMPLEMENTATION
+# =============================================================================
 
+_MAX_MANAGERS = 128
+_REGISTRY_DTYPE = np.dtype([
+    ('board_id', np.int64),
+    ('color', COLOR_DTYPE),
+    ('manager_weakref', np.int64),  # id() of manager for weak reference simulation
+    ('active', BOOL_DTYPE)
+])
+
+_ACTIVE_CACHE_MANAGERS = np.zeros(_MAX_MANAGERS, dtype=_REGISTRY_DTYPE)
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY_COUNT = np.array([0], dtype=INDEX_DTYPE)
+
+@njit(cache=True, nogil=True)
+def _find_manager_idx(registry: np.ndarray, board_id: int, color: int) -> int:
+    """Numba-optimized registry lookup."""
+    for i in range(len(registry)):
+        if (registry[i]['active'] and
+            registry[i]['board_id'] == board_id and
+            registry[i]['color'] == color):
+            return i
+    return -1
+
+def get_cache_manager(board, color: int = 0) -> "OptimizedCacheManager":
+    """Thread-safe manager retrieval/caching using numpy registry."""
+    global _ACTIVE_CACHE_MANAGERS, _REGISTRY_COUNT
+
+    board_id = id(board)
+
+    with _REGISTRY_LOCK:
+        idx = _find_manager_idx(_ACTIVE_CACHE_MANAGERS, board_id, color)
+
+        if idx >= 0:
+            # Manager exists - would use weakref in production
+            return OptimizedCacheManager(board, color)
+
+        # Create new manager
+        if _REGISTRY_COUNT[0] >= _MAX_MANAGERS:
+            logger.error(f"Registry full ({_MAX_MANAGERS} managers)")
+            raise RuntimeError("Cache manager registry overflow")
+
+        manager = OptimizedCacheManager(board, color)
+
+        _ACTIVE_CACHE_MANAGERS[_REGISTRY_COUNT[0]] = (
+            board_id, color, id(manager), True
+        )
+        _REGISTRY_COUNT[0] += 1
+
+        logger.debug(f"Created cache manager #{_REGISTRY_COUNT[0]} for board {board_id}")
+        return manager
+
+# =============================================================================
+# NUMPY-NATIVE STATISTICS TRACKER
+# =============================================================================
+
+class NumpyStatsTracker:
+    """Lock-protected statistics using numpy structured arrays."""
+
+    __slots__ = ("_stats", "_lock")
+
+    def __init__(self):
+        self._stats = np.zeros(1, dtype=[
+            ('hits', INDEX_DTYPE),
+            ('misses', INDEX_DTYPE),
+            ('operations', INDEX_DTYPE),
+            ('time', FLOAT_DTYPE)
+        ])
+        self._lock = threading.Lock()
+
+    def record_hit(self) -> None:
+        with self._lock:
+            self._stats['hits'] += 1
+            self._stats['operations'] += 1
+
+    def record_miss(self) -> None:
+        with self._lock:
+            self._stats['misses'] += 1
+            self._stats['operations'] += 1
+
+    def add_timing(self, duration: float) -> None:
+        with self._lock:
+            self._stats['time'] += duration
+
+    def get_stats(self) -> Dict[str, float]:
+        with self._lock:
+            s = self._stats[0]
+            total = s['hits'] + s['misses']
+            return {
+                'hits': int(s['hits']),
+                'misses': int(s['misses']),
+                'hit_rate': float(s['hits'] / max(total, 1)),
+                'avg_time': float(s['time'] / max(s['operations'], 1))
+            }
+
+# =============================================================================
+# NUMBA-OPTIMIZED CORE OPERATIONS
+# =============================================================================
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _batch_invalidate_keys_numba(keys: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Vectorized key invalidation."""
+    n = keys.shape[0]
+    valid = np.ones(n, dtype=BOOL_DTYPE)
+
+    for i in prange(n):
+        key = keys[i]
+        for j in range(targets.shape[0]):
+            if key == targets[j]:
+                valid[i] = False
+                break
+
+    return valid
+
+@njit(cache=True, nogil=True)
+def _coords_to_keys(coords: np.ndarray) -> np.ndarray:
+    """Convert coordinates to cache keys using tobytes-equivalent."""
+    n = coords.shape[0]
+    # Use flat indices as keys (much faster than bytes)
+    keys = np.empty(n, dtype=INDEX_DTYPE)
+    for i in range(n):
+        x, y, z = coords[i]
+        # Match generator.py bit packing: x | (y << 9) | (z << 18)
+        keys[i] = x | (y << 9) | (z << 18)
+    return keys
+
+# =============================================================================
+# OPTIMIZED CACHE MANAGER
+# =============================================================================
 
 class OptimizedCacheManager:
-    """Advanced cache manager with reduced background overhead."""
+    """Pure numpy-native cache manager - zero Python loops in hot paths."""
 
-    def __init__(self, board: Board) -> None:
-        global OptimizedMoveCache, CompactMove, TTEntry
-        if OptimizedMoveCache is None:
-            from game3d.cache.caches.movecache import (
-                OptimizedMoveCache as OMC,
-                CompactMove as CM,
-                TTEntry as TTE,
-                create_optimized_move_cache
-            )
-            OptimizedMoveCache = OMC
-            CompactMove = CM
-            TTEntry = TTE
+    __slots__ = (
+        "board", "_current", "_move_counter",
+        "config", "_stats_tracker", "_move_stats",
+        "occupancy_cache", "zobrist_cache", "_zkey",
+        "transposition_table", "symmetry_manager", "move_cache",
+        "_effect_caches", "_effect_cache_instances", "_batch_effect_cache",
+        "dependency_graph", "_memory_pool", "_parallel_executor",
+        "_start_tensor_cache", "_lock", "__weakref__"
+    )
 
-        self.config = ManagerConfig()
+    def __init__(self, board, color: int = 0):
         self.board = board
-        self._board = board
-        self.board.cache_manager = self  # Set reference on board
+        self._current = color
+        self._move_counter = 0  # Python int is faster than array[0]
 
-        # Now initialize other caches that depend on piece_cache
-        self.occupancy = OccupancyCache(board)
-        self.effects = EffectsCache(board, self)
+        # Config and stats
+        self.config = ManagerConfig()
+        self._stats_tracker = NumpyStatsTracker()
+        self._move_stats = NumpyStatsTracker()
 
-        # Performance monitoring
-        self.performance_monitor = CachePerformanceMonitor()
+        # Thread safety for complex operations
+        self._lock = threading.RLock()
 
-        # Zobrist hashing
-        self._zobrist = ZobristHash()
-        self._current_zobrist_hash = self._zobrist.compute_from_scratch(board, Color.WHITE)
+        # Initialize caches
+        self._initialize_caches()
 
-        self.parallel = ParallelManager(self.config)
-        self.occupancy = OccupancyCache(board)
-        self._move_cache: Optional[OptimizedMoveCache] = None
-        self._move_counter = 0
-        self._age_counter = 0  # Add missing attribute
-        self._current = Color.WHITE  # Add missing attribute
+        # Rebuild from board
+        self._rebuild_occupancy_from_board()
 
-        # Memory management - disable background monitoring to reduce overhead
-        self.memory_manager = None  # We'll handle memory management differently
-        self._needs_rebuild = False
+        # Compute initial Zobrist
+        self._zkey = self._compute_initial_zobrist(color)
 
-        # Disable background save thread - save only on explicit calls
-        self._save_thread = None
-        self._skip_effect_updates = False
-        self._effect_update_counter = 0
-        self._effect_update_interval = 10
-        self._check_summary_cache: dict[str, Any] | None = None
-        self._check_summary_age = -1
+        # Link board
+        self.board._cache_manager = self
 
+        # Sync generation
+        initial_gen = getattr(self.board, 'generation', 0)
+        self.move_cache._board_generation = initial_gen
 
-    @property
-    def cache(self):
-        """Return self for backward compatibility with code expecting .cache.piece_cache"""
-        return self
+        # Diagnostics
+        from game3d.common.diagnostics import record_cache_creation
+        record_cache_creation(self, board)
 
-    def initialise(self, current: Color) -> None:
-        self._current = current
-        self._current_zobrist_hash = self._zobrist.compute_from_scratch(self.board, current)
-        self._move_cache = create_optimized_move_cache(
-            self.board, current, self
+    def _initialize_caches(self) -> None:
+        """Initialize all caches - all numpy-native."""
+        # Core caches
+        self.occupancy_cache = OccupancyCache()
+        self.zobrist_cache = ZobristHash()
+
+        # Symmetry
+        self.symmetry_manager = SymmetryManager(self)
+        self.transposition_table = SymmetryAwareTranspositionTable(
+            self.symmetry_manager,
+            size_mb=self.config.main_tt_size_mb
         )
 
-        # Perform rebuild after initialization
-        if self._move_cache:
-            self._move_cache._full_rebuild()
-
-        # Load from disk only if explicitly requested
-        if self.config.enable_disk_cache and self._move_cache:
-            self._move_cache._load_from_disk()
-
-        self._log_cache_stats("initialization")
-
-    # REMOVE the _periodic_save method entirely - save manually when needed
-    def save_to_disk(self) -> None:
-        """Manual save to disk - call when appropriate."""
-        if self._move_cache and self.config.enable_disk_cache:
-            self._move_cache._save_to_disk()
-
-    # --------------------------------------------------------------------------
-    # OPTIMIZED MOVE APPLICATION & UNDO
-    # --------------------------------------------------------------------------
-    def apply_move(self, mv, mover, current_ply):
-        """Optimized apply_move - minimal work."""
-        start_time = time.perf_counter()
-
-        try:
-            # Fast validation using occupancy cache only
-            from_piece = self.occupancy.get(mv.from_coord)
-            if from_piece is None:
-                # Mark for rebuild but continue
-                self._needs_rebuild = True
-                self.board.apply_move(mv)
-                self._current = mover.opposite()
-                self._age_counter += 1
-                return
-
-            dest_piece = self.occupancy.get(mv.to_coord)
-            if (dest_piece and dest_piece.color == mover and
-                    from_piece.ptype is not PieceType.KNIGHT):
-                raise ValueError(
-                    f"Illegal move: {from_piece} may not land on friendly {dest_piece}"
-                )
-
-            if from_piece.color != mover:
-                raise ValueError(f"Wrong color piece at {mv.from_coord}")
-
-            # Get captured piece from cache
-            captured_piece = self.occupancy.get(mv.to_coord) if mv.is_capture else None
-
-            # Update Zobrist (fast)
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, from_piece, captured_piece, cache=self)
-
-            # Apply to board
-            self.board.apply_move(mv)
-
-            # CRITICAL: Update occupancy FIRST (fastest)
-            self._fast_occupancy_update(mv, from_piece, mover)
-
-            # Skip effect updates most of the time
-            self._effect_update_counter += 1
-            if self._effect_update_counter % self._effect_update_interval == 0:
-                self._update_effects(mv, from_piece, captured_piece, mover, current_ply)
-
-            # Update move cache WITHOUT checking board state
-            if self._move_cache and not self._needs_rebuild:
-                try:
-                    self._move_cache.apply_move(mv, mover)
-                except Exception:
-                    self._needs_rebuild = True
-
-            self._current = mover.opposite()
-            self._age_counter += 1
-
-            duration = time.perf_counter() - start_time
-            self.performance_monitor.record_move_apply_time(duration)
-
-        except Exception as e:
-            self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
-                'error': str(e)
-            })
-            raise
-
-    def undo_move(self, mv: 'Move', mover: Color, current_ply: int = 0) -> None:
-        """
-        Undo a move with proper Zobrist hash rollback and cache updates.
-        CRITICAL: Order matters - hash update uses current board state.
-        """
-        start_time = time.time()
-        self.memory_manager.check_and_gc_if_needed()
-
-        try:
-            # FIXED: Read state BEFORE mutating board
-            piece = self.occupancy.get(mv.to_coord)  # Piece that arrived here
-            if piece is None:
-                raise ValueError(f"No piece at move target {mv.to_coord} during undo")
-
-            captured_piece = None
-            if getattr(mv, "is_capture", False):
-                captured_type = getattr(mv, "captured_ptype", None)
-                if captured_type is not None:
-                    captured_piece = Piece(mover.opposite(), captured_type)
-
-            # Update Zobrist hash BEFORE board mutation
-            self._current_zobrist_hash = self._zobrist.update_hash_move(
-                self._current_zobrist_hash, mv, from_piece, captured_piece, cache=self)
-
-            # Now mutate the board
-            self._undo_move_optimized(mv, mover, piece, captured_piece)
-
-            # Update caches incrementally
-            unpromoted_piece = Piece(piece.color, PieceType.PAWN) if getattr(mv, "is_promotion", False) else piece
-            self.occupancy.set_position(mv.from_coord, unpromoted_piece)
-            self.occupancy.set_position(mv.to_coord, captured_piece)
-
-            # Update effect caches
-            affected_caches = self.effects.get_affected_caches_for_undo(mv, mover)
-            affected_caches.add("attacks")
-            self.effects.update_effect_caches_for_undo(mv, mover, affected_caches, current_ply)
-
-            # Update move cache
-            if self._move_cache:
-                self._move_cache.undo_move(mv, mover)
-
-            # Mark network teleport targets as dirty
-            self._mark_network_teleport_dirty()
-            self._mark_swap_dirty()
-
-            self._current = mover
-            self._age_counter += 1
-
-            duration = time.time() - start_time
-            self.performance_monitor.record_move_undo_time(duration)
-            self.performance_monitor.record_event(CacheEventType.MOVE_UNDONE, {
-                'move': str(mv),
-                'color': mover.name,
-                'duration_ms': duration * 1000
-            })
-
-        except Exception as e:
-            self.performance_monitor.record_event(CacheEventType.CACHE_ERROR, {
-                'error': str(e),
-                'move': str(mv),
-                'color': mover.name
-            })
-            raise
-
-    def _fast_occupancy_update(self, mv, from_piece, mover):
-        """Fast occupancy update without board queries."""
-        # Determine destination piece
-        promotion_type = getattr(mv, "promotion_ptype", None)
-        if getattr(mv, "is_promotion", False) and promotion_type:
-            to_piece = Piece(mover, PieceType(promotion_type))
-        else:
-            to_piece = from_piece
-
-        # Update occupancy cache directly
-        self.occupancy.set_position(mv.from_coord, None)
-        self.occupancy.set_position(mv.to_coord, to_piece)
-
-    def _is_move_legal_fast(self, mv, mover, from_piece) -> bool:
-        """Fast move legality check using cached results."""
-        if self._move_cache is None:
-            return False
-
-        # Use a faster method to check move legality without generating all moves
-        return self._move_cache.is_move_legal_fast(mv, mover, from_piece)
-
-    def _light_memory_check(self):
-        """Lightweight memory check instead of full psutil calls."""
-        import sys
-        # Simple check based on object count
-        if len(gc.get_objects()) > 500000:  # Arbitrary threshold, adjust based on usage
-            gc.collect()
-
-    def _undo_move_optimized(self, mv: 'Move', mover: Color, piece: Piece, captured_piece: Optional[Piece]) -> None:
-        """FIXED: Handle piece restoration properly."""
-        # Move piece back to original position
-        self.board.set_piece(mv.from_coord, piece)
-        # Restore captured or clear
-        self.board.set_piece(mv.to_coord, captured_piece)
-
-        # Handle un-promotion if applicable
-        if getattr(mv, "is_promotion", False):
-            # The piece was a pawn before promotion
-            self.board.set_piece(mv.from_coord, Piece(piece.color, PieceType.PAWN))
-
-    def _should_store_in_tt(self, mv: 'Move', from_piece: Piece) -> bool:
-        return True
-
-    # --------------------------------------------------------------------------
-    # TRANSPOSITION TABLE INTERFACE
-    # --------------------------------------------------------------------------
-    def probe_transposition_table(self, hash_value: int) -> Optional[TTEntry]:
-        if not self._move_cache:
-            return None
-        result = self._move_cache.get_cached_evaluation(hash_value)
-        if result:
-            score, depth, best_move = result
-            self.performance_monitor.record_event(CacheEventType.TT_HIT, {
-                'hash_value': hash_value,
-                'depth': depth,
-                'score': score
-            })
-            return TTEntry(hash_value, depth, score, 0, best_move, 0)
-        else:
-            self.performance_monitor.record_event(CacheEventType.TT_MISS, {
-                'hash_value': hash_value
-            })
-            return None
-
-    def store_transposition_table(self, hash_value: int, depth: int, score: int,
-                                node_type: int, best_move: Optional[CompactMove] = None) -> None:
-        if self._move_cache:
-            self._move_cache.store_evaluation(hash_value, depth, score, node_type, best_move)
-
-    def get_current_zobrist_hash(self) -> int:
-        return self._current_zobrist_hash
-
-    # --------------------------------------------------------------------------
-    # PARALLEL LEGAL MOVE GENERATION — KEY OPTIMIZATION FOR 5600X
-    # --------------------------------------------------------------------------
-    def legal_moves(self, color: Color) -> List['Move']:
-        """Get legal moves with lazy rebuild."""
-        # Check if rebuild needed
-        if self._needs_rebuild:
-            print(f"[REBUILD] Performing lazy rebuild for {color}")
-            rebuild_start = time.perf_counter()
-            self._move_cache._full_rebuild()
-            self._needs_rebuild = False
-            rebuild_time = time.perf_counter() - rebuild_start
-            if rebuild_time > 0.05:  # Log slow rebuilds
-                print(f"[REBUILD] Took {rebuild_time*1000:.1f}ms")
-
-        start_time = time.perf_counter()
-        moves = self._move_cache.legal_moves(
-            color,
-            parallel=self.config.enable_parallel,
-            max_workers=self.config.max_workers
-        )
-
-        duration = time.perf_counter() - start_time
-        self.performance_monitor.record_legal_move_generation_time(duration)
-        return moves
-
-    @property
-    def move(self) -> OptimizedMoveCache:
-        if self._move_cache is None:
-            raise RuntimeError("MoveCache not initialized. Call initialise() first.")
-        return self._move_cache
-
-    # --------------------------------------------------------------------------
-    # STATS & CONFIGURATION
-    # --------------------------------------------------------------------------
-    def get_cache_stats(self) -> Dict[str, Any]:
-        base_stats = self.performance_monitor.get_performance_stats()
-        if self._move_cache:
-            move_cache_stats = self._move_cache.get_stats()
-            base_stats.update({
-                'move_cache_stats': move_cache_stats,
-                'zobrist_hash': self._current_zobrist_hash,
-                'main_tt_size_mb': self.config.main_tt_size_mb,
-                'sym_tt_size_mb': self.config.sym_tt_size_mb,
-                'main_tt_capacity_estimate': (self.config.main_tt_size_mb * 1024 * 1024) // 32,
-                'sym_tt_capacity_estimate': (self.config.sym_tt_size_mb * 1024 * 1024) // 32,
-                'enable_parallel': self.config.enable_parallel,
-                'max_workers': self.config.max_workers,
-                'enable_vectorization': self.config.enable_vectorization
-            })
-        base_stats['effect_caches'] = {
-            name: {'type': type(cache).__name__}
-            for name, cache in self.effects._effect_caches.items()
-        }
-        return base_stats
-
-    def get_optimization_suggestions(self) -> List[str]:
-        return self.performance_monitor.get_optimization_suggestions()
-
-    def _log_cache_stats(self, context: str) -> None:
-        stats = self.get_cache_stats()
-        # print(f"[CacheManager] {context} stats:")
-        # print(f"  Main TT Size: {stats['main_tt_size_mb']} MB (~{stats.get('main_tt_capacity_estimate', 0):,} entries)")
-        # print(f"  Sym TT Size: {stats['sym_tt_size_mb']} MB (~{stats.get('sym_tt_capacity_estimate', 0):,} entries)")
-        # print(f"  TT Hit Rate: {stats['tt_hit_rate']:.3f}")
-        # print(f"  Parallel Workers: {stats.get('max_workers', 'N/A')}")
-        # print(f"  Avg Move Apply Time: {stats['avg_move_apply_time_ms']:.2f}ms")
-        # print(f"  Avg Legal Move Time: {stats['avg_legal_gen_time_ms']:.2f}ms")
-
-        suggestions = self.get_optimization_suggestions()
-        if suggestions:
-            print(f"  Optimization Suggestions ({len(suggestions)}):")
-            for suggestion in suggestions[:3]:
-                print(f"    - {suggestion}")
-
-    # --------------------------------------------------------------------------
-    # EFFECT CACHE INTERFACE (DELEGATED)
-    # --------------------------------------------------------------------------
-    def is_frozen(self, sq: Tuple[int, int, int], victim: Color) -> bool:
-        return self.effects.is_frozen(sq, victim)
-
-    def is_movement_buffed(self, sq: Tuple[int, int, int], friendly: Color) -> bool:
-        return self.effects.is_movement_buffed(sq, friendly)
-
-    def is_movement_debuffed(self, sq: Tuple[int, int, int], victim: Color) -> bool:
-        return self.effects.is_movement_debuffed(sq, victim)
-
-    def black_hole_pull_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        return self.effects.black_hole_pull_map(controller)
-
-    def white_hole_push_map(self, controller: Color) -> Dict[Tuple[int, int, int], Tuple[int, int, int]]:
-        return self.effects.white_hole_push_map(controller)
-
-    def mark_trail(self, trailblazer_sq: Tuple[int, int, int], slid_squares: Set[Tuple[int, int, int]]) -> None:
-        self.effects.mark_trail(trailblazer_sq, slid_squares)
-
-    def current_trail_squares(self, controller: Color) -> Set[Tuple[int, int, int]]:
-        return self.effects.current_trail_squares(controller)
-
-    def is_geomancy_blocked(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        return self.effects.is_geomancy_blocked(sq, current_ply)
-
-    def block_square(self, sq: Tuple[int, int, int], current_ply: int) -> bool:
-        return self.effects.block_square(sq, current_ply)
-
-    def archery_targets(self, controller: Color) -> List[Tuple[int, int, int]]:
-        return self.effects.archery_targets(controller)
-
-    def is_valid_archery_attack(self, sq: Tuple[int, int, int], controller: Color) -> bool:
-        return self.effects.is_valid_archery_attack(sq, controller)
-
-    def can_capture_wall(self, attacker_sq: Tuple[int, int, int], wall_sq: Tuple[int, int, int], controller: Color) -> bool:
-        return self.effects.can_capture_wall(attacker_sq, wall_sq, controller)
-
-    def pieces_at(self, sq: Tuple[int, int, int]) -> List['Piece']:
-        return self.effects.pieces_at(sq)
-
-    def top_piece(self, sq: Tuple[int, int, int]) -> Optional['Piece']:
-        return self.effects.top_piece(sq)
-
-    def get_attacked_squares(self, color: Color) -> Set[Tuple[int, int, int]]:
-        """Get all squares attacked by pieces of the given color."""
-        if self._move_cache:
-            return self._move_cache.get_attacked_squares(color)
-        return set()
-
-    def is_pinned(self, coord: Tuple[int, int, int], color: Optional[Color] = None) -> bool:
-        if color is None:
-            piece = self.occupancy.get(coord)
-            if piece is None:
-                return False
-            color = piece.color
-        return False
-
-    def store_attacked_squares(self, color: Color, attacked: Set[Tuple[int, int, int]]) -> None:
-        self.effects.store_attacked_squares(color, attacked)
-
-    # --------------------------------------------------------------------------
-    # CONFIGURATION
-    # --------------------------------------------------------------------------
-    def configure_transposition_table(self, size_mb: int) -> None:
-        """Grow TT only if we are still below 85 % physical RAM."""
-        import psutil
-        if psutil.virtual_memory().percent >= 85.0:
-            print("[CacheManager] Refused TT expansion: RAM already at 85 %")
+        # Move cache
+        self.move_cache = create_move_cache(self)
+
+        # Effect caches registry (list for iteration, not dict)
+        self._effect_cache_instances = [
+            ConsolidatedAuraCache(self.board, self),
+            GeomancyCache(self),
+            TrailblazeCache(self)
+        ]
+
+        # Batch effect cache
+        self._batch_effect_cache = np.empty(VOLUME, dtype=FLOAT_DTYPE)
+
+        # Dependency tracking
+        self.dependency_graph = NumpyDependencyGraph(self)
+
+        # Memory pool
+        from game3d.cache.unified_memory_pool import get_memory_pool
+        self._memory_pool = get_memory_pool()
+
+    def _rebuild_occupancy_from_board(self) -> None:
+        """Vectorized rebuild from board array."""
+        if not hasattr(self.board, '_array'):
+            logger.critical("Board missing _array!")
+            raise RuntimeError("Board has no _array attribute")
+
+        board_array = self.board._array
+
+        # Find occupied positions
+        # Find occupied positions (only check piece planes)
+        occupied_mask = board_array[PIECE_SLICE] > 0
+        occupied_indices = np.where(occupied_mask.any(axis=0))
+
+        if len(occupied_indices[0]) == 0:
+            self.occupancy_cache.clear()
             return
-        self.config.main_tt_size_mb = size_mb
-        if self._move_cache:
-            current_color = self._move_cache._current
-            self._move_cache = create_optimized_move_cache(
-                self.board, current_color, self,
-                main_tt_size_mb=size_mb,
-                sym_tt_size_mb=self.config.sym_tt_size_mb
+
+        # Convert to coordinates (z,y,x) -> (x,y,z)
+        coords_zyx = np.stack(occupied_indices, axis=1).astype(INDEX_DTYPE)
+        coords_xyz = coords_zyx[:, [2, 1, 0]].astype(COORD_DTYPE)
+
+        # Extract piece types and colors
+        occupied_values = board_array[:, occupied_indices[0], occupied_indices[1], occupied_indices[2]]
+        piece_planes = np.argmax(occupied_values, axis=0)
+
+        white_mask = piece_planes < N_PIECE_TYPES
+        colors = np.where(white_mask, Color.WHITE, Color.BLACK).astype(COLOR_DTYPE)
+        types = np.where(white_mask,
+                        piece_planes + 1,
+                        piece_planes - N_PIECE_TYPES + 1).astype(PIECE_TYPE_DTYPE)
+
+        # Rebuild occupancy cache
+        self.occupancy_cache.rebuild(coords_xyz, colors, types)
+
+    def _compute_initial_zobrist(self, color: int) -> HASH_DTYPE:
+        """Vectorized Zobrist computation."""
+        coords, piece_types, colors = self.occupancy_cache.get_all_occupied_vectorized()
+
+        if coords.shape[0] == 0:
+            return self.zobrist_cache._side_key if color == Color.BLACK else HASH_DTYPE(0)
+
+        # Convert to indices
+        piece_indices = (piece_types - 1).astype(PIECE_TYPE_DTYPE)
+        color_indices = (colors - Color.WHITE).astype(COLOR_DTYPE)
+
+        # Extract keys
+        keys = self.zobrist_cache._piece_keys[
+            piece_indices,
+            color_indices,
+            coords[:, 0], coords[:, 1], coords[:, 2]
+        ]
+
+        # XOR reduction
+        zkey = np.bitwise_xor.reduce(keys)
+        if color == Color.BLACK:
+            zkey ^= self.zobrist_cache._side_key
+
+        return HASH_DTYPE(zkey)
+
+    def apply_move(self, mv_obj: np.ndarray, color: int) -> bool:
+        """Apply move - fully vectorized invalidation."""
+        with self._lock:
+            self._move_counter += 1
+
+            # Invalidate opponent's move cache
+            opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
+            self.move_cache.invalidate_color(opp_color)
+
+            # Update Zobrist hash
+            from_coord = mv_obj[:3]
+            to_coord = mv_obj[3:]
+            from_piece = self.occupancy_cache.get(from_coord)
+            captured_piece = self.occupancy_cache.get(to_coord)
+
+            if from_piece is None:
+                raise ValueError(f"No piece at source {from_coord}")
+
+            self._zkey = self.zobrist_cache.update_hash_move(
+                self._zkey, mv_obj, from_piece, captured_piece
             )
 
-    def configure_symmetry_tt(self, size_mb: int) -> None:  # Add this method
-        self.config.sym_tt_size_mb = size_mb
-        if self._move_cache:
-            current_color = self._move_cache._current
-            self._move_cache = create_optimized_move_cache(
-                self.board, current_color, self,
-                main_tt_size_mb=self.config.main_tt_size_mb,  # Preserve main size
-                sym_tt_size_mb=size_mb
-            )
+            # Notify dependency graph
+            self.dependency_graph.notify_update('move_applied')
 
-    def set_parallel_processing(self, enabled: bool) -> None:
-        self.config.enable_parallel = enabled
+            # Batch notify effect caches
+            # mv_obj is expected to be (6,) array: [fx, fy, fz, tx, ty, tz]
+            affected_coords = np.array([
+                mv_obj[:3], mv_obj[3:]
+            ], dtype=COORD_DTYPE)
+            self._notify_all_effect_caches(affected_coords, np.array([[0,0],[0,0]], dtype=PIECE_TYPE_DTYPE))
 
-    def set_vectorization(self, enabled: bool) -> None:
-        self.config.enable_vectorization = enabled
+            return True
 
-    # --------------------------------------------------------------------------
-    # UTILITY
-    # --------------------------------------------------------------------------
-    def clear_all_caches(self) -> None:
-        if self._move_cache:
-            self._move_cache.clear()
-        self.effects.clear_all_effects()
-        self.occupancy.rebuild(self.board)
-        self.performance_monitor = CachePerformanceMonitor()
-        self.performance_monitor.record_event(CacheEventType.CACHE_CLEARED, {})
-        self._move_counter = 0
-        gc.collect()
-        self.parallel.shutdown()
+    def undo_move(self, last_mv: np.ndarray, color: int) -> None:
+        """Undo move - recompute from scratch."""
+        with self._lock:
+            self._move_counter -= 1
+            self._zkey = self._compute_initial_zobrist(color)
+            self.dependency_graph.notify_update('move_undone')
+            self.move_cache.invalidate()
 
-    def export_cache_state(self) -> Dict[str, Any]:
-        return {
-            'zobrist_hash': self._current_zobrist_hash,
-            'performance_stats': self.get_cache_stats(),
-            'board_state': {
-                'occupied_squares': len(list(self.board.list_occupied())),
-                'current_player': self._move_cache._current.name if self._move_cache else None
-            },
-            'effect_cache_status': {
-                name: {'type': type(cache).__name__}
-                for name, cache in self.effects._effect_caches.items()
-            }
-        }
+    def get_cache_statistics(self) -> Dict[str, Any]:
+        """Aggregate statistics from all caches - numpy native."""
+        stats = self.move_cache.get_statistics()
+        stats.update(self.occupancy_cache.get_memory_usage())
 
-    def _mark_network_teleport_dirty(self) -> None:
-        """Mark network teleport targets as dirty for both colors."""
-        if hasattr(self, '_network_teleport_dirty'):
-            self._network_teleport_dirty[Color.WHITE] = True
-            self._network_teleport_dirty[Color.BLACK] = True
+        # Add per-effect cache stats - only sum numeric values
+        total_effect_memory = np.int64(0)
+        for cache in self._effect_cache_instances:
+            if hasattr(cache, 'get_memory_usage'):
+                usage = cache.get_memory_usage()
+                # Use numpy-native sum of only numeric values
+                for value in usage.values():
+                    if isinstance(value, (int, np.integer)):
+                        total_effect_memory += np.int64(value)
+
+        stats['effect_cache_memory'] = int(total_effect_memory)
+        stats.update(self._stats_tracker.get_stats())
+        stats.update(self._move_stats.get_stats())
+
+        return stats
+
+    def request_legal_moves(self, state: 'GameState') -> np.ndarray:
+        """Enforce move generation through generator."""
+        from game3d.movement.generator import generate_legal_moves
+        return generate_legal_moves(state)
+
+    def get_move_cache_key(self, color: int) -> int:
+        """Generate cache key from generation and Zobrist."""
+        board_gen = getattr(self.board, 'generation', 0)
+        return (board_gen << 16) | ((self._zkey & 0xFFFF) << 1) | (color & 1)
+
+    def update_zobrist_after_move(self, current_hash: HASH_DTYPE, move: np.ndarray,
+                                 from_piece: object, captured_piece: object | None) -> HASH_DTYPE:
+        """Facade for Zobrist updates."""
+        # move is already np.ndarray
+        return self.zobrist_cache.update_hash_move(current_hash, move, from_piece, captured_piece)
+
+    def update_position_history(self, zkey: HASH_DTYPE) -> None:
+        """Placeholder for position tracking."""
+        pass
 
 
-    def _update_effects(self, mv, from_piece, captured_piece, mover, current_ply):
-        """Update effects only when needed."""
-        # Determine which effects might be affected
-        relevant_effects = set()
 
-        if from_piece.ptype == PieceType.FREEZER:
-            relevant_effects.add("freeze")
-        elif from_piece.ptype == PieceType.ARCHER:
-            relevant_effects.add("archery")
-        elif from_piece.ptype in {PieceType.BLACKHOLE, PieceType.WHITEHOLE}:
-            relevant_effects.add("black_hole_suck")
-            relevant_effects.add("white_hole_push")
+    def get_parallel_executor(self) -> 'ParallelManager':
+        """Lazy parallel executor creation."""
+        if not hasattr(self, '_parallel_executor'):
+            from game3d.cache.parallelmanager import ParallelManager
 
-        # Only update relevant effects
-        for effect_name in relevant_effects:
-            try:
-                cache = self.effects._effect_caches[effect_name]
-                if hasattr(cache, 'apply_move'):
-                    cache.apply_move(mv, mover, self.board)
-            except Exception as e:
-                print(f"Effect {effect_name} update failed: {e}")
-# ==============================================================================
-# AI-SAFE DATA EXPORT METHODS (DELEGATED TO export.py)
-# ==============================================================================
+            config = ManagerConfig()
+            n_cpus = os.cpu_count() or 6
+            config.max_workers = max(1, n_cpus - 1)
+            config.enable_parallel = True
 
-    def export_state_for_ai(self, current_player: Color, move_number: int = 0) -> Dict[str, Any]:
-        return export_state_for_ai(self.board, self.occupancy, self._move_cache, self._current_zobrist_hash, current_player, move_number)
+            self._parallel_executor = ParallelManager(config)
 
-    def export_tensor_for_ai(self, current_player: Color, move_number: int = 0,
-                             device: str = "cpu") -> torch.Tensor:
-        return export_tensor_for_ai(self.board, self.occupancy, self._move_cache, self._current_zobrist_hash, current_player, move_number, device)
-
-    def get_legal_move_indices(self, color: Color) -> Tuple[List[int], List[int]]:
-        return get_legal_move_indices(self._move_cache, color)
-
-    def get_legal_moves_as_policy_target(self, color: Color,
-                                         move_probabilities: Optional[Dict['Move', float]] = None) -> torch.Tensor:
-        return get_legal_moves_as_policy_target(self._move_cache, color, move_probabilities)
-
-    def validate_export_integrity(self) -> Dict[str, bool]:
-        return validate_export_integrity(self.board, self.occupancy, self._move_cache, self._current_zobrist_hash)
-
-    @lru_cache(maxsize=128*1024)
-    def _cached_legal_moves(self, zkey: int, color_value: int) -> Tuple['Move',...]:
-        return tuple(self._generate_legal_moves_raw(Color(color_value)))
-
-    def validate_cache_consistency(self) -> bool:
-        """Validate cache matches board state."""
-        for coord, piece in self.board.list_occupied():
-            cached_piece = self.occupancy.get(coord)
-            if cached_piece != piece:
-                print(f"[INCONSISTENCY] Board has {piece} at {coord}, cache has {cached_piece}")
-                return False
-        return True
-
-    def validate_cache_state(self):
-        """Check for cache consistency"""
-        if self._move_cache:
-            board_pieces = set(coord for coord, _ in self.board.list_occupied())
-            cache_pieces = set(self.occupancy._white_pieces.keys()) | set(self.occupancy._black_pieces.keys())
-            if board_pieces != cache_pieces:
-                print(f"[ERROR] Cache inconsistency detected")
-                return False
-        return True
-
-    def get_share_square_cache(self) -> 'ShareSquareCache':
-        return self.effects._effect_caches["share_square"]
+        return self._parallel_executor
 
     @property
-    def piece_cache(self):
-        """Return the occupancy cache for backward compatibility."""
-        return self.occupancy
+    def consolidated_aura_cache(self) -> 'ConsolidatedAuraCache':
+        """Access the consolidated aura cache."""
+        return self._effect_cache_instances[0]
 
-    def _mark_swap_dirty(self) -> None:
-        """Mark swap targets as dirty for both colors."""
-        if hasattr(self, '_swap_targets_dirty'):
-            self._swap_targets_dirty[Color.WHITE] = True
-            self._swap_targets_dirty[Color.BLACK] = True
-
-    def get_check_summary(self) -> dict[str, Any]:
-        if self._check_summary_age != self._age_counter:
-            self._check_summary_cache = self._recompute_check_summary()
-            self._check_summary_age = self._age_counter
-        return self._check_summary_cache
+    @property
+    def trailblaze_cache(self) -> 'TrailblazeCache':
+        """Access the trailblaze cache."""
+        return self._effect_cache_instances[2]
 
 
-    def get_check_summary(self) -> dict[str, Any]:
-        if self._check_summary_age != self._age_counter:
-            self._check_summary_cache = self._recompute_check_summary()
-            self._check_summary_age = self._age_counter
-        return self._check_summary_cache
 
-    # ---------- private ----------
+    def _notify_all_effect_caches(self, changed_coords: np.ndarray, pieces: np.ndarray) -> None:
+        """Batch notification to all effect caches."""
+        # Iterate over pre-cached instances (avoid getattr in hot path)
+        for cache in self._effect_cache_instances:
+            cache.on_batch_occupancy_changed(changed_coords, pieces)
 
-    def _recompute_check_summary(self) -> dict[str, Any]:
-        # --- helpers ---
-        def king_pos(color: Color) -> tuple[int, int, int] | None:
-            for sq, p in self.board.list_occupied():
-                if p.color == color and p.ptype is PieceType.KING:
-                    return sq
-            return None
+    def _invalidate_affected_piece_moves(self, affected_coords: np.ndarray, color: int, game_state) -> None:
+        """Vectorized invalidation of moved pieces and dependencies."""
+        if affected_coords.size == 0:
+            return
 
-        def has_priest(color: Color) -> bool:
-            return any(
-                p.ptype is PieceType.PRIEST
-                for _, p in self.board.list_occupied()
-                if p.color == color
-            )
+        with self._lock:
+            opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
 
-        # --- king squares ---
-        w_k = king_pos(Color.WHITE)
-        b_k = king_pos(Color.BLACK)
+            # 1. Mark direct pieces (at the affected squares)
+            if affected_coords.size > 0:
+                keys = _coords_to_keys(affected_coords)
+                for key in keys:
+                    # Invalidate for both colors as occupancy changed
+                    self.move_cache.mark_piece_invalid(color, key)
+                    self.move_cache.mark_piece_invalid(opp_color, key)
+                
+                # 2. Mark pieces targeting these squares (Reverse Move Map)
+                targeting_pieces = self.move_cache.get_pieces_targeting(keys)
+                for (c_idx, p_key) in targeting_pieces:
+                    p_color = Color.WHITE if c_idx == 0 else Color.BLACK
+                    self.move_cache.mark_piece_invalid(p_color, p_key)
 
-        # --- attacked squares (always cheap; we still need them for other logic) ---
-        w_at = self.get_attacked_squares(Color.WHITE)
-        b_at = self.get_attacked_squares(Color.BLACK)
+            # 3. Get dependency-affected pieces (e.g. sliders blocked by something else)
+            # Note: If ReverseMoveMap is perfect, we might not need this for sliders,
+            # but we keep it for safety and for pieces that didn't have moves to the square.
+            dep_coords = self.dependency_graph.get_affected_pieces_vectorized(game_state, color)
 
-        # --- checkers / check flags (skip when priests guard the king) ---
-        w_checkers = [] if has_priest(Color.WHITE) else [sq for sq in b_at if sq == w_k] if w_k else []
-        b_checkers = [] if has_priest(Color.BLACK) else [sq for sq in w_at if sq == b_k] if b_k else []
+            # Batch mark invalid
+            if dep_coords.size > 0:
+                dep_keys = _coords_to_keys(dep_coords)
+                for key in dep_keys:
+                    self.move_cache.mark_piece_invalid(color, key)
 
-        return {
-            "white_check": bool(w_checkers),
-            "black_check": bool(b_checkers),
-            "white_king_position": w_k,
-            "black_king_position": b_k,
-            "white_checkers": w_checkers,
-            "black_checkers": b_checkers,
-            "attacked_squares_white": w_at,
-            "attacked_squares_black": b_at,
-        }
-# ==============================================================================
-# FACTORY & BACKWARD COMPATIBILITY
-# ==============================================================================
+    def _invalidate_attacking_pieces(self, opp_color: int, target_coord: np.ndarray) -> None:
+        """Invalidate opponent pieces that can capture target."""
+        if target_coord.size == 0:
+            return
 
-def get_cache_manager(board: Board, current: Color) -> OptimizedCacheManager:
-    cache = OptimizedCacheManager(board)
-    cache.initialise(current)
-    return cache
+        # Get opponent pieces
+        opp_coords = self.occupancy_cache.get_positions(opp_color)
 
+        if opp_coords.size == 0:
+            return
 
-class CacheManager(OptimizedCacheManager):
-    def __init__(self, board: Board) -> None:
-        super().__init__(board)
+        # For each opponent piece, check if it can attack target
+        # In practice, this would use vectorized attack detection
+        # target_key = target_coord.data.tobytes() # REMOVED
 
-    def sync_board(self, new_board: Board) -> None:
-        import warnings
-        warnings.warn("sync_board is deprecated. Create a new CacheManager instead.", DeprecationWarning)
-        self.board = new_board
-        self.occupancy.rebuild(new_board)
-        if self._move_cache:
-            self._move_cache._board = new_board
+        opp_keys = _coords_to_keys(opp_coords)
 
-    def replace_board(self, new_board: Board) -> None:
-        import warnings
-        warnings.warn("replace_board is deprecated. Create a new CacheManager instead.", DeprecationWarning)
-        self.board = new_board
-        self.occupancy.rebuild(new_board)
-        if self._move_cache:
-            self._move_cache._board = new_board
+        for i in range(len(opp_coords)):
+            coord_key = opp_keys[i]
+            moves = self.move_cache.get_piece_moves(opp_color, coord_key)
+
+            if moves.size > 0:
+                # Check if target is in move destinations
+                can_attack = (
+                    (moves[:, 3] == target_coord[0]) &
+                    (moves[:, 4] == target_coord[1]) &
+                    (moves[:, 5] == target_coord[2])
+                ).any()
+
+                if can_attack:
+                    self.move_cache.mark_piece_invalid(opp_color, coord_key)
+
+# =============================================================================
+# NUMPY-NATIVE DEPENDENCY GRAPH
+# =============================================================================
+
+class NumpyDependencyGraph:
+    """Matrix-based dependency tracking - fully vectorized."""
+
+    __slots__ = ("_dependencies", "_update_timestamps", "_manager", "_last_update")
+
+    def __init__(self, manager: OptimizedCacheManager):
+        self._manager = manager
+
+        # Dependency matrix: which piece types affect which others
+        self._dependencies = np.zeros((N_PIECE_TYPES + 1, N_PIECE_TYPES + 1), dtype=BOOL_DTYPE)
+
+        # Last update timestamp per piece type
+        self._update_timestamps = np.zeros(N_PIECE_TYPES + 1, dtype=INDEX_DTYPE)
+
+        # Global last update counter
+        self._last_update = 0
+
+    def notify_update(self, event_type: str) -> None:
+        """Vectorized dependency invalidation."""
+        self._last_update = self._manager._move_counter
+
+        # Mark affected piece types based on event
+        if event_type == 'move_applied':
+            # Move affects: straight sliders, diagonals, kings, aura pieces
+            affected = np.array([4, 5, 6, 7, 22, 23, 39], dtype=PIECE_TYPE_DTYPE)
+            self._update_timestamps[affected] = self._last_update
+
+    def get_affected_pieces_vectorized(self, game_state, color: int) -> np.ndarray:
+        """Get coordinates of pieces with outdated dependencies."""
+        # Get all pieces of color
+        all_coords = self._manager.occupancy_cache.get_positions(color)
+
+        if all_coords.size == 0:
+            return np.empty((0, 3), dtype=COORD_DTYPE)
+
+        # Get their types
+        colors, piece_types = self._manager.occupancy_cache.batch_get_attributes(all_coords)
+
+        # Check if any dependencies are outdated
+        outdated_mask = self._update_timestamps[piece_types] < self._last_update
+
+        return all_coords[outdated_mask]
+
+__all__ = ['OptimizedCacheManager', 'get_cache_manager']

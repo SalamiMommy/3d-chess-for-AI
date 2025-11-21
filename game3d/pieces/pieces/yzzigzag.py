@@ -1,7 +1,62 @@
-"""Master definition for YZ-Zig-Zag – imports its dispatcher and effect caches."""
+# yzzigzag.py - FULLY NUMPY-NATIVE
+"""
+YZ-Zig-Zag — 9-step zig-zag rays in YZ-plane.
+"""
+from __future__ import annotations
+from typing import List, TYPE_CHECKING
+import numpy as np
 
-from game3d.pieces.enums import PieceType
-from game3d.movement.movepieces.yzzigzagmoves import yzzigzag_dispatcher
+from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
+from game3d.common.registry import register
+from game3d.movement.slider_engine import get_slider_movement_generator
+from game3d.movement.movepiece import Move
 
-DISPATCHER = yzzigzag_dispatcher
-CACHES = []
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
+
+def _build_yz_zigzag_vectors() -> np.ndarray:
+    """Generate YZ-plane zigzag vectors using vectorized numpy operations."""
+    # Generate for both primary/secondary direction combinations
+    vecs = []
+    for pri, sec in ((1, -1), (-1, 1)):
+        # Primary and secondary steps
+        primary_steps = np.tile([0, pri, 0], 3)  # Y-axis steps
+        secondary_steps = np.tile([0, 0, sec], 3)  # Z-axis steps
+
+        # Interleave primary and secondary steps
+        all_steps = np.zeros(18, dtype=COORD_DTYPE)
+        all_steps[0::2] = primary_steps  # Even indices (0, 2, 4...)
+        all_steps[1::2] = secondary_steps  # Odd indices (1, 3, 5...)
+
+        # Reshape to (9, 3) and accumulate
+        step_array = all_steps.reshape(-1, 3)
+        cumulative = np.cumsum(step_array, axis=0)
+        vecs.extend(cumulative)
+
+    return np.array(vecs, dtype=COORD_DTYPE)
+
+YZ_ZIGZAG_DIRECTIONS = _build_yz_zigzag_vectors()
+
+def generate_yz_zigzag_moves(
+    cache_manager: 'OptimizedCacheManager',
+    color: int,
+    pos: np.ndarray
+) -> np.ndarray:
+    """Generate YZ-zigzag slider moves."""
+    pos_arr = pos.astype(COORD_DTYPE)
+    slider_engine = get_slider_movement_generator(cache_manager)
+
+    return slider_engine.generate_slider_moves_array(
+        color=color,
+        pos=pos_arr,
+        directions=YZ_ZIGZAG_DIRECTIONS,
+        max_distance=16,
+    )
+
+@register(PieceType.YZZIGZAG)
+def yz_zigzag_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+    """Registered dispatcher for YZ-ZigZag moves."""
+    return generate_yz_zigzag_moves(state.cache_manager, state.color, pos)
+
+__all__ = ['YZ_ZIGZAG_DIRECTIONS', 'generate_yz_zigzag_moves']

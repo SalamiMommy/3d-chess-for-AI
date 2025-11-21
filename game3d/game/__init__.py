@@ -1,20 +1,16 @@
-# __init__.py - Fixed version
-"""
-game3d/game/__init__.py
-Central initialization that binds all game functionality to GameState.
-"""
-
+"""Game initialization with numpy array support."""
+from __future__ import annotations
 from typing import TYPE_CHECKING
+import numpy as np
 
-# Import core classes first
-from .gamestate import GameState
-from .performance import PerformanceMetrics, track_operation_time, track_performance
-from .zobrist import compute_zobrist
-from game3d.pieces.piece import Color
-# Import factory functions
-from .factory import start_game_state, create_game_state_from_tensor, clone_game_state_for_search
-# Import terminal/outcome functions
-from .terminal import (
+# Core classes - ENSURE GameState is imported first
+from game3d.game.gamestate import GameState  # ADD THIS LINE AT THE TOP
+
+# Factory functions
+from game3d.game.factory import start_game_state, create_game_state_from_tensor, clone_game_state_for_search
+
+# Terminal/outcome functions
+from game3d.game.terminal import (
     is_check,
     is_stalemate,
     is_insufficient_material,
@@ -23,155 +19,103 @@ from .terminal import (
     result,
     is_terminal,
     outcome,
-    insufficient_material
+    insufficient_material,
 )
 
-# Import move_utils (breaks circular dependency)
-from .move_utils import (
-    apply_hole_effects,
-    apply_bomb_effects,
-    apply_trailblaze_effect,
-    reconstruct_trailblazer_path,
-    extract_enemy_slid_path
-)
+# Special move effects
+# from game3d.game.moveeffects import apply_archery_attack, apply_hive_moves
 
-# Import moveeffects (now has archery and hive moves)
-from .moveeffects import apply_archery_attack, apply_hive_moves  # MODIFIED: Added apply_hive_moves
-
-# ------------------------------------------------------------------
-# BIND ALL METHODS TO GAMESTATE CLASS
-# ------------------------------------------------------------------
-
-# Terminal/outcome methods
-GameState.is_check = is_check
-GameState.is_stalemate = is_stalemate
-GameState.is_insufficient_material = is_insufficient_material
-GameState.is_fifty_move_draw = is_fifty_move_draw
-GameState.is_game_over = is_game_over
-GameState.result = result
-GameState.is_terminal = is_terminal
-GameState.outcome = outcome
-
-# Move generation and execution methods - imported on demand
-def _import_turnmove_functions():
-    """Import turnmove functions on demand to avoid circular imports."""
+# Move functions - imported lazily to avoid circular imports
+def _get_turnmove_functions():
+    """Get turn-move functions for numpy array compatibility."""
     from .turnmove import (
         legal_moves,
-        pseudo_legal_moves,
         make_move,
         undo_move,
-        validate_legal_moves
     )
-    return legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves
+    # Import functions from the correct module
+    from game3d.movement.generator import generate_legal_moves as generate_legal_moves_func
+    from game3d.movement.generator import validate_moves as batch_validate_moves
 
-legal_moves, pseudo_legal_moves, make_move, undo_move, validate_legal_moves = _import_turnmove_functions()
+    return legal_moves, generate_legal_moves_func, make_move, undo_move, batch_validate_moves
 
-GameState.legal_moves = legal_moves
-GameState.pseudo_legal_moves = pseudo_legal_moves
-GameState.make_move = make_move
-GameState.undo_move = undo_move
-GameState.apply_hive_moves = apply_hive_moves  # MODIFIED: Now using moveeffects import
 
-# Add missing PieceType import for validation methods
-from game3d.pieces.enums import PieceType
+# Bind all methods to GameState class
+def _bind_game_state_methods():
+    """Bind all game methods to GameState class for numpy array support."""
+    # Terminal/outcome methods
+    GameState.is_check = staticmethod(is_check)
+    GameState.is_stalemate = staticmethod(is_stalemate)
+    GameState.is_insufficient_material = staticmethod(is_insufficient_material)
+    GameState.is_fifty_move_draw = staticmethod(is_fifty_move_draw)
+    GameState.is_terminal = staticmethod(is_terminal)
+    GameState.outcome = staticmethod(outcome)
 
-# ------------------------------------------------------------------
-# FACTORY FUNCTIONS (Add these since they're referenced but not defined)
-# ------------------------------------------------------------------
+    # Move methods - imported on demand
+    legal_moves, generate_legal_moves_func, make_move, undo_move, batch_validate_moves = _get_turnmove_functions()
 
-def start_game_state(board_size: int = 9) -> GameState:
-    """Create a new game state with initial position."""
-    from game3d.board.board import Board
-    from game3d.cache.manager import get_cache_manager
-    from game3d.pieces.enums import Color
 
-    # Create empty board
-    board = Board.create_initial_position()
-    cache = get_cache_manager(board, Color.WHITE)
+    GameState.generate_legal_moves = staticmethod(generate_legal_moves_func)
+    GameState.make_move = staticmethod(make_move)
+    GameState.undo_move = staticmethod(undo_move)
+    GameState.batch_validate_moves = staticmethod(batch_validate_moves)
 
-    return GameState(
-        board=board,
-        color=Color.WHITE,
-        cache=cache,
-        history=(),
-        halfmove_clock=0,
-        turn_number=1
-    )
-
-def create_game_state_from_tensor(tensor, color: Color) -> GameState:
-    """Create game state from tensor representation."""
-    from game3d.board.board import Board
-    from game3d.cache.manager import get_cache_manager
-
-    board = Board(tensor)
-    cache = get_cache_manager(board, color)
-
-    return GameState(
-        board=board,
-        color=color,
-        cache=cache,
-        history=(),
-        halfmove_clock=0,
-        turn_number=1
-    )
-
-def clone_game_state_for_search(original: GameState) -> GameState:
-    """Create a deep clone for search algorithms."""
-    return original.clone_with_new_cache()
-
-# Bind factory functions
-GameState.start_game_state = staticmethod(start_game_state)
-GameState.create_game_state_from_tensor = staticmethod(create_game_state_from_tensor)
-GameState.clone_game_state_for_search = staticmethod(clone_game_state_for_search)
-
-# ------------------------------------------------------------------
-# EXPORTS
-# ------------------------------------------------------------------
-
-__all__ = [
-    # Core classes
-    'GameState',
-    'PerformanceMetrics',
+    # Special move methods
+    # GameState.apply_archery_attack = staticmethod(apply_archery_attack)
+    # GameState.apply_hive_moves = staticmethod(apply_hive_moves)
 
     # Factory functions
-    'start_game_state',
-    'create_game_state_from_tensor',
-    'clone_game_state_for_search',
+    GameState.start_game_state = staticmethod(start_game_state)
+    GameState.create_game_state_from_tensor = staticmethod(create_game_state_from_tensor)
+    GameState.clone_game_state_for_search = staticmethod(clone_game_state_for_search)
 
-    # Zobrist
-    'compute_zobrist',
+    # Cache-related methods
+    _bind_cache_methods()
 
-    # Terminal functions
-    'is_check',
-    'is_stalemate',
-    'is_insufficient_material',
-    'is_fifty_move_draw',
-    'is_game_over',
-    'result',
-    'is_terminal',
-    'outcome',
-    'insufficient_material',
 
-    # Move functions
-    'legal_moves',
-    'pseudo_legal_moves',
-    'make_move',
-    'undo_move',
+def _bind_cache_methods():
+    """Bind cache-related methods for numpy array operations."""
+    if not hasattr(GameState, "has_priest"):
+        GameState.has_priest = lambda self, color: self.cache_manager.has_priest(color)
 
-    # Special effects
-    'apply_hole_effects',
-    'apply_bomb_effects',
-    'apply_trailblaze_effect',
-    'reconstruct_trailblazer_path',
-    'extract_enemy_slid_path',
+    if not hasattr(GameState, "any_priest_alive"):
+        GameState.any_priest_alive = lambda self: self.cache_manager.any_priest_alive()
 
-    # Special game modes
-    'apply_archery_attack',
-    'apply_hive_moves',
-    'validate_archery_attack',
-    'validate_hive_moves',
+    if not hasattr(GameState, "find_king"):
+        GameState.find_king = lambda self, color: self.cache_manager.find_king(color)
 
-    # Performance
-    'track_operation_time',
-    'track_performance',
+    if not hasattr(GameState, "get_attacked_squares"):
+        GameState.get_attacked_squares = (
+            lambda self, color: self.cache_manager.get_attacked_squares(color)
+        )
+
+
+# Initialize all bindings
+_bind_game_state_methods()
+
+# Export all public interface
+__all__ = [
+    "GameState",
+    "PerformanceMetrics",
+    "start_game_state",
+    "create_game_state_from_tensor",
+    "clone_game_state_for_search",
+    "is_check",
+    "is_stalemate",
+    "is_insufficient_material",
+    "is_fifty_move_draw",
+    "is_game_over",
+    "result",
+    "is_terminal",
+    "outcome",
+    "insufficient_material",
+    "legal_moves",
+    "generate_legal_moves",
+    "make_move",
+    "undo_move",
+    "batch_validate_moves",
+    # "apply_archery_attack",
+    # "apply_hive_moves",
+    "track_operation_time",
+    "track_performance",
 ]
