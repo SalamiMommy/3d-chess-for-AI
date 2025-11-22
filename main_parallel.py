@@ -52,7 +52,29 @@ from itertools import cycle
 import numpy as np
 import gc
 import tempfile
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Dummy tqdm for environments without it
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            self.total = kwargs.get('total', 0)
+            self.n = 0
+            print(f"Progress bar disabled (tqdm not found). Total: {self.total}")
+            
+        def update(self, n=1):
+            self.n += n
+            if self.n % 10 == 0:
+                print(f"Progress: {self.n}/{self.total}")
+                
+        def set_postfix(self, *args, **kwargs):
+            pass
+            
+        def close(self):
+            print("Done.")
+            
+        def write(self, msg):
+            print(msg)
 
 if __name__ == "__main__":
     if mp.get_start_method(allow_none=True) != "spawn":
@@ -80,8 +102,8 @@ if __name__ == "__main__":
 
     # CLI configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games-per-iter", type=int, default=1)  # Increased from 24 for more data
-    parser.add_argument("--num-parallel", type=int, default=1)  # Optimized for 6-core CPU
+    parser.add_argument("--games-per-iter", type=int, default=4)  # Increased from 24 for more data
+    parser.add_argument("--num-parallel", type=int, default=4)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
     parser.add_argument("--max-replay", type=int, default=150000)  # Increased to utilize 64GB RAM

@@ -4,11 +4,11 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 
 from game3d.common.shared_types import (
-    COORD_DTYPE, BOOL_DTYPE, RADIUS_2_OFFSETS, SIZE
+    COORD_DTYPE, BOOL_DTYPE, RADIUS_2_OFFSETS, SIZE, MOVE_FLAGS
 )
 from game3d.common.shared_types import Color, PieceType
 from game3d.common.registry import register
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 from game3d.movement.jump_engine import get_jump_movement_generator
 from game3d.common.coord_utils import in_bounds_vectorized
 

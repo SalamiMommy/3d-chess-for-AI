@@ -211,9 +211,17 @@ def is_game_over(game_state) -> bool:
         logger.warning("Game over: fivefold repetition")
         return True
 
+    if is_threefold_repetition(game_state):
+        logger.warning("Game over: threefold repetition")
+        return True
+
     if is_seventy_five_move_draw(game_state):
         # Always log when game-ending condition is met
         logger.warning("Game over: 75-move draw")
+        return True
+
+    if is_fifty_move_draw(game_state):
+        logger.warning("Game over: 50-move draw")
         return True
 
     if is_insufficient_material(game_state):
@@ -230,9 +238,13 @@ def is_game_over(game_state) -> bool:
     if legal_moves.size > 0:
         return False
 
-    # Always log when game-ending condition is met
-    logger.warning("Game over: stalemate")
-    return not is_check(game_state)
+    # No legal moves -> Game Over (either Checkmate or Stalemate)
+    if is_check(game_state):
+        logger.warning(f"Game over: Checkmate (Winner: {Color(game_state.color).opposite().name})")
+    else:
+        logger.warning("Game over: Stalemate")
+    
+    return True
 
 @track_operation(metrics=None)
 def result(game_state) -> Optional[int]:
@@ -257,7 +269,10 @@ def result(game_state) -> Optional[int]:
             return Result.DRAW
 
     # Checkmate: current player has no legal moves but is in check
-    return Result.BLACK_WIN if current_color == COLOR_BLACK else Result.WHITE_WIN
+    # Checkmate: current player has no legal moves but is in check
+    # If current player is Black and has no moves -> White wins
+    # If current player is White and has no moves -> Black wins
+    return Result.WHITE_WIN if current_color == COLOR_BLACK else Result.BLACK_WIN
 
 def is_terminal(game_state) -> bool:
     """Check if state is terminal."""

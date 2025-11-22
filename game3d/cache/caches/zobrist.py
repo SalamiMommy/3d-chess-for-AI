@@ -107,7 +107,8 @@ def compute_zobrist(board: Union["Board", np.ndarray], color: int) -> HASH_DTYPE
     if color == Color.BLACK:
         zkey ^= _SIDE_KEY
 
-    return HASH_DTYPE(zkey)
+    # Return Python int to ensure hashability
+    return int(zkey)
 
 class ZobristHash:
     """Pure numpy Zobrist hashing - fully vectorized and native."""
@@ -148,7 +149,8 @@ class ZobristHash:
             zkey = np.bitwise_xor.reduce(keys)
             if color == Color.BLACK:
                 zkey ^= self._side_key
-            return HASH_DTYPE(zkey)
+            # Return Python int to ensure hashability
+            return int(zkey)
 
         # Fallback to global function
         return compute_zobrist(board, color)
@@ -201,7 +203,8 @@ class ZobristHash:
         ]
 
         new_hash ^= self._side_key
-        return HASH_DTYPE(new_hash)
+        # Return Python int to ensure hashability in dictionary operations
+        return int(new_hash)
     
     def undo_hash_move(self, current_hash: HASH_DTYPE, mv: np.ndarray,
                       moved_piece: object, captured_piece: object | None) -> HASH_DTYPE:
@@ -245,7 +248,8 @@ class ZobristHash:
 
         # Flip side
         new_hash ^= self._side_key
-        return HASH_DTYPE(new_hash)
+        # Return Python int to ensure hashability
+        return int(new_hash)
 
     def update_hash_piece_placement(
         self,
@@ -279,7 +283,8 @@ class ZobristHash:
                 coord_array[0], coord_array[1], coord_array[2]
             ]
 
-        return HASH_DTYPE(new_hash)
+        # Return Python int to ensure hashability
+        return int(new_hash)
 
     def flip_side(self, current_hash: HASH_DTYPE) -> HASH_DTYPE:
         """Flip the side to move using shared_types."""

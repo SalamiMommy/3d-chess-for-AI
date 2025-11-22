@@ -7,11 +7,11 @@ from game3d.common.shared_types import (
     Color, PieceType,
     COORD_DTYPE, COLOR_WHITE, COLOR_BLACK, SIZE,
     PAWN_START_RANK_WHITE, PAWN_START_RANK_BLACK,
-    PAWN_PROMOTION_RANK_WHITE, PAWN_PROMOTION_RANK_BLACK
+    PAWN_PROMOTION_RANK_WHITE, PAWN_PROMOTION_RANK_BLACK, MOVE_FLAGS
 )
 from game3d.common.registry import register
 from game3d.movement.jump_engine import get_jump_movement_generator
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager

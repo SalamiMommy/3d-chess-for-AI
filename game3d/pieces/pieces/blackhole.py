@@ -97,9 +97,18 @@ def suck_candidates_vectorized(
     valid_occupancy = np.array([
         cache_manager.occupancy_cache.get(pos) is None for pos in pull_positions
     ])
+    
+    # CRITICAL: Prevent pulling onto blackhole squares
+    # Check if any pull position matches a blackhole position
+    not_on_blackhole = np.ones(len(pull_positions), dtype=bool)
+    for i, pull_pos in enumerate(pull_positions):
+        # Check if this pull position matches any blackhole position
+        matches_blackhole = np.all(blackhole_coords == pull_pos, axis=1)
+        if np.any(matches_blackhole):
+            not_on_blackhole[i] = False
 
     # Filter valid pulls using vectorized operations
-    valid_pulls_mask = valid_bounds & valid_occupancy & np.any(in_range, axis=1)
+    valid_pulls_mask = valid_bounds & valid_occupancy & np.any(in_range, axis=1) & not_on_blackhole
 
     if not np.any(valid_pulls_mask):
         return np.empty((0, 6), dtype=COORD_DTYPE)

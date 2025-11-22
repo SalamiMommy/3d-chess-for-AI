@@ -7,7 +7,7 @@ This module provides complete numpy/numba operations using centralized utilities
 import numpy as np
 from typing import Optional, Dict, Any, List, Union, Tuple
 from numba import njit, prange
-from collections import defaultdict
+from collections import defaultdict, deque
 import logging
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ from game3d.common.shared_types import (
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
     BATCH_COORD_DTYPE, SIZE, VOLUME, N_TOTAL_PLANES, N_PIECE_TYPES, HASH_DTYPE,
     COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
-    MOVE_DTYPE as MOVE_DTYPE
+    MOVE_DTYPE as MOVE_DTYPE, MAX_HISTORY_SIZE
 )
 from game3d.common.coord_utils import CoordinateUtils, in_bounds_vectorized
 from game3d.common.state_utils import create_new_state
@@ -34,11 +34,12 @@ class GameState:
     __slots__ = (
         'board', 'color', 'cache_manager', 'history', 'halfmove_clock',
         'turn_number', '_zkey', '_position_keys', '_position_counts', '_legal_moves_cache',
-        '_legal_moves_cache_key', '_metrics', '_cache_key_multipliers', '_undo_info'
+        '_legal_moves_cache_key', '_metrics', '_cache_key_multipliers', '_undo_info',
+        '_pending_hive_moves', '_moved_hive_positions'
     )
 
     def __init__(self, board, color: int = COLOR_BLACK, cache_manager: Optional[OptimizedCacheManager] = None,
-                history: np.ndarray = None, halfmove_clock: int = 0, turn_number: int = 1):
+                history: Union[deque, np.ndarray, list] = None, halfmove_clock: int = 0, turn_number: int = 1):
         """Initialize with numpy-native structures."""
         if board is None:
             raise ValueError("Board cannot be None")
@@ -64,7 +65,13 @@ class GameState:
         self._zkey = self.cache_manager._zkey
 
         # Initialize game state arrays
-        self.history = np.empty(0, dtype=MOVE_DTYPE) if history is None else history
+        if history is None:
+            self.history = deque(maxlen=MAX_HISTORY_SIZE)
+        elif isinstance(history, deque):
+            self.history = history
+        else:
+            # Convert existing array/list to deque
+            self.history = deque(history, maxlen=MAX_HISTORY_SIZE)
         self.halfmove_clock = halfmove_clock
         self.turn_number = turn_number
 
@@ -85,11 +92,22 @@ class GameState:
 
         # Undo information stack (for fast takeback)
         self._undo_info = []
+        
+        # Multi-hive move tracking
+        self._pending_hive_moves = []  # List of Move objects for hive moves this turn
+        self._moved_hive_positions = set()  # Set of tuples (x, y, z) for hives that have moved
 
     @property
     def zkey(self) -> int:
         """Get Zobrist key."""
         return self._zkey
+
+    @property
+    def history_array(self) -> np.ndarray:
+        """Get history as numpy array (for backward compatibility)."""
+        if not self.history:
+            return np.empty(0, dtype=MOVE_DTYPE)
+        return np.array(self.history, dtype=MOVE_DTYPE)
 
     def _get_cache_key(self, prefix_id: int, *params) -> int:
         """O(1) cache key generation"""
@@ -116,6 +134,46 @@ class GameState:
         """Clear local state caches."""
         self._legal_moves_cache = None
         self._legal_moves_cache_key = 0
+    
+    # =============================================================================
+    # MULTI-HIVE MOVE TRACKING
+    # =============================================================================
+    @property
+    def is_in_hive_multi_move_state(self) -> bool:
+        """Check if currently in multi-hive move mode (first hive moved but turn not ended)."""
+        return len(self._pending_hive_moves) > 0
+    
+    def has_hive_moved(self, pos: np.ndarray) -> bool:
+        """Check if a hive at the given position has already moved this turn."""
+        pos_tuple = tuple(pos.flatten().tolist())
+        return pos_tuple in self._moved_hive_positions
+    
+    def get_unmoved_hives(self) -> List[np.ndarray]:
+        """Get list of hive positions that haven't moved yet this turn."""
+        from game3d.common.shared_types import PieceType
+        
+        unmoved_hives = []
+        
+        # Get all pieces of current color
+        coords = self.cache_manager.occupancy_cache.get_positions(self.color)
+        if coords.size == 0:
+            return unmoved_hives
+        
+        # Get their attributes  
+        colors, piece_types = self.cache_manager.occupancy_cache.batch_get_attributes(coords)
+        
+        # Filter for HIVE pieces that haven't moved
+        for i, coord in enumerate(coords):
+            if piece_types[i] == PieceType.HIVE:
+                pos_tuple = tuple(coord.flatten().tolist())
+                if pos_tuple not in self._moved_hive_positions:
+                    unmoved_hives.append(coord)
+        return unmoved_hives
+    
+    def clear_hive_move_tracking(self) -> None:
+        """Clear hive move tracking (called when turn ends)."""
+        self._pending_hive_moves.clear()
+        self._moved_hive_positions.clear()
 
     # =============================================================================
     # VECTORIZED MOVE OPERATIONS - REFACTORED TO USE GENERATOR
@@ -249,11 +307,18 @@ class GameState:
              
         return new_state
 
-    def _switch_turn(self) -> None:
-        """Switch turn between players."""
-        self.color = 1 - self.color
-        self.turn_number += 1
-        self.halfmove_clock += 1
+    def _switch_turn(self) -> 'GameState':
+        """Switch turn between players and return new state."""
+        from game3d.common.state_utils import create_new_state
+        
+        return create_new_state(
+            original_state=self,
+            new_board=self.board,  # Board is already updated
+            new_color=self.color.opposite(),
+            move=None,
+            increment_turn=True,
+            reuse_cache=True
+        )
 
     # =============================================================================
     # GAME ANALYSIS OPERATIONS - REFACTORED TO USE COMMON MODULES
@@ -338,7 +403,7 @@ class GameState:
     def __str__(self) -> str:
         """String representation."""
         return (f"GameState(color={self.color}, turn={self.turn_number}, "
-                f"moves={self.history.size}, zkey={self._zkey})")
+                f"moves={len(self.history)}, zkey={self._zkey})")
 
 # =============================================================================
 # PERFORMANCE METRICS CLASS

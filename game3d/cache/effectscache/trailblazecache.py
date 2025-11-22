@@ -2,12 +2,12 @@
 from __future__ import annotations
 import numpy as np
 from numba import njit, prange
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import threading
 
 from game3d.common.shared_types import (
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, SIZE, VOLUME, MAX_COORD_VALUE,
-    Color, TRAILBLAZER
+    Color, TRAILBLAZER, INT8_DTYPE
 )
 from game3d.common.coord_utils import coord_to_idx, idx_to_coord, in_bounds_vectorized
 from game3d.cache.cache_protocols import CacheListener
@@ -16,14 +16,21 @@ from game3d.cache.cache_protocols import CacheListener
 # STRUCTURED DTYPES FOR NUMPY-NATIVE STORAGE
 # =============================================================================
 
-# Maximum trail length per trailblazer (trailblazer + 8 steps)
-MAX_TRAIL_LENGTH = 9
+# Maximum trail length per trailblazer (3 moves * 3 squares max = 9 squares)
+# But we need to store the history of moves.
+# Let's store up to 3 past moves. Each move has a path.
+# Max path length for a move is MAX_TRAILBLAZER_DISTANCE (3).
+# So we need storage for 3 * 3 = 9 squares total.
+MAX_TRAIL_HISTORY = 3
+MAX_SQUARES_PER_MOVE = 3
+TOTAL_TRAIL_CAPACITY = MAX_TRAIL_HISTORY * MAX_SQUARES_PER_MOVE
 
 # Trail data storage: One entry per potential trailblazer position
 TRAIL_DATA_DTYPE = np.dtype([
     ('flat_idx', INDEX_DTYPE),           # Trailblazer position (flat index)
-    ('trail_coords', COORD_DTYPE, (MAX_TRAIL_LENGTH, 3)),  # Pre-allocated trail coordinates
-    ('trail_length', INDEX_DTYPE),       # Actual length of trail (0 = inactive)
+    ('trail_coords', COORD_DTYPE, (TOTAL_TRAIL_CAPACITY, 3)),  # Pre-allocated trail coordinates
+    ('trail_lengths', INDEX_DTYPE, (MAX_TRAIL_HISTORY,)), # Length of each history segment
+    ('history_ptr', INDEX_DTYPE),        # Circular buffer pointer
     ('active', BOOL_DTYPE)               # Whether this entry is active
 ])
 
@@ -89,7 +96,7 @@ class TrailblazeCache(CacheListener):
     __slots__ = (
         "_manager", "_coord_dtype", "_memory_pool",
         "_trail_data", "_trailblazer_flat_positions", "_position_mask",
-        "_lock", "_next_slot", "_max_trailblazers"
+        "_victim_counters", "_lock", "_next_slot", "_max_trailblazers"
     )
 
     def __init__(self, cache_manager: Optional["OptimizedCacheManager"] = None) -> None:
@@ -109,6 +116,9 @@ class TrailblazeCache(CacheListener):
 
         # Boolean mask for O(1) position checks: shape (VOLUME,)
         self._position_mask = np.zeros(VOLUME, dtype=BOOL_DTYPE)
+        
+        # Victim counters: shape (VOLUME,) - stores counter value (0-3) per square
+        self._victim_counters = np.zeros(VOLUME, dtype=INT8_DTYPE)
 
         # Thread safety
         self._lock = threading.RLock()
@@ -165,114 +175,84 @@ class TrailblazeCache(CacheListener):
         flat_coords = self._coords_to_flat(coords)
         return self._is_trailblazer_flat(flat_coords)
 
-    def batch_is_in_trail(self, trailblazer_sq: np.ndarray, query_coords: np.ndarray) -> np.ndarray:
-        """Vectorized trail membership check."""
-        if trailblazer_sq.size == 0 or query_coords.size == 0:
-            return np.zeros(query_coords.shape[0], dtype=BOOL_DTYPE)
-
-        coords = self._ensure_coords(trailblazer_sq)
-        trailblazer_idx = self._coords_to_flat(coords)[0]
-
-        # Find trailblazer entry
-        trailblazer_mask = self._trail_data['flat_idx'] == trailblazer_idx
-        if not np.any(trailblazer_mask):
-            return np.zeros(query_coords.shape[0], dtype=BOOL_DTYPE)
-
-        entry_idx = np.where(trailblazer_mask)[0][0]
-        trail_length = self._trail_data[entry_idx]['trail_length']
-
-        if trail_length == 0:
-            return np.zeros(query_coords.shape[0], dtype=BOOL_DTYPE)
-
-        # Get trail coordinates
-        trail_coords = self._trail_data[entry_idx]['trail_coords'][:trail_length]
-
-        # Vectorized membership check
-        return _batch_trail_squares_check_numba(trail_coords, query_coords)
-
-    # ========================================================================
-    # SINGLE QUERY OPERATIONS (wrap batch operations)
-    # ========================================================================
-
-    def get_trail_count(self, trailblazer_sq: np.ndarray) -> int:
-        """Get trail length for trailblazer."""
-        coords = self._ensure_coords(trailblazer_sq)
-        flat_idx = self._coords_to_flat(coords)[0]
-
-        mask = self._trail_data['flat_idx'] == flat_idx
-        if not np.any(mask):
-            return 0
-
-        entry_idx = np.where(mask)[0][0]
-        return int(self._trail_data[entry_idx]['trail_length'])
-
-    def get_trail_squares(self, trailblazer_sq: np.ndarray) -> np.ndarray:
-        """Get trail coordinates for trailblazer."""
-        coords = self._ensure_coords(trailblazer_sq)
-        flat_idx = self._coords_to_flat(coords)[0]
-
-        mask = self._trail_data['flat_idx'] == flat_idx
-        if not np.any(mask):
-            return np.empty((0, 3), dtype=self._coord_dtype)
-
-        entry_idx = np.where(mask)[0][0]
-        trail_length = self._trail_data[entry_idx]['trail_length']
-
-        if trail_length == 0:
-            return np.empty((0, 3), dtype=self._coord_dtype)
-
-        return self._trail_data[entry_idx]['trail_coords'][:trail_length].copy()
-
-    def get_all_trails(self) -> Dict[int, np.ndarray]:
-        """Get all trail data as dict (for compatibility)."""
-        active_mask = self._trail_data['active']
-        active_indices = np.where(active_mask)[0]
-
-        result = {}
-        for idx in active_indices:
-            flat_idx = self._trail_data[idx]['flat_idx']
-            length = self._trail_data[idx]['trail_length']
-            if length > 0:
-                result[int(flat_idx)] = self._trail_data[idx]['trail_coords'][:length].copy()
-
-        return result
-
-    def remove_trail(self, trailblazer_sq: np.ndarray) -> bool:
-        """Remove single trail (wraps batch version)."""
-        coords = self._ensure_coords(trailblazer_sq)
-        if coords.size == 0:
+    def check_trail_intersection(self, path_coords: np.ndarray) -> bool:
+        """Check if any coordinate in path intersects with ANY active trail."""
+        if path_coords.size == 0:
             return False
+            
+        # Get all active trail squares
+        all_trails = self._get_all_active_trail_squares()
+        if all_trails.size == 0:
+            return False
+            
+        return np.any(_batch_trail_squares_check_numba(all_trails, path_coords))
 
+    def get_intersecting_squares(self, path_coords: np.ndarray) -> np.ndarray:
+        """Get subset of path_coords that intersect with trails."""
+        if path_coords.size == 0:
+            return np.empty((0, 3), dtype=self._coord_dtype)
+            
+        all_trails = self._get_all_active_trail_squares()
+        if all_trails.size == 0:
+            return np.empty((0, 3), dtype=self._coord_dtype)
+            
+        mask = _batch_trail_squares_check_numba(all_trails, path_coords)
+        return path_coords[mask]
+
+    # ========================================================================
+    # COUNTER OPERATIONS
+    # ========================================================================
+
+    def increment_counter(self, coord: np.ndarray) -> bool:
+        """
+        Increment counter at coordinate.
+        Returns True if counter reaches 3 (capture condition).
+        """
+        coords = self._ensure_coords(coord)
         flat_idx = self._coords_to_flat(coords)[0]
-        return self._remove_trail_batch(np.array([flat_idx], dtype=INDEX_DTYPE)) > 0
-
-    def add_trail(self, color: int, squares: np.ndarray) -> None:
-        """
-        Add trail squares for a trailblazer.
-        Note: This implementation assumes the trail is associated with the *current* position 
-        of the trailblazer, but the interface passed just 'squares'.
-        We need to know WHICH trailblazer this trail belongs to.
-        However, the current usage in moveeffects.py passes (color, squares).
-        This seems insufficient if we want to track per-trailblazer.
-        But if we just want to store "active trails", maybe we don't need strict association?
-        The cache structure `TRAIL_DATA_DTYPE` links `flat_idx` (trailblazer pos) to `trail_coords`.
-        So we MUST know the trailblazer position.
         
-        Let's update the signature to `add_trail(self, trailblazer_pos, squares)`.
-        But I called it with `add_trail(color, path_arr)` in moveeffects.py.
-        I should fix moveeffects.py to pass the position.
-        """
-        # Placeholder to match the call in moveeffects.py for now, but we need to fix it.
-        # I will implement `add_trail_for_piece(self, piece_pos, squares)` and update moveeffects.py
-        pass
+        with self._lock:
+            self._victim_counters[flat_idx] += 1
+            return self._victim_counters[flat_idx] >= 3
 
-    def add_trail_for_piece(self, piece_pos: np.ndarray, squares: np.ndarray) -> None:
-        """Add trail for a specific trailblazer at piece_pos."""
+    def get_counter(self, coord: np.ndarray) -> int:
+        """Get counter value at coordinate."""
+        coords = self._ensure_coords(coord)
+        flat_idx = self._coords_to_flat(coords)[0]
+        return int(self._victim_counters[flat_idx])
+
+    def clear_counter(self, coord: np.ndarray) -> None:
+        """Reset counter at coordinate."""
+        coords = self._ensure_coords(coord)
+        flat_idx = self._coords_to_flat(coords)[0]
+        with self._lock:
+            self._victim_counters[flat_idx] = 0
+
+    def move_counter(self, from_coord: np.ndarray, to_coord: np.ndarray) -> None:
+        """Move counter value from one square to another (piece moved)."""
+        from_c = self._ensure_coords(from_coord)
+        to_c = self._ensure_coords(to_coord)
+        
+        from_idx = self._coords_to_flat(from_c)[0]
+        to_idx = self._coords_to_flat(to_c)[0]
+        
+        with self._lock:
+            val = self._victim_counters[from_idx]
+            if val > 0:
+                self._victim_counters[to_idx] = val
+                self._victim_counters[from_idx] = 0
+
+    # ========================================================================
+    # TRAIL MANAGEMENT
+    # ========================================================================
+
+    def add_trail(self, trailblazer_pos: np.ndarray, squares: np.ndarray) -> None:
+        """Add trail for a specific trailblazer at trailblazer_pos."""
         if squares.size == 0:
             return
             
         with self._lock:
-            coords = self._ensure_coords(piece_pos)
+            coords = self._ensure_coords(trailblazer_pos)
             flat_idx = self._coords_to_flat(coords)[0]
             
             # Check if we already have an entry for this trailblazer
@@ -287,29 +267,58 @@ class TrailblazeCache(CacheListener):
                     if inactive.size > 0:
                         entry_idx = inactive[0]
                     else:
-                        # Cache full - ignore or evict?
+                        # Cache full - ignore
                         return
                 else:
                     entry_idx = self._next_slot
                     self._next_slot += 1
             
-            # Update entry
+            # Activate entry
             self._trail_data[entry_idx]['flat_idx'] = flat_idx
             self._trail_data[entry_idx]['active'] = True
             
-            # Store trail squares
-            # We append to existing or replace? 
-            # Trailblazer logic says "union of last 3 trails". 
-            # Here we have a fixed buffer. Let's just overwrite or append up to MAX.
-            # For simplicity, let's just store the NEW trail. 
-            # Real logic might need a history buffer per piece.
-            # Given MAX_TRAIL_LENGTH=9, maybe it stores history?
+            # Manage circular buffer history
+            ptr = self._trail_data[entry_idx]['history_ptr']
             
-            n_squares = min(squares.shape[0], MAX_TRAIL_LENGTH)
-            self._trail_data[entry_idx]['trail_length'] = n_squares
-            self._trail_data[entry_idx]['trail_coords'][:n_squares] = squares[:n_squares]
+            # Store new trail segment
+            n_squares = min(squares.shape[0], MAX_SQUARES_PER_MOVE)
+            start_idx = ptr * MAX_SQUARES_PER_MOVE
+            
+            # Clear old data in this segment
+            self._trail_data[entry_idx]['trail_coords'][start_idx:start_idx+MAX_SQUARES_PER_MOVE] = 0
+            
+            # Write new data
+            self._trail_data[entry_idx]['trail_coords'][start_idx:start_idx+n_squares] = squares[:n_squares]
+            self._trail_data[entry_idx]['trail_lengths'][ptr] = n_squares
+            
+            # Advance pointer
+            self._trail_data[entry_idx]['history_ptr'] = (ptr + 1) % MAX_TRAIL_HISTORY
             
             self._rebuild_fast_lookups()
+
+    def _get_all_active_trail_squares(self) -> np.ndarray:
+        """Get all active trail squares across all trailblazers."""
+        active_mask = self._trail_data['active']
+        if not np.any(active_mask):
+            return np.empty((0, 3), dtype=self._coord_dtype)
+            
+        all_squares = []
+        active_indices = np.where(active_mask)[0]
+        
+        for idx in active_indices:
+            lengths = self._trail_data[idx]['trail_lengths']
+            coords = self._trail_data[idx]['trail_coords']
+            
+            for i in range(MAX_TRAIL_HISTORY):
+                l = lengths[i]
+                if l > 0:
+                    start = i * MAX_SQUARES_PER_MOVE
+                    all_squares.append(coords[start:start+l])
+                    
+        if not all_squares:
+            return np.empty((0, 3), dtype=self._coord_dtype)
+            
+        return np.vstack(all_squares)
 
     # ========================================================================
     # INTERNAL BATCH OPERATIONS
@@ -334,7 +343,7 @@ class TrailblazeCache(CacheListener):
             if self._trail_data[entry_idx]['active']:
                 # Mark as inactive
                 self._trail_data[entry_idx]['active'] = False
-                self._trail_data[entry_idx]['trail_length'] = 0
+                self._trail_data[entry_idx]['trail_lengths'][:] = 0
                 removed_count += 1
 
         # Rebuild fast lookup structures
@@ -363,9 +372,10 @@ class TrailblazeCache(CacheListener):
         """Clear all trail data."""
         with self._lock:
             self._trail_data['active'] = False
-            self._trail_data['trail_length'] = 0
+            self._trail_data['trail_lengths'][:] = 0
             self._trailblazer_flat_positions = np.empty(0, dtype=INDEX_DTYPE)
             self._position_mask.fill(False)
+            self._victim_counters.fill(0)
             self._next_slot = 0
 
     def get_trailblazer_positions(self) -> np.ndarray:
@@ -386,14 +396,15 @@ class TrailblazeCache(CacheListener):
         """Get memory usage statistics."""
         with self._lock:
             active_count = np.sum(self._trail_data['active'])
-            total_trail_coords = np.sum(self._trail_data['trail_length'])
+            total_trail_coords = np.sum(self._trail_data['trail_lengths'])
 
             return {
                 'trailblazer_count': int(active_count),
                 'total_trail_coords': int(total_trail_coords),
                 'position_cache_size': len(self._trailblazer_flat_positions) * self._trailblazer_flat_positions.itemsize,
                 'mask_size': self._position_mask.nbytes,
-                'trail_data_size': self._trail_data.nbytes
+                'trail_data_size': self._trail_data.nbytes,
+                'counters_size': self._victim_counters.nbytes
             }
 
     # ========================================================================
@@ -410,20 +421,9 @@ class TrailblazeCache(CacheListener):
 
     def current_trail_squares(self, controller, board) -> np.ndarray:
         """Get all trail squares for controller."""
-        all_trails = []
-
-        active_mask = self._trail_data['active']
-        for idx in np.where(active_mask)[0]:
-            length = self._trail_data[idx]['trail_length']
-            if length > 0:
-                all_trails.append(
-                    self._trail_data[idx]['trail_coords'][:length].copy()
-                )
-
-        if not all_trails:
-            return np.empty((0, 3), dtype=self._coord_dtype)
-
-        return np.vstack(all_trails)
+        # This seems to be a legacy method or one used by other parts.
+        # We return all active trails.
+        return self._get_all_active_trail_squares()
 
     # ========================================================================
     # INTERNAL HELPERS

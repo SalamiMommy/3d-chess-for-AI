@@ -29,9 +29,26 @@ from game3d.common.shared_types import N_CHANNELS, SIZE, MAX_COORD_VALUE, MIN_CO
 if HAS_GRAPH_TRANSFORMER:
     setup_rocm_optimizations()
 
-# Batch size optimized for RX 7900 XTX 24GB VRAM
-BATCH_SIZE = 48  # Increased from 16 - fully utilizes 24GB VRAM (~18-20GB usage)
-NUM_WORKERS = 4  # Parallel data loading - ROCm handles multiprocessing well
+# Dynamic batch size adjustment
+BATCH_SIZE = 32  # Default safe value
+if torch.cuda.is_available():
+    try:
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if vram_gb >= 23:
+            BATCH_SIZE = 128  # 24GB+ cards (3090, 4090, 7900XTX)
+        elif vram_gb >= 15:
+            BATCH_SIZE = 64   # 16GB cards
+        elif vram_gb >= 11:
+            BATCH_SIZE = 32   # 12GB cards
+        else:
+            BATCH_SIZE = 16   # 8GB or less
+        print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
+    except:
+        print("Could not detect VRAM, using default batch size 32")
+else:
+    print("Running on CPU, using batch size 16")
+    BATCH_SIZE = 16
+NUM_WORKERS = 8  # Parallel data loading - ROCm handles multiprocessing well
 PIN_MEMORY = True  # Faster CPU-GPU transfers on ROCm
 
 
@@ -111,7 +128,7 @@ class ChessDataset(Dataset):
         return convert_examples_to_tensors(batch_examples, device)
 
 class ChessLoss(nn.Module):
-    """Combined loss for factorized policy and value."""
+    """Combined loss for factorized policy and value with numerical stability."""
 
     def __init__(self, policy_weight: float = 1.0, value_weight: float = 1.0):
         super().__init__()
@@ -128,18 +145,38 @@ class ChessLoss(nn.Module):
         value_pred: torch.Tensor,   # (B,)
         value_target: torch.Tensor, # (B,)
     ) -> torch.Tensor:
-        # Policy losses
-        loss_from = -(from_targets * F.log_softmax(from_logits, dim=1)).sum(dim=1).mean()
-        loss_to = -(to_targets * F.log_softmax(to_logits, dim=1)).sum(dim=1).mean()
+        # 1. Clamp logits to prevent extreme values (-inf/inf)
+        from_logits = torch.clamp(from_logits, -50.0, 50.0)
+        to_logits = torch.clamp(to_logits, -50.0, 50.0)
+
+        # 2. Add epsilon to prevent log(0) and division by zero
+        eps = 1e-8
+
+        # 3. Policy losses with safe softmax
+        log_softmax_from = F.log_softmax(from_logits, dim=1)
+        log_softmax_to = F.log_softmax(to_logits, dim=1)
+
+        # 4. Mask out zero targets to prevent NaN multiplication
+        from_mask = from_targets > 0
+        to_mask = to_targets > 0
+
+        loss_from = -(from_targets[from_mask] * log_softmax_from[from_mask]).sum() / from_logits.size(0)
+        loss_to = -(to_targets[to_mask] * log_softmax_to[to_mask]).sum() / to_logits.size(0)
         policy_loss = loss_from + loss_to
 
-        # Value loss
-        value_loss = self.value_loss(value_pred.squeeze(), value_target)
+        # 5. Value loss with clamped predictions
+        value_pred = torch.clamp(value_pred.squeeze(), -1.0, 1.0)
+        value_loss = self.value_loss(value_pred, value_target)
+
+        # 6. Log loss values for debugging
+        if torch.isnan(policy_loss) or torch.isnan(value_loss):
+            print(f"[WARNING] NaN detected: policy={policy_loss}, value={value_loss}")
+            print(f"Logits range: from=[{from_logits.min():.2f}, {from_logits.max():.2f}], "
+                  f"to=[{to_logits.min():.2f}, {to_logits.max():.2f}]")
+            print(f"Targets sum: from={from_targets.sum():.4f}, to={to_targets.sum():.4f}")
 
         total_loss = self.policy_weight * policy_loss + self.value_weight * value_loss
         return total_loss
-
-
 
 class ChessTrainer:
     """Optimized trainer for 3D chess Graph Transformer."""
@@ -263,11 +300,8 @@ class ChessTrainer:
         self.model.train()
         total_loss = 0.0
         num_batches = 0
-        
-        # Reset gradients at start
         self.optimizer.zero_grad()
 
-        # Create progress bar for batches
         pbar = tqdm(
             train_loader,
             desc=f"Epoch {self.epoch+1} [Train]",
@@ -275,12 +309,33 @@ class ChessTrainer:
             dynamic_ncols=True,
             leave=False
         )
-        
+
         for batch_idx, (states, from_targets, to_targets, value_targets) in enumerate(pbar):
-            states = states.to(self.device)
-            from_targets = from_targets.to(self.device)
-            to_targets = to_targets.to(self.device)
-            value_targets = value_targets.to(self.device)
+            # ==============================================================
+            # CRITICAL: Data sanity check (prevents NaN propagation)
+            # ==============================================================
+            if torch.isnan(states).any():
+                print(f"[ERROR] NaN detected in states at batch {batch_idx}, skipping!")
+                continue
+
+            if torch.isnan(from_targets).any() or torch.isnan(to_targets).any():
+                print(f"[ERROR] NaN detected in policy targets at batch {batch_idx}, skipping!")
+                continue
+
+            if torch.isnan(value_targets).any():
+                print(f"[ERROR] NaN detected in value targets at batch {batch_idx}, skipping!")
+                continue
+
+            # Check for infinite values
+            if torch.isinf(states).any():
+                print(f"[ERROR] Inf detected in states at batch {batch_idx}, skipping!")
+                continue
+            # ==============================================================
+
+            states = states.to(self.device, non_blocking=True)
+            from_targets = from_targets.to(self.device, non_blocking=True)
+            to_targets = to_targets.to(self.device, non_blocking=True)
+            value_targets = value_targets.to(self.device, non_blocking=True)
 
             # Mark CUDA graph step boundary before model invocation
             if hasattr(torch.compiler, 'cudagraph_mark_step_begin'):

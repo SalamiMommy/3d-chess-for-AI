@@ -6,11 +6,11 @@ import numpy as np
 from game3d.common.shared_types import (
     Color, PieceType, Result,
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
-    RADIUS_3_OFFSETS, get_empty_coord_batch
+    RADIUS_3_OFFSETS, get_empty_coord_batch, MOVE_FLAGS
 )
 from game3d.common.registry import register
 from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds_vectorized, CoordinateUtils
 
 if TYPE_CHECKING:
@@ -75,28 +75,35 @@ def generate_geomancer_moves(
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate geomancer moves: normal king moves + geomancy placement moves."""
+    """Generate geomancer moves: radius-1 king moves + radius-2/3 geomancy placement moves."""
     start = pos.astype(COORD_DTYPE)
 
-    # Generate king moves for piece movement (returns np.ndarray)
+    # Generate king moves for piece movement within radius 1 (returns np.ndarray)
     king_moves = generate_king_moves(cache_manager, color, start)
     
     move_arrays = []
     if king_moves.size > 0:
         move_arrays.append(king_moves)
 
-    # VECTORIZED: Generate all radius-3 targets at once
+    # GEOMANCY: Generate radius-2 and radius-3 targets (excluding radius-1)
+    # Use radius-3 offsets and filter out radius-1 (which are already in king_moves)
     offsets = np.asarray(RADIUS_3_OFFSETS, dtype=COORD_DTYPE)
-    targets = start + offsets
+    
+    # Calculate Chebyshev distance for each offset to filter radius-2 and radius-3
+    chebyshev_dist = np.max(np.abs(offsets), axis=1)
+    geomancy_mask = chebyshev_dist >= 2  # Radius 2 and 3 only
+    geomancy_offsets = offsets[geomancy_mask]
+    
+    targets = start + geomancy_offsets
 
     # Vectorized bounds and occupancy filtering
     valid_mask = in_bounds_vectorized(targets)
     valid_targets = targets[valid_mask]
 
     if valid_targets.shape[0] == 0:
-        return king_moves
+        return king_moves if king_moves.size > 0 else np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Vectorized occupancy check using occupancy_cache directly
+    # Vectorized occupancy check - only empty squares can be blocked
     empty_mask = np.array([
         cache_manager.occupancy_cache.get(t) is None for t in valid_targets
     ], dtype=BOOL_DTYPE)
@@ -104,9 +111,12 @@ def generate_geomancer_moves(
     geom_targets = valid_targets[empty_mask]
 
     if geom_targets.shape[0] == 0:
-        return king_moves
+        return king_moves if king_moves.size > 0 else np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Create geomancy moves as numpy array
+    # Create geomancy moves as numpy array with GEOMANCY flag
+    # Format: [from_x, from_y, from_z, to_x, to_y, to_z]
+    # Note: We'll need to extend the move format to include flags, but for now
+    # we use the standard 6-element format and will check distance in turnmove.py
     n_geom = geom_targets.shape[0]
     geom_moves = np.empty((n_geom, 6), dtype=COORD_DTYPE)
     geom_moves[:, 0:3] = start
@@ -114,7 +124,11 @@ def generate_geomancer_moves(
     
     move_arrays.append(geom_moves)
     
+    if len(move_arrays) == 0:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+    
     return np.concatenate(move_arrays)
+
 
 
 @register(PieceType.GEOMANCER)

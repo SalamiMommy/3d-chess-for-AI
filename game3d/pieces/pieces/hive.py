@@ -42,20 +42,53 @@ def generate_hive_moves(
 def hive_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_hive_moves(state.cache_manager, state.color, pos)
 
-def get_movable_hives(state: 'GameState', color: COLOR_DTYPE) -> List[Move]:
+def get_movable_hives(state: 'GameState', color: COLOR_DTYPE, exclude_positions: set = None) -> np.ndarray:
     from game3d.movement.generator import generate_legal_moves_for_piece
 
-    hives: List[Move] = []
-    for coord, piece in state.cache_manager.get_pieces_of_color(color):
-        if piece["piece_type"] == HIVE:
-            hives.extend(generate_legal_moves_for_piece(state, coord))
-    return hives
+    movable_hives: List[np.ndarray] = []
+    exclude_positions = exclude_positions or set()
+
+    # Get all pieces of this color
+    coords = state.cache_manager.occupancy_cache.get_positions(color)
+    if coords.size == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE)
+
+    # Get their attributes (colors and piece types)
+    colors, piece_types = state.cache_manager.occupancy_cache.batch_get_attributes(coords)
+
+    # Filter for HIVE pieces
+    for i in range(len(coords)):
+        if piece_types[i] == HIVE:
+            # Skip if this hive has already moved this turn
+            coord = coords[i]
+            pos_tuple = tuple(coord.tolist())
+            if pos_tuple not in exclude_positions:
+                # Generator now handles shape normalization
+                moves = generate_legal_moves_for_piece(state, coord)
+                if moves.size > 0:
+                    movable_hives.append(coord)
+
+    # Return array of unique hive coordinates
+    return np.stack(movable_hives, axis=0) if movable_hives else np.empty((0, 3), dtype=COORD_DTYPE)
 
 def apply_multi_hive_move(state: 'GameState', move: Move) -> 'GameState':
     """Apply hive move without flipping turn - enables multiple hive moves per turn."""
-    new_state = state.make_move(move)
+    # Track this hive as having moved
+    from_pos_tuple = tuple(move.from_coord.tolist())
+    state._moved_hive_positions.add(from_pos_tuple)
+    state._pending_hive_moves.append(move)
+    
+    # Convert Move object to array format [from_x, from_y, from_z, to_x, to_y, to_z]
+    move_array = np.concatenate([move.from_coord, move.to_coord])
+    new_state = state.make_move_vectorized(move_array)
+    
     # Preserve current player's turn for additional hive moves
     object.__setattr__(new_state, "color", state.color)
+    
+    # Carry over the hive tracking to the new state
+    new_state._moved_hive_positions = state._moved_hive_positions.copy()
+    new_state._pending_hive_moves = state._pending_hive_moves.copy()
+    
     new_state._clear_caches()
     return new_state
 

@@ -385,3 +385,56 @@ __all__ = [
     # Core class
     'CoordinateUtils'
 ]
+
+# =============================================================================
+# PATH CALCULATION UTILITIES
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def _get_path_between_numba(start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """
+    Calculate squares strictly between start and end coordinates (exclusive).
+    Works for orthogonal and diagonal paths.
+    Returns empty array if not a straight line or adjacent.
+    """
+    diff = end - start
+    dist = np.abs(diff)
+    max_dist = np.max(dist)
+    
+    # Check if it's a valid straight line (all non-zero diffs must be equal magnitude)
+    # e.g. (2, 0, 0) -> valid
+    # e.g. (2, 2, 0) -> valid
+    # e.g. (2, 1, 0) -> invalid (knight-like or irregular)
+    
+    non_zero = dist > 0
+    if np.sum(non_zero) == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE) # Same square
+        
+    if not np.all(dist[non_zero] == max_dist):
+        return np.empty((0, 3), dtype=COORD_DTYPE) # Not a straight line
+        
+    if max_dist <= 1:
+        return np.empty((0, 3), dtype=COORD_DTYPE) # Adjacent
+        
+    # Calculate step direction (-1, 0, 1)
+    step = np.sign(diff)
+    
+    # Generate path
+    n_steps = max_dist - 1
+    path = np.empty((n_steps, 3), dtype=COORD_DTYPE)
+    
+    for i in range(n_steps):
+        path[i] = start + step * (i + 1)
+        
+    return path
+
+def get_path_between(start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """
+    Get coordinates strictly between start and end.
+    Returns empty array if move is not a straight line or is adjacent.
+    """
+    start = np.asarray(start, dtype=COORD_DTYPE)
+    end = np.asarray(end, dtype=COORD_DTYPE)
+    return _get_path_between_numba(start, end)
+
+__all__.append('get_path_between')

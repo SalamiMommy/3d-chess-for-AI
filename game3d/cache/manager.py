@@ -278,7 +278,7 @@ class OptimizedCacheManager:
         coords, piece_types, colors = self.occupancy_cache.get_all_occupied_vectorized()
 
         if coords.shape[0] == 0:
-            return self.zobrist_cache._side_key if color == Color.BLACK else HASH_DTYPE(0)
+            return int(self.zobrist_cache._side_key) if color == Color.BLACK else int(HASH_DTYPE(0))
 
         # Convert to indices
         piece_indices = (piece_types - 1).astype(PIECE_TYPE_DTYPE)
@@ -296,7 +296,8 @@ class OptimizedCacheManager:
         if color == Color.BLACK:
             zkey ^= self.zobrist_cache._side_key
 
-        return HASH_DTYPE(zkey)
+        # Convert to Python int to ensure hashability
+        return int(zkey)
 
     def apply_move(self, mv_obj: np.ndarray, color: int) -> bool:
         """Apply move - fully vectorized invalidation."""
@@ -316,9 +317,10 @@ class OptimizedCacheManager:
             if from_piece is None:
                 raise ValueError(f"No piece at source {from_coord}")
 
-            self._zkey = self.zobrist_cache.update_hash_move(
+            # Ensure _zkey is always a Python int, not numpy scalar
+            self._zkey = int(self.zobrist_cache.update_hash_move(
                 self._zkey, mv_obj, from_piece, captured_piece
-            )
+            ))
 
             # Notify dependency graph
             self.dependency_graph.notify_update('move_applied')
@@ -336,6 +338,7 @@ class OptimizedCacheManager:
         """Undo move - recompute from scratch."""
         with self._lock:
             self._move_counter -= 1
+            # _compute_initial_zobrist now returns Python int
             self._zkey = self._compute_initial_zobrist(color)
             self.dependency_graph.notify_update('move_undone')
             self.move_cache.invalidate()
@@ -402,6 +405,11 @@ class OptimizedCacheManager:
         """Access the consolidated aura cache."""
         return self._effect_cache_instances[0]
 
+    @property
+    def geomancy_cache(self) -> 'GeomancyCache':
+        """Access the geomancy cache."""
+        return self._effect_cache_instances[1]
+    
     @property
     def trailblaze_cache(self) -> 'TrailblazeCache':
         """Access the trailblaze cache."""

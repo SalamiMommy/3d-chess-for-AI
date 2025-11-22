@@ -21,7 +21,7 @@ from numba import njit, prange
 from game3d.common.shared_types import (
     COORD_DTYPE, PIECE_TYPE_DTYPE, SIZE, VOLUME,
     Color, PieceType, VECTORIZATION_THRESHOLD, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE,
-    MOVE_DTYPE, INDEX_DTYPE, BOOL_DTYPE
+    MOVE_DTYPE, INDEX_DTYPE, BOOL_DTYPE, MOVE_FLAGS
 )
 from game3d.common.coord_utils import in_bounds_vectorized, ensure_coords
 from game3d.common.validation import validate_coords_batch, validate_coord, validate_moves, validate_move
@@ -30,7 +30,7 @@ from game3d.common.move_utils import create_move_array_from_objects_vectorized
 # Import movement engines (NO validation in these - just raw generation)
 from game3d.movement.slider_engine import SliderMovementEngine
 from game3d.movement.jump_engine import JumpMovementEngine
-from game3d.movement.movepiece import Move, MOVE_FLAGS
+from game3d.movement.movepiece import Move
 
 # Import modifiers to apply effects post-generation
 from game3d.movement.movementmodifiers import (
@@ -44,6 +44,8 @@ from game3d.common.registry import get_piece_dispatcher
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
+
+from game3d.pieces.pieces.pawn import generate_pawn_moves
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +278,11 @@ class LegalMoveGenerator:
         moves_list = []
         pieces_to_regenerate = []
         
+        # Get debuffed squares from AuraCache
+        # Note: get_debuffed_squares returns squares where pieces are debuffed.
+        # We need to check if our pieces are on these squares.
+        debuffed_coords = self._cache_manager.consolidated_aura_cache.get_debuffed_squares(state.color)
+        
         # Iterate and classify
         # We can optimize this with vectorization if needed, but loop is fine for < 50 pieces
         for i in range(len(coords)):
@@ -300,7 +307,7 @@ class LegalMoveGenerator:
         # Regenerate moves for invalid pieces
         if pieces_to_regenerate:
             regenerate_coords = np.array(pieces_to_regenerate, dtype=COORD_DTYPE)
-            new_moves = self._generate_batch_moves_from_dispatchers(state, regenerate_coords)
+            new_moves = self._generate_batch_moves_from_dispatchers(state, regenerate_coords, debuffed_coords)
             
             # Cache the newly generated piece moves
             if new_moves.size > 0:
@@ -363,17 +370,43 @@ class LegalMoveGenerator:
         return final_moves
 
     def _cache_piece_moves(self, batch_coords: np.ndarray, batch_moves: np.ndarray, color: int) -> None:
-        """Cache moves for each piece using vectorized extraction."""
-        for i, coord in enumerate(batch_coords):
-            # Use Numba-compiled extraction
-            piece_moves = _extract_piece_moves_from_batch(batch_moves, coord)
+        """
+        Cache moves for each piece using optimized sorting and grouping.
+        Complexity: O(M log M) where M is number of moves (vs O(N*M) previously).
+        """
+        if batch_moves.size == 0:
+            return
 
-            if piece_moves.size > 0:
-                # Use integer key instead of bytes for speed
-                coord_key = _coord_to_key(coord.reshape(1, -1))[0]
-                self._cache_manager.move_cache.store_piece_moves(
-                    color, coord_key, piece_moves
-                )
+        # 1. Compute keys for all moves' source coordinates
+        # batch_moves is (M, 6), source is columns 0-3
+        # We need to reshape to (M, 3) for _coord_to_key
+        move_sources = batch_moves[:, :3]
+        move_keys = _coord_to_key(move_sources)
+
+        # 2. Sort moves by key
+        # This groups all moves for the same piece together
+        sort_idx = np.argsort(move_keys)
+        sorted_moves = batch_moves[sort_idx]
+        sorted_keys = move_keys[sort_idx]
+
+        # 3. Find unique keys and their split indices
+        unique_keys, start_indices = np.unique(sorted_keys, return_index=True)
+        
+        # 4. Iterate and cache
+        # We can also compute end_indices
+        end_indices = np.append(start_indices[1:], sorted_keys.size)
+        
+        for i in range(unique_keys.size):
+            key = unique_keys[i]
+            start = start_indices[i]
+            end = end_indices[i]
+            
+            piece_moves = sorted_moves[start:end]
+            
+            # Store in cache
+            self._cache_manager.move_cache.store_piece_moves(
+                color, key, piece_moves
+            )
 
     def _store_in_tt(self, cache_key: int, board, moves: np.ndarray) -> None:
         """Store best move in transposition table."""
@@ -390,9 +423,15 @@ class LegalMoveGenerator:
             node_type=0, best_move=best_move
         )
 
-    def _generate_batch_moves_from_dispatchers(self, state: "GameState", batch_coords: np.ndarray) -> np.ndarray:
+    def _generate_batch_moves_from_dispatchers(self, state: "GameState", batch_coords: np.ndarray, debuffed_coords: np.ndarray = None) -> np.ndarray:
         """Generate moves by calling piece dispatchers - ENFORCED NUMPY-ONLY."""
         moves_list = []
+
+        # Convert debuffed coords to keys for fast lookup
+        debuffed_keys = set()
+        if debuffed_coords is not None and debuffed_coords.size > 0:
+            keys = _coord_to_key(debuffed_coords)
+            debuffed_keys = set(keys)
 
         for i, coord in enumerate(batch_coords):
             piece_info = state.cache_manager.occupancy_cache.get(coord.reshape(1, 3))
@@ -401,7 +440,27 @@ class LegalMoveGenerator:
                 continue
 
             piece_type = piece_info["piece_type"]
-            dispatcher = get_piece_dispatcher(piece_type)
+            
+            # Check if piece is frozen
+            # Note: We use the piece's color (state.color) as the victim color
+            is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
+                coord.reshape(1, 3), state.turn_number, state.color
+            )[0]
+            
+            if is_frozen:
+                # Frozen pieces cannot move
+                continue
+
+            # Check if piece is debuffed
+            coord_key = _coord_to_key(coord.reshape(1, -1))[0]
+            is_debuffed = coord_key in debuffed_keys
+            
+            if is_debuffed:
+                # Use Pawn movement for debuffed pieces
+                # Note: We use the piece's actual color, but Pawn movement logic
+                dispatcher = lambda s, p: generate_pawn_moves(s.cache_manager, s.color, p)
+            else:
+                dispatcher = get_piece_dispatcher(piece_type)
 
             if not dispatcher:
                 raise RuntimeError(f"No dispatcher registered for piece type {piece_type}")
@@ -537,16 +596,20 @@ def generate_legal_moves_for_piece(game_state: 'GameState', coord: np.ndarray) -
     if coord_arr.size == 0:
         raise ValueError("Empty coordinate provided")
 
+    # ✅ FIX: Handle both (3,) and (1, 3) shapes
+    if coord_arr.shape == (1, 3):
+        coord_arr = coord_arr.flatten()
+
     if coord_arr.ndim != 1 or coord_arr.shape[0] != 3:
         raise ValueError(f"Invalid coordinate shape: {coord_arr.shape}")
 
     # Validate piece exists and belongs to current player
-    piece_info = game_state.cache_manager.occupancy_cache.get(coord_arr.reshape(1, 3))
-    if piece_info is None or len(piece_info) == 0:
-        raise ValueError(f"No piece at {coord_arr[0]}")
+    piece_info = game_state.cache_manager.occupancy_cache.get(coord_arr)
+    if piece_info is None:
+        raise ValueError(f"No piece at {coord_arr}")
 
-    if piece_info[0]["color"] != game_state.color:
-        raise ValueError(f"Piece at {coord_arr[0]} belongs to opponent")
+    if piece_info["color"] != game_state.color:
+        raise ValueError(f"Piece at {coord_arr} belongs to opponent")
 
     # Generate all moves and filter for this piece
     all_moves = generate_legal_moves(game_state)

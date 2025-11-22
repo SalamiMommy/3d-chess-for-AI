@@ -14,7 +14,7 @@ from game3d.common.coord_utils import idx_to_coord, coord_to_idx
 class SymmetryAwareTranspositionTable(TranspositionTable):
     """Fully vectorized symmetry-aware transposition table."""
 
-    __slots__ = ("_sym", "_stats", "_sym_cache_keys", "_sym_cache_values", "_sym_cache_size", "_transform_mats", "_inv_transforms")
+    __slots__ = ("_sym", "_stats", "_sym_cache", "_sym_cache_max_size", "_transform_mats", "_inv_transforms")
 
     # Pre-computed transform metadata
     _TMAP = {
@@ -32,11 +32,10 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         # Vectorized statistics: [probes, hits, stores, time, cache_hits]
         self._stats = np.zeros(5, dtype=np.float64)
 
-        # Numpy-native symmetry cache: hash -> (entry_idx, transform_idx)
-        cache_capacity = 100000
-        self._sym_cache_keys = np.empty(cache_capacity, dtype=HASH_DTYPE)
-        self._sym_cache_values = np.empty((cache_capacity, 2), dtype=INDEX_DTYPE)
-        self._sym_cache_size = 0
+        # ✅ OPTIMIZED: Dict-based symmetry cache for O(1) lookup
+        # hash -> (entry_idx, transform_idx)
+        self._sym_cache = {}
+        self._sym_cache_max_size = 1000000  # 1M entries
 
         # Pre-computed transformation matrices (10, 3, 3)
         self._transform_mats = np.array([
@@ -114,14 +113,11 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
 
         self._stats[0] += 1  # probes
 
-        # 2. Vectorized symmetry cache lookup
-        if self._sym_cache_size > 0:
-            cache_mask = self._sym_cache_keys[:self._sym_cache_size] == hash_value
-            if np.any(cache_mask):
-                self._stats[4] += 1  # cache_hits
-                cache_idx = np.flatnonzero(cache_mask)[0]
-                entry_idx, transform_idx = self._sym_cache_values[cache_idx]
-                return self._transform_entry_back(self.entries[entry_idx].view(), transform_idx)
+        # ✅ OPTIMIZATION: O(1) dict lookup instead of linear scan
+        if hash_value in self._sym_cache:
+            self._stats[4] += 1  # cache_hits
+            entry_idx, transform_idx = self._sym_cache[hash_value]
+            return self._transform_entry_back(self.entries[entry_idx].view(), transform_idx)
 
         # 3. Compute canonical form using symmetry manager
         # Must return board array and transform index
@@ -139,11 +135,13 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
         if canonical_entry['hash_key'] == canonical_hash:
             self._stats[1] += 1  # hits
 
-            # 5. Cache this mapping for future queries
-            if self._sym_cache_size < len(self._sym_cache_keys):
-                self._sym_cache_keys[self._sym_cache_size] = hash_value
-                self._sym_cache_values[self._sym_cache_size] = [canon_idx, transform_idx]
-                self._sym_cache_size += 1
+            # ✅ OPTIMIZATION: Store in dict with LRU eviction
+            if len(self._sym_cache) >= self._sym_cache_max_size:
+                # Simple LRU: Remove first (oldest) entry
+                first_key = next(iter(self._sym_cache))
+                del self._sym_cache[first_key]
+            
+            self._sym_cache[hash_value] = (canon_idx, transform_idx)
 
             # 6. Transform move coordinates back to original orientation
             return self._transform_entry_back(canonical_entry.view(), transform_idx)
@@ -188,5 +186,5 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             'time_ms': self._stats[3] * 1000,
             'cache_hits': int(self._stats[4]),
             'hit_rate': self._stats[1] / max(total_probes, 1),
-            'cache_size': self._sym_cache_size
+            'cache_size': len(self._sym_cache)
         }

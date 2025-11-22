@@ -67,6 +67,8 @@ class MoveCache:
         self._board_generation_per_color = [current_gen, current_gen]
 
         # Initialize missing attributes
+        self._affected_coord_keys_list = []  # ✅ Use list for O(1) append
+        self._affected_color_idx_list = []
         self._affected_coord_keys = np.empty(0, dtype=np.int64)
         self._affected_color_idx = np.empty(0, dtype=np.int8)
         self._piece_moves_cache = {}
@@ -191,6 +193,8 @@ class MoveCache:
             self._piece_color_idx = np.empty(0, dtype=np.int8)
             self._affected_coord_keys = np.empty(0, dtype=np.int64)
             self._affected_color_idx = np.empty(0, dtype=np.int8)
+            self._affected_coord_keys_list = []  # ✅ Clear lists
+            self._affected_color_idx_list = []
 
 
     def mark_piece_invalid(self, color: int, coord_key: Union[int, bytes]) -> None:
@@ -203,8 +207,9 @@ class MoveCache:
             int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
 
         with self._lock:
-            self._affected_coord_keys = np.append(self._affected_coord_keys, int_key)
-            self._affected_color_idx = np.append(self._affected_color_idx, color_idx)
+            # ✅ OPTIMIZED: Use list append instead of np.append
+            self._affected_coord_keys_list.append(int_key)
+            self._affected_color_idx_list.append(color_idx)
 
     def has_piece_moves(self, color: int, coord_key: Union[int, bytes]) -> bool:
         """Check if piece moves are cached."""
@@ -311,6 +316,13 @@ class MoveCache:
         """Get affected pieces as numpy array."""
         color_idx = 0 if color == Color.WHITE else 1
 
+        # ✅ OPTIMIZED: Convert lists to arrays only when reading
+        if self._affected_coord_keys_list:
+            # Consolidate lists into arrays once
+            self._affected_coord_keys = np.array(self._affected_coord_keys_list, dtype=np.int64)
+            self._affected_color_idx = np.array(self._affected_color_idx_list, dtype=np.int8)
+            # Don't clear lists yet - they may be used again soon
+
         mask = self._affected_color_idx == color_idx
         return self._affected_coord_keys[mask]
 
@@ -320,10 +332,15 @@ class MoveCache:
         self._affected_pieces = {(c_idx, key) for (c_idx, key) in self._affected_pieces
                                 if c_idx != color_idx}
 
-        # Clear numpy arrays
+        # ✅ OPTIMIZED: Clear both arrays and lists
         mask = self._affected_color_idx != color_idx
         self._affected_coord_keys = self._affected_coord_keys[mask]
         self._affected_color_idx = self._affected_color_idx[mask]
+        
+        # Clear lists for the specified color
+        indices_to_keep = [i for i, c_idx in enumerate(self._affected_color_idx_list) if c_idx != color_idx]
+        self._affected_coord_keys_list = [self._affected_coord_keys_list[i] for i in indices_to_keep]
+        self._affected_color_idx_list = [self._affected_color_idx_list[i] for i in indices_to_keep]
 
     # ✅ NEW: LRU PRUNING METHOD
     def _prune_piece_cache(self) -> None:

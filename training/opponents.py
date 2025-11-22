@@ -185,10 +185,17 @@ def _compute_attack_defense_rewards_vectorized(
 class OpponentBase:
     def __init__(self, color: Color):
         self.color = color
-        self.position_hashes = np.array([], dtype=HASH_DTYPE)
+        # ✅ OPTIMIZED: Pre-allocated circular buffer instead of append
+        self._position_hashes_buffer = np.zeros(1000, dtype=HASH_DTYPE)  # 1000-move buffer
+        self._position_hashes_count = 0
         self.repetition_penalty = -5.0
         self.recent_moves = np.zeros((10, 2, 3), dtype=COORD_DTYPE)
         self.move_count = 0
+    
+    @property
+    def position_hashes(self) -> np.ndarray:
+        """Get active portion of position hashes buffer."""
+        return self._position_hashes_buffer[:self._position_hashes_count]
 
     def reward(self, state: 'GameState', move: Move) -> float:
         """Single move reward - delegates to batch version."""
@@ -233,7 +240,15 @@ class OpponentBase:
 
         position_hash = hash((board_hash, tuple(move_from), tuple(move_to), state.color))
 
-        self.position_hashes = np.append(self.position_hashes, position_hash)
+        # ✅ OPTIMIZED: Circular buffer instead of np.append
+        if self._position_hashes_count < len(self._position_hashes_buffer):
+            # Still have space in buffer
+            self._position_hashes_buffer[self._position_hashes_count] = position_hash
+            self._position_hashes_count += 1
+        else:
+            # Buffer full - shift left and add at end (FIFO)
+            self._position_hashes_buffer[:-1] = self._position_hashes_buffer[1:]
+            self._position_hashes_buffer[-1] = position_hash
 
         idx = self.move_count % 10
         self.recent_moves[idx, 0] = move_from
@@ -302,17 +317,38 @@ class AdaptiveOpponent(OpponentBase):
         repetition_penalties = self.get_repetition_penalties_batch(moves)
         rewards += repetition_penalties
 
-        # 2. Fifty-move clock penalty
+        # 2. Improved halfmove clock penalty (exponential scaling to avoid 50-move draw)
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 40:
-            rewards -= (halfmove_clock - 40) * 0.1
+        if halfmove_clock > 50:
+            # Progressive penalties:
+            # 50-70: -0.3 per move
+            # 70-90: -0.5 per move 
+            # 90+: -1.0 per move with exponential growth
+            base_penalty = (halfmove_clock - 50) * 0.3
+            if halfmove_clock > 70:
+                base_penalty += (halfmove_clock - 70) * 0.2  # Total -0.5 per move
+            if halfmove_clock > 90:
+                base_penalty *= 1.5  # Exponential growth
+            rewards -= base_penalty
 
-        # 3. Capture rewards (vectorized)
+        # 3. Capture rewards (vectorized) with bonus multiplier for high halfmove clock
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
             priest_bonus=1.0, queen_rook_bonus=0.3
         )
+        # Boost capture rewards when clock is dangerously high
+        if halfmove_clock > 70:
+            capture_rewards *= 1.5
+        if halfmove_clock > 90:
+            capture_rewards *= (2.5 / 1.5)  # Total 2.5x at 90+
         rewards += capture_rewards
+        
+        # 3b. Pawn move bonus (resets halfmove clock)
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 0.4
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 0.4  # Total +0.8 at 90+
 
         # 4. Attack/Defense rewards (only if enemy has moves)
         enemy_moves = cache_manager.move_cache.get_cached_moves(self.color.opposite())
@@ -366,21 +402,37 @@ class CenterControlOpponent(OpponentBase):
         # 1. Repetition penalty
         rewards += self.get_repetition_penalties_batch(moves)
 
-        # 2. Fifty-move clock
+        # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 40:
-            rewards -= (halfmove_clock - 40) * 0.1
+        if halfmove_clock > 50:
+            base_penalty = (halfmove_clock - 50) * 0.3
+            if halfmove_clock > 70:
+                base_penalty += (halfmove_clock - 70) * 0.2
+            if halfmove_clock > 90:
+                base_penalty *= 1.5
+            rewards -= base_penalty
 
         # 3. Center control (vectorized)
         center_rewards = _compute_center_control_rewards_vectorized(to_coords)
         rewards += center_rewards
 
-        # 4. Capture rewards
+        # 4. Capture rewards with bonus for high clock
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
             priest_bonus=1.0, queen_rook_bonus=0.0
         )
+        if halfmove_clock > 70:
+            capture_rewards *= 1.5
+        if halfmove_clock > 90:
+            capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
+        
+        # 4b. Pawn move bonus
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 0.4
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 0.4
 
         # 5. Bonus for moving pieces TO center
         relevant_pieces = (PieceType.KNIGHT.value, PieceType.BISHOP.value, PieceType.QUEEN.value)
@@ -407,18 +459,27 @@ class PieceCaptureOpponent(OpponentBase):
         # 1. Repetition penalty
         rewards += self.get_repetition_penalties_batch(moves)
 
-        # 2. Fifty-move clock
+        # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 40:
-            rewards -= (halfmove_clock - 40) * 0.1
+        if halfmove_clock > 50:
+            base_penalty = (halfmove_clock - 50) * 0.3
+            if halfmove_clock > 70:
+                base_penalty += (halfmove_clock - 70) * 0.2
+            if halfmove_clock > 90:
+                base_penalty *= 1.5
+            rewards -= base_penalty
 
-        # 3. Capture rewards (primary)
+        # 3. Capture rewards (primary) with high-clock bonus
         captured_colors, captured_types = state.cache_manager.occupancy_cache.batch_get_attributes(to_coords)
 
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
             priest_bonus=1.0, queen_rook_bonus=0.3
         )
+        if halfmove_clock > 70:
+            capture_rewards *= 1.5
+        if halfmove_clock > 90:
+            capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
         return rewards
@@ -440,20 +501,31 @@ class PriestHunterOpponent(OpponentBase):
         # 1. Repetition penalty
         rewards += self.get_repetition_penalties_batch(moves)
 
-        # 2. Fifty-move clock
+        # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 40:
-            rewards -= (halfmove_clock - 40) * 0.1
+        if halfmove_clock > 50:
+            base_penalty = (halfmove_clock - 50) * 0.3
+            if halfmove_clock > 70:
+                base_penalty += (halfmove_clock - 70) * 0.2
+            if halfmove_clock > 90:
+                base_penalty *= 1.5
+            rewards -= base_penalty
 
-        # 3. Capture rewards (priest-focused)
+        # 3. Capture rewards (priest-focused) with high-clock multiplier
         captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
 
+        clock_multiplier = 1.0
+        if halfmove_clock > 70:
+            clock_multiplier = 1.5
+        if halfmove_clock > 90:
+            clock_multiplier = 2.5
+        
         for i in range(len(moves)):
             if captured_colors[i] == self.color.opposite().value:
                 if captured_types[i] == PieceType.PRIEST.value:
-                    rewards[i] += 3.0
+                    rewards[i] += 3.0 * clock_multiplier
                 else:
-                    rewards[i] += 0.2
+                    rewards[i] += 0.2 * clock_multiplier
 
         # 4. Approach enemy priests
         enemy_priest_positions = self._get_enemy_priest_positions(cache_manager)
@@ -502,10 +574,15 @@ class GraphAwareOpponent(OpponentBase):
         # 1. Repetition penalty
         rewards += self.get_repetition_penalties_batch(moves)
 
-        # 2. Fifty-move clock
+        # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 40:
-            rewards -= (halfmove_clock - 40) * 0.1
+        if halfmove_clock > 50:
+            base_penalty = (halfmove_clock - 50) * 0.3
+            if halfmove_clock > 70:
+                base_penalty += (halfmove_clock - 70) * 0.2
+            if halfmove_clock > 90:
+                base_penalty *= 1.5
+            rewards -= base_penalty
 
         # 3. Piece coordination bonus
         from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
@@ -529,13 +606,17 @@ class GraphAwareOpponent(OpponentBase):
             if allies_near_new > 1:
                 rewards[i] += 0.1 * (allies_near_new - 1)
 
-        # 4. Capture rewards
+        # 4. Capture rewards with high-clock multiplier
         captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
 
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
             priest_bonus=1.0, queen_rook_bonus=0.0
         )
+        if halfmove_clock > 70:
+            capture_rewards *= 1.5
+        if halfmove_clock > 90:
+            capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
         return rewards

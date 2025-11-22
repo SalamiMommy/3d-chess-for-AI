@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import random
 import multiprocessing as mp
 import os
@@ -9,90 +9,206 @@ import logging
 import sys
 import time
 import gc
+import queue
+import threading
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-BATCH_SIZE = 16  # Optimized for RX 7900 XTX - better GPU throughput
+BATCH_SIZE = 32  # Larger batch size for better GPU utilization
+TIMEOUT = 0.01   # Short timeout for batch accumulation
 
-_WORKER_MODEL = None
-_WORKER_DEVICE = None
+@dataclass
+class InferenceRequest:
+    game_id: str
+    state_tensor: np.ndarray  # Numpy array to be pickleable
 
-def _worker_init(model_path, device):
-    """Initialize worker ONCE with model loaded."""
-    global _WORKER_MODEL, _WORKER_DEVICE
+@dataclass
+class InferenceResult:
+    from_logits: np.ndarray
+    to_logits: np.ndarray
+    value_pred: float
 
-    # Disable threading to avoid CPU contention
-    os.environ['NUMBA_NUM_THREADS'] = '1'
-    os.environ['OMP_NUM_THREADS'] = '1'
+class RemoteModel:
+    """Mimics the model interface but communicates with the InferenceServer."""
+    def __init__(self, input_queue: mp.Queue, output_queues: Dict[str, mp.Queue], game_id: str):
+        self.input_queue = input_queue
+        self.output_queues = output_queues # Dictionary of queues, but we only need ours
+        self.game_id = game_id
+        # We need to know WHICH queue is ours. 
+        # In this design, we'll pass a dict of queues to the worker, and the worker picks its own.
+        
+    def __call__(self, state_tensor: torch.Tensor):
+        # Convert to numpy for transmission
+        state_np = state_tensor.cpu().numpy()
+        
+        # Send request
+        req = InferenceRequest(self.game_id, state_np)
+        self.input_queue.put(req)
+        
+        # Wait for response
+        # Note: output_queues is a dict shared via Manager, or we pass just the specific queue?
+        # Passing the specific queue is safer/faster if possible.
+        # Let's assume self.output_queues is the specific queue for this worker.
+        
+        try:
+            result = self.output_queues.get(timeout=30.0) # Long timeout for safety
+            if isinstance(result, Exception):
+                raise result
+        except queue.Empty:
+            raise RuntimeError(f"Timeout waiting for inference result for game {self.game_id}")
+            
+        # Convert back to tensors (on CPU) to match expected interface
+        # The worker code expects tensors on 'device', but since we are lightweight, 
+        # we can keep them on CPU or move to device if needed.
+        # The original code did: from_probs = torch.softmax(from_logits, dim=-1).cpu().numpy()[0]
+        # So it expects logits.
+        
+        # We return TENSORS because the worker code does torch.softmax on them.
+        # But wait, the worker code does:
+        # with torch.no_grad():
+        #    if device == 'cuda': ...
+        #    from_logits, ... = model(state_tensor)
+        # from_probs = torch.softmax(from_logits, ...).cpu().numpy()
+        
+        # We can return CPU tensors.
+        return (
+            torch.from_numpy(result.from_logits),
+            torch.from_numpy(result.to_logits),
+            torch.tensor([[result.value_pred]]) # Shape (1, 1)
+        )
+
+def _inference_server_loop(model, input_queue: mp.Queue, output_queues: Dict[str, mp.Queue], stop_event: threading.Event, device: str):
+    """
+    Runs in a THREAD in the main process.
+    Aggregates requests, runs batch inference, distributes results.
+    """
+    logger.info("Inference Server started")
+    model.eval()
     
-    # ROCm optimizations for AMD GPUs
-    os.environ['HSA_FORCE_FINE_GRAIN_PCIE'] = '1'
-    os.environ['PYTORCH_ALLOC_CONF'] = 'max_split_size_mb:512'
+    while not stop_event.is_set():
+        batch_requests = []
+        start_wait = time.perf_counter()
+        
+        # 1. Collect batch
+        try:
+            # Blocking get for first item
+            req = input_queue.get(timeout=0.1)
+            batch_requests.append(req)
+            
+            # Non-blocking get for rest up to BATCH_SIZE or TIMEOUT
+            while len(batch_requests) < BATCH_SIZE:
+                if time.perf_counter() - start_wait > TIMEOUT:
+                    break
+                try:
+                    req = input_queue.get_nowait()
+                    batch_requests.append(req)
+                except queue.Empty:
+                    break
+                    
+        except queue.Empty:
+            continue # Loop again and check stop_event
+            
+        if not batch_requests:
+            continue
+            
+        # 2. Prepare batch
+        try:
+            # Stack states
+            # state_tensor shape: (1, C, D, H, W) -> stack -> (B, C, D, H, W)
+            states = np.concatenate([r.state_tensor for r in batch_requests], axis=0)
+            states_tensor = torch.from_numpy(states).float().to(device)
+            
+            # 3. Run inference
+            with torch.no_grad():
+                if device == 'cuda':
+                    with torch.amp.autocast(device_type=device):
+                        from_logits, to_logits, value_pred = model(states_tensor)
+                else:
+                    from_logits, to_logits, value_pred = model(states_tensor)
+            
+            # Move to CPU numpy
+            from_logits_np = from_logits.float().cpu().numpy()
+            to_logits_np = to_logits.float().cpu().numpy()
+            value_pred_np = value_pred.float().cpu().numpy()
+            
+            # 4. Distribute results
+            for i, req in enumerate(batch_requests):
+                res = InferenceResult(
+                    from_logits=from_logits_np[i:i+1], # Keep (1, ...) shape
+                    to_logits=to_logits_np[i:i+1],
+                    value_pred=float(value_pred_np[i, 0])
+                )
+                
+                if req.game_id in output_queues:
+                    output_queues[req.game_id].put(res)
+                else:
+                    logger.error(f"Output queue not found for game {req.game_id}")
+                    
+        except Exception as e:
+            logger.error(f"Inference server error: {e}", exc_info=True)
+            # Send error to all waiting workers
+            for req in batch_requests:
+                if req.game_id in output_queues:
+                    output_queues[req.game_id].put(e)
 
-    # Load model ONCE per worker
-    if model_path and os.path.exists(model_path):
-        from training.training_types import TrainingConfig
-        from training.optim_train import ChessTrainer
-
-        config = TrainingConfig(device=device)
-        trainer = ChessTrainer(config)
-        checkpoint = torch.load(model_path, map_location=device)
-
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            trainer.model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            trainer.model.load_state_dict(checkpoint)
-
-        _WORKER_MODEL = trainer.model.to(device).eval()
-        _WORKER_DEVICE = device
-
-        logger.info(f"Worker initialized with model on {device}")
+    logger.info("Inference Server stopped")
 
 def _game_worker_batch(args):
     """
-    Fixed game worker with NO global state dependencies and guaranteed cleanup.
-    Each worker runs in complete isolation with local memory management.
+    Worker that runs the game logic.
+    Communicates with Inference Server for model evaluations.
     """
-
     import torch
     import numpy as np
     import random
-    import sys
-    import os
     import time
     import gc
-
-    # Local imports only - ensure fresh modules
-    from training.training_types import TrainingExample, TrainingConfig
+    
+    # Local imports
+    from training.training_types import TrainingExample
     from game3d.common.coord_utils import coord_to_idx
     from game3d.common.shared_types import (
-        VOLUME, SIZE, Color, Result, PieceType, COORD_DTYPE, INDEX_DTYPE,
-        FLOAT_DTYPE, POLICY_DIM, N_TOTAL_PLANES
+        POLICY_DIM, N_PIECE_TYPES, Color, Result
     )
     from game3d.movement.movepiece import Move
-    from game3d.board.board import Board
     from game3d.game.factory import start_game_state
     from game3d.game3d import OptimizedGame3D
     from training.opponents import create_opponent, OpponentBase
-    from training.optim_train import ChessTrainer
-    from game3d.game.terminal import is_fifty_move_draw, is_threefold_repetition
+    from game3d.game.terminal import get_draw_reason, result as get_result
 
-    game_id, _, device, opponent_types, epsilon, max_moves = args
-
-    # Use the SHARED model (no loading!)
-    model = _WORKER_MODEL
-    if model is None:
-        raise RuntimeError("Worker model not initialized")
+    game_id, _, device, opponent_types, epsilon, max_moves, input_queue, my_output_queue = args
+    
     worker_logger = logging.getLogger(f"worker.{game_id}")
-    state_cache = {}  # Local per-worker cache (eliminates global StateTensorPool)
+    
+    # Setup Remote Model
+    # We wrap the queue communication in a callable that looks like the model
+    class WorkerRemoteModel:
+        def __init__(self, in_q, out_q, gid):
+            self.in_q = in_q
+            self.out_q = out_q
+            self.gid = gid
+            
+        def __call__(self, state_tensor):
+            # state_tensor is (1, ...)
+            state_np = state_tensor.cpu().numpy()
+            self.in_q.put(InferenceRequest(self.gid, state_np))
+            
+            res = self.out_q.get()
+            if isinstance(res, Exception):
+                raise res
+                
+            return (
+                torch.from_numpy(res.from_logits),
+                torch.from_numpy(res.to_logits),
+                torch.tensor([[res.value_pred]])
+            )
+
+    model = WorkerRemoteModel(input_queue, my_output_queue, game_id)
 
     try:
         worker_logger.info(f"Worker {game_id} starting...")
-
-        model = _WORKER_MODEL
-        if model is None:
-            raise RuntimeError("Worker model not initialized")
 
         # Initialize game
         initial_state = start_game_state()
@@ -113,10 +229,6 @@ def _game_worker_batch(args):
         # Main game loop
         while move_count < MAX_MOVES_PER_GAME and not game.is_game_over():
 
-            # Draw detection
-            if is_fifty_move_draw(game.state) or is_threefold_repetition(game.state):
-                break
-
             # Get legal moves
             legal_moves = game.state.legal_moves
             if legal_moves.size == 0:
@@ -124,18 +236,15 @@ def _game_worker_batch(args):
 
             # Model inference
             state_array = game.state.board.array()
-            state_tensor = torch.from_numpy(state_array).float().unsqueeze(0).to(device)
+            state_tensor = torch.from_numpy(state_array).float().unsqueeze(0) # CPU tensor
+            
+            # Call remote model
+            # Note: We don't need autocast here, the server handles it
+            from_logits, to_logits, value_pred = model(state_tensor)
 
-            with torch.no_grad():
-                if device == 'cuda':
-                    with torch.amp.autocast(device_type=device):
-                        from_logits, to_logits, value_pred = model(state_tensor)
-                else:
-                    from_logits, to_logits, value_pred = model(state_tensor)
-
-            from_probs = torch.softmax(from_logits, dim=-1).cpu().numpy()[0]
-            to_probs = torch.softmax(to_logits, dim=-1).cpu().numpy()[0]
-            value_pred_scalar = float(value_pred.cpu().numpy()[0, 0])
+            from_probs = torch.softmax(from_logits, dim=-1).numpy()[0]
+            to_probs = torch.softmax(to_logits, dim=-1).numpy()[0]
+            value_pred_scalar = float(value_pred.numpy()[0, 0])
 
             # Process moves
             from_coords = legal_moves[:, :3]
@@ -144,8 +253,7 @@ def _game_worker_batch(args):
             # Get occupancy data
             occ_cache = game.state.cache_manager.occupancy_cache
             from_colors, from_types = occ_cache.batch_get_attributes(from_coords)
-            to_colors, to_types = occ_cache.batch_get_attributes(to_coords)
-
+            
             # Filter valid moves (piece belongs to current player)
             valid_mask = from_colors == game.state.color
             if not np.any(valid_mask):
@@ -155,32 +263,26 @@ def _game_worker_batch(args):
             valid_moves = legal_moves[valid_mask]
             n_valid = len(valid_moves)
 
-            # Create policy targets DIRECTLY - NO GLOBAL POOLING
+            # Create policy targets
             from_indices = coord_to_idx(valid_moves[:, :3])
             to_indices = coord_to_idx(valid_moves[:, 3:6])
 
-            # Allocate fresh arrays (memory is cheap compared to crashes)
             from_target = np.zeros(POLICY_DIM, dtype=np.float32)
             to_target = np.zeros(POLICY_DIM, dtype=np.float32)
 
-            # Fill sparse targets
             from_target[from_indices] = from_probs[from_indices]
             to_target[to_indices] = to_probs[to_indices]
 
             # Normalize
             from_sum = from_target.sum()
-            if from_sum > 0:
-                from_target /= from_sum
-
+            if from_sum > 0: from_target /= from_sum
+            
             to_sum = to_target.sum()
-            if to_sum > 0:
-                to_target /= to_sum
+            if to_sum > 0: to_target /= to_sum
 
-            # Create examples
+            # Create example
             player_sign = 1.0 if game.state.color == Color.WHITE.value else -1.0
-
-            # Create SINGLE example for this position
-            # We copy arrays to ensure they persist after the game state changes
+            
             ex = TrainingExample(
                 state_tensor=state_array.copy(),
                 from_target=from_target.copy(),
@@ -217,51 +319,62 @@ def _game_worker_batch(args):
                 continue
 
             game._state = receipt.new_state
-            game._state._legal_moves_cache = None  # Force cache refresh
+            game._state._legal_moves_cache = None
             move_count += 1
 
-            # Observe move for opponent learning
+            # Observe move
             opponent = opponents[game.state.color]
             if isinstance(opponent, OpponentBase):
                 opponent.observe(game.state, submit_move)
 
-        # Assign final outcomes
+        # Validation and Stats
+        valid_examples = []
+        for ex in examples:
+            try:
+                if ex.validate():
+                    valid_examples.append(ex)
+            except Exception:
+                continue
+
+        # Stats logging
+        duration = time.perf_counter() - start_time
+        game_result = get_result(game.state)
+        
+        result_str = "UNKNOWN"
+        if game_result == Result.WHITE_WIN: result_str = "WHITE WIN"
+        elif game_result == Result.BLACK_WIN: result_str = "BLACK WIN"
+        elif game_result == Result.DRAW: result_str = f"DRAW ({get_draw_reason(game.state)})"
+            
+        board_arr = game.state.board.array()
+        white_mat = np.sum(board_arr[:N_PIECE_TYPES])
+        black_mat = np.sum(board_arr[N_PIECE_TYPES:])
+        
+        worker_logger.info(
+            f"GAME FINISHED: {game_id} | {result_str} | {move_count} moves | "
+            f"{duration:.1f}s | Mat: {white_mat:.0f}/{black_mat:.0f}"
+        )
+
+        # Assign outcomes
         final_result = game.result()
         outcome = 0.0
-        if final_result == Result.WHITE_WIN:
-            outcome = 1.0
-        elif final_result == Result.BLACK_WIN:
-            outcome = -1.0
+        if final_result == Result.WHITE_WIN: outcome = 1.0
+        elif final_result == Result.BLACK_WIN: outcome = -1.0
 
-        for ex in examples:
+        for ex in valid_examples:
             ex.value_target = outcome * ex.player_sign
 
-        worker_logger.info(f"Game complete: {move_count} moves, {len(examples)} examples")
-        return examples
+        return valid_examples
 
     except Exception as e:
         worker_logger.error(f"Worker failed: {e}", exc_info=True)
         return []
 
     finally:
-        # AGGRESSIVE cleanup - CRITICAL to prevent memory leaks between tasks
-        state_cache.clear()
-
-        # Clear game caches
-        if 'game' in locals():
-            if hasattr(game.state, 'cache_manager'):
-                game.state.cache_manager.occupancy_cache.clear()
-                game.state.cache_manager.move_cache.clear()
-
-        # GPU memory cleanup
-        if device == 'cuda' and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            torch.cuda.synchronize()
-
-        # Force garbage collection
-        for _ in range(3):
-            gc.collect()
+        # Cleanup
+        if 'game' in locals() and hasattr(game.state, 'cache_manager'):
+            game.state.cache_manager.occupancy_cache.clear()
+            game.state.cache_manager.move_cache.clear()
+        gc.collect()
 
 def generate_training_data_parallel(
     model,
@@ -269,34 +382,65 @@ def generate_training_data_parallel(
     device: str = "cuda",
     opponent_types: Optional[List[str]] = None,
     epsilon: float = 0.1,
-    num_parallel: int = 4,  # Optimized for 6-core Ryzen 5600X (4 workers * 3 threads = 12)
+    num_parallel: int = 4,
     max_moves: int = 100_000,
 ):
-    # Save model ONCE
-    model_path = None
-    if hasattr(model, 'state_dict'):
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-            torch.save(model.state_dict(), tmp.name)
-            model_path = tmp.name
-
     all_examples = []
+    
+    # 1. Setup Queues
+    # Use Manager to create queues that can be shared with workers
+    # Actually, simple mp.Queue is enough if passed to Process
+    manager = mp.Manager()
+    input_queue = manager.Queue()
+    output_queues = {} # Local dict to hold queues
+    
+    # We need a way to map game_id to a queue. 
+    # We can create a dict of queues, but passing a dict of mp.Queues is tricky.
+    # Better: Create a list of queues, one per worker/game.
+    # Since we spawn num_games tasks, we might have more games than workers.
+    # But we process them in a pool.
+    # Wait, if we use pool.imap_unordered, we don't know which worker gets which game ID easily beforehand 
+    # if we just use 0..N.
+    # But we can create one queue per GAME ID.
+    
+    # Create queues for all games
+    game_queues = {}
+    for i in range(num_games):
+        gid = f"{i}"
+        game_queues[gid] = manager.Queue()
+        output_queues[gid] = game_queues[gid]
+
+    # 2. Start Inference Server (Thread)
+    stop_event = threading.Event()
+    server_thread = threading.Thread(
+        target=_inference_server_loop,
+        args=(model, input_queue, output_queues, stop_event, device),
+        daemon=True
+    )
+    server_thread.start()
+
     pool = None
-
     try:
-        # Create pool with model initialization
-        pool = mp.Pool(
-            processes=num_parallel,
-            initializer=_worker_init,
-            initargs=(model_path, device),
-            maxtasksperchild=5  # Optimized: faster cleanup, prevents memory accumulation
-        )
+        # 3. Start Workers
+        # We don't need _worker_init anymore because workers don't load models
+        pool = mp.Pool(processes=num_parallel)
 
-        # Process games
-        worker_args = [
-            (f"{i}", None, device, opponent_types, epsilon, max_moves)  # None for model_path
-            for i in range(num_games)
-        ]
+        worker_args = []
+        for i in range(num_games):
+            gid = f"{i}"
+            # Pass ONLY the specific output queue for this game to avoid pickling the whole dict
+            # Actually, passing the whole dict of queues might be heavy if num_games is huge.
+            # But for batch training (e.g. 24 games), it's fine.
+            # However, mp.Queue objects are not picklable directly if not from Manager?
+            # Manager queues are picklable (proxies).
+            
+            args = (
+                gid, None, device, opponent_types, epsilon, max_moves,
+                input_queue, game_queues[gid]
+            )
+            worker_args.append(args)
 
+        # 4. Collect results
         for result in pool.imap_unordered(_game_worker_batch, worker_args):
             if isinstance(result, list) and result:
                 all_examples.extend(result)
@@ -306,22 +450,24 @@ def generate_training_data_parallel(
         raise
 
     finally:
+        # 5. Cleanup
+        stop_event.set()
+        if server_thread.is_alive():
+            server_thread.join(timeout=2.0)
+            
         if pool is not None:
-            # GENTLE shutdown: let workers finish cleanup
-            pool.close()  # No new tasks
-            pool.join()  # Wait up to 30s for cleanup
+            pool.close()
+            pool.join()
+            
+        # Clear queues
+        try:
+            while not input_queue.empty(): input_queue.get_nowait()
+        except: pass
+        
+        manager.shutdown()
 
-        # Cleanup temp file
-        if model_path and os.path.exists(model_path):
-            try:
-                os.unlink(model_path)
-            except:
-                pass
-
-        # Final GPU cleanup from main process
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
 
     return all_examples
 

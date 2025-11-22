@@ -3,16 +3,7 @@ import numpy as np
 from numba import njit, prange
 from dataclasses import dataclass
 from typing import Optional
-from game3d.common.shared_types import COORD_DTYPE, MOVE_DTYPE
-
-# Flags for move types
-MOVE_FLAGS = {
-    'QUIET': 0,
-    'CAPTURE': 1,
-    'PROMOTION': 2,
-    'EN_PASSANT': 3,
-    'CASTLE': 4
-}
+from game3d.common.shared_types import COORD_DTYPE, MOVE_DTYPE, MOVE_FLAGS
 
 @dataclass
 class Move:

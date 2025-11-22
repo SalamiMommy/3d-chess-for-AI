@@ -139,9 +139,15 @@ class OptimizedGame3D:
             logger.error(f"❌ MOVE REJECTED - Wrong color: {piece['color']} != {self.current_player}")
             raise InvalidMoveError("Not your piece")
 
+        # === VALID MOVE: Check for duplicate hive move ===
+        if piece["piece_type"] == PieceType.HIVE:
+            if self._state.has_hive_moved(move.from_coord):
+                logger.error(f"❌ MOVE REJECTED - Hive at {move.from_coord} already moved this turn")
+                raise InvalidMoveError(f"Hive at {move.from_coord} has already moved this turn")
+        
         # === VALID MOVE: Continue with delegation ===
         new_state = (self._delegate_hive_move(move, start_time)
-                    if piece["piece_type"] is PieceType.HIVE
+                    if piece["piece_type"] == PieceType.HIVE
                     else self._delegate_standard_move(move, start_time))
 
         self._state = new_state
@@ -159,14 +165,22 @@ class OptimizedGame3D:
         )
 
     def _delegate_hive_move(self, move: Move, start_time: float) -> GameState:
-        """Delegate hive move execution to hive module via turnmove."""
-        # Apply hive move through dedicated handler
+        """Delegate hive move execution to hive module with multi-move tracking."""
+        # Apply hive move through dedicated handler (doesn't switch turn)
         new_state = apply_multi_hive_move(self._state, move)
 
-        # Handle pass-turn logic if no more movable hives
-        if not get_movable_hives(new_state, self.current_player):
-            if hasattr(new_state, 'pass_turn'):
-                new_state = new_state.pass_turn()
+        # Check if there are any unmoved hives remaining
+        unmoved_hives = get_movable_hives(new_state, self.current_player, new_state._moved_hive_positions)
+        
+        # Auto-finalize: If no more movable hives, switch turn and clear tracking
+        if unmoved_hives.size == 0:
+            logger.info(f"✓ All hives moved - finalizing turn for {Color(self.current_player).name}")
+            # Switch to opponent's turn
+            new_state = new_state._switch_turn()
+            # Clear hive tracking for next turn
+            new_state.clear_hive_move_tracking()
+        else:
+            logger.info(f"✓ Hive moved - {len(unmoved_hives)} unmoved hive(s) remaining")
 
         return new_state
 

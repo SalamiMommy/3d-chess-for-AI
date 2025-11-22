@@ -56,7 +56,43 @@ class JumpMovementEngine:
             allow_capture: bool = True
         ) -> np.ndarray:
             """Generate jump moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
-            targets = _generate_jump_targets(pos, directions)
+            
+            # Check for Speeder buff
+            # We need to find the ConsolidatedAuraCache to check for buffs
+            # This is done dynamically to avoid circular imports
+            is_buffed = False
+            if hasattr(self.cache_manager, '_effect_cache_instances'):
+                for cache in self.cache_manager._effect_cache_instances:
+                    if cache.__class__.__name__ == 'ConsolidatedAuraCache':
+                        # Check if this specific piece is buffed
+                        # batch_is_buffed expects (N, 3)
+                        pos_reshaped = pos.reshape(1, 3)
+                        buff_status = cache.batch_is_buffed(pos_reshaped, color)
+                        if buff_status.size > 0 and buff_status[0]:
+                            is_buffed = True
+                        break
+            
+            current_directions = directions
+            if is_buffed:
+                # Apply buff: increase length of longest directional vector(s) by 1
+                # Create a copy to avoid modifying the original static array
+                current_directions = directions.copy()
+                
+                # Vectorized application of the rule
+                abs_dirs = np.abs(current_directions)
+                max_vals = np.max(abs_dirs, axis=1, keepdims=True)
+                
+                # Identify components that are equal to the max value (longest components)
+                # and add 1 in the direction of the sign
+                mask = (abs_dirs == max_vals)
+                sign = np.sign(current_directions)
+                
+                # Add sign to the components where mask is True
+                # We use += to modify in place
+                # If sign is 0 (shouldn't happen for jump vectors usually, but good to be safe), it adds 0
+                current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
+
+            targets = _generate_jump_targets(pos, current_directions)
 
             if targets.shape[0] == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)

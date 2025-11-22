@@ -38,7 +38,7 @@ max_piece_val = max(FREEZER.value, SPEEDER.value, SLOWER.value, BLACKHOLE.value,
 EFFECT_PIECE_MASK = np.zeros((max_piece_val + 1, N_EFFECT_TYPES + 1), dtype=BOOL_DTYPE)
 
 # Populate mask: piece_type -> which effects it applies
-EFFECT_PIECE_MASK[FREEZER.value, EFFECT_FREEZE] = True
+# EFFECT_PIECE_MASK[FREEZER.value, EFFECT_FREEZE] = True  # Handled manually via trigger_freeze
 EFFECT_PIECE_MASK[SPEEDER.value, EFFECT_BUFF] = True
 EFFECT_PIECE_MASK[SLOWER.value, EFFECT_DEBUFF] = True
 EFFECT_PIECE_MASK[BLACKHOLE.value, EFFECT_PULL] = True
@@ -128,6 +128,12 @@ class ConsolidatedAuraCache(CacheListener):
 
         # Specific effect flags (dense arrays for fast lookup)
         self._frozen_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+        # Expiry arrays: When does the freeze expire for a specific VICTIM color?
+        # _freeze_expiry[Color.WHITE] -> When White pieces are free to move again
+        self._freeze_expiry = {
+            Color.WHITE: np.zeros((SIZE, SIZE, SIZE), dtype=INDEX_DTYPE),
+            Color.BLACK: np.zeros((SIZE, SIZE, SIZE), dtype=INDEX_DTYPE)
+        }
         self._debuffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
         self._buffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
 
@@ -378,7 +384,7 @@ class ConsolidatedAuraCache(CacheListener):
         self._effects[x, y, z] = 0
         self._effect_sources[x, y, z] = -1
         self._effect_ages[x, y, z] = 0
-        self._frozen_squares[x, y, z] = False
+        # self._frozen_squares[x, y, z] = False  # Managed by expiry now
         self._debuffed_squares[x, y, z] = False
         self._buffed_squares[x, y, z] = False
         self._pull_map[x, y, z] = 0
@@ -388,14 +394,19 @@ class ConsolidatedAuraCache(CacheListener):
     # QUERY OPERATIONS - VECTORIZED
     # ========================================================================
 
-    def batch_is_frozen(self, coords: np.ndarray, color: int) -> np.ndarray:
-        """Batch check frozen status."""
+    def batch_is_frozen(self, coords: np.ndarray, turn_number: int, victim_color: int) -> np.ndarray:
+        """Batch check frozen status for a specific victim color."""
         coords = self._ensure_coords(coords)
         if coords.size == 0:
             return np.empty(0, dtype=BOOL_DTYPE)
 
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        return self._frozen_squares[x, y, z]
+        
+        # Check expiry for this victim color
+        # If expiry >= turn_number, they are frozen
+        if victim_color in self._freeze_expiry:
+            return self._freeze_expiry[victim_color][x, y, z] >= turn_number
+        return np.zeros(coords.shape[0], dtype=BOOL_DTYPE)
 
     def batch_is_debuffed(self, coords: np.ndarray, color: int) -> np.ndarray:
         """Batch check debuffed status."""
@@ -436,6 +447,38 @@ class ConsolidatedAuraCache(CacheListener):
         if debuffed_indices.size == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
         return debuffed_indices[:, [2, 1, 0]].astype(COORD_DTYPE)
+    
+    def trigger_freeze(self, color: int, turn_number: int) -> None:
+        """Apply freeze effects from friendly FREEZER pieces.
+        
+        Args:
+            color: Color of the moving player whose freezers will apply effects
+            turn_number: Current turn number for expiry tracking
+        """
+        # Import the helper function to get frozen squares
+        from game3d.pieces.pieces.freezer import get_all_frozen_squares_numpy
+        
+        # Get all enemy squares that should be frozen by this player's freezers
+        frozen_coords = get_all_frozen_squares_numpy(self.cm, color)
+        
+        if frozen_coords.size == 0:
+            return
+        
+        # Determine enemy color
+        enemy_color = Color.WHITE if color == Color.BLACK else Color.BLACK
+        
+        # Set freeze expiry for enemy pieces
+        # Expiry is turn_number + 1, meaning:
+        # - At turn_number + 1 (enemy's turn), they are frozen (expiry >= turn_number)
+        # - At turn_number + 2 (next friendly turn), they are unfrozen (expiry < turn_number)
+        expiry_turn = turn_number + 1
+        
+        # Update freeze expiry for the enemy color
+        x, y, z = frozen_coords[:, 0], frozen_coords[:, 1], frozen_coords[:, 2]
+        self._freeze_expiry[enemy_color][x, y, z] = expiry_turn
+        
+        # Also mark as frozen in the frozen_squares grid for compatibility
+        self._frozen_squares[x, y, z] = True
 
     def pull_map(self, controller: int) -> np.ndarray:
         """Get pull map as array of (source, target) pairs."""

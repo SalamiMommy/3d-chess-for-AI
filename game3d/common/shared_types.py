@@ -428,6 +428,7 @@ AREA_EFFECT_RADIUS_1 = 1     # Standard area effect radius
 AREA_EFFECT_RADIUS_2 = 2     # Extended area effect radius
 MIN_3D = 0                   # Minimum 3D coordinate
 MAX_3D = 8                   # Maximum 3D coordinate (SIZE - 1)
+MAX_HISTORY_SIZE = 100       # Maximum moves to keep in history for 50-move rule (circular buffer)
 
 # Note: in_bounds_vectorized has been moved to coord_utils.py as the single source
 # Use: from .coord_utils import in_bounds_vectorized
@@ -664,7 +665,7 @@ __all__ = [
     'FREEZER_RANGE', 'SPEEDER_BUFF_STEPS', 'SLOWER_DEBUFF_STEPS', 'VECTORSLIDER_MAX_DISTANCE',
     'XYQUEEN_SLIDER_DISTANCE', 'XYQUEEN_HOP_DISTANCE', 'XZQUEEN_SLIDER_DISTANCE', 'XZQUEEN_HOP_DISTANCE',
     'YZ_SLIDER_MAX_STEPS', 'ZIGZAG_MAX_DISTANCE', 'GEOMANCER_BLOCK_DURATION',
-    'AREA_EFFECT_RADIUS_1', 'AREA_EFFECT_RADIUS_2', 'MIN_3D', 'MAX_3D',
+    'AREA_EFFECT_RADIUS_1', 'AREA_EFFECT_RADIUS_2', 'MIN_3D', 'MAX_3D', 'MAX_HISTORY_SIZE',
     
     # Structured dtypes
     'PieceArrayDtype', 'BoardStateDtype', 'Piece', 'EMPTY', 'WHITE', 'BLACK',
@@ -679,7 +680,7 @@ __all__ = [
     'REFLECTOR', 'BLACKHOLE', 'WHITEHOLE', 'INFILTRATOR', 'TRAILBLAZER', 'SPIRAL',
     
     # Additional constants and utilities
-    'MOVE_STEPS_MIN', 'MOVE_STEPS_MAX', 'MOVE_DTYPE', 'BATCH_OPERATION_FLAGS',
+    'MOVE_STEPS_MIN', 'MOVE_STEPS_MAX', 'MOVE_DTYPE', 'BATCH_OPERATION_FLAGS', 'MOVE_FLAGS',
     'compute_board_index',
     
     # Optimization constants

@@ -64,7 +64,7 @@ def _optimized_flat_index(coords: np.ndarray) -> np.ndarray:
     """Optimized coordinate to flat index using shared utilities."""
     if coords.size == 0:
         return np.empty(0, dtype=INDEX_DTYPE)
-    return coords[:, 2] * SIZE * SIZE + coords[:, 1] * SIZE + coords[:, 0]
+    return (coords[:, 2] * SIZE * SIZE + coords[:, 1] * SIZE + coords[:, 0]).astype(INDEX_DTYPE)
 
 
 @njit(cache=True, fastmath=True, parallel=True)

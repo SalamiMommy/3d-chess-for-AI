@@ -8,7 +8,8 @@ import logging
 
 from game3d.common.shared_types import (
     SIZE, N_TOTAL_PLANES, N_PIECE_TYPES, N_COLOR_PLANES,
-    COORD_DTYPE, INDEX_DTYPE, HASH_DTYPE, Color, COLOR_DTYPE, PIECE_TYPE_DTYPE
+    COORD_DTYPE, INDEX_DTYPE, HASH_DTYPE, Color, COLOR_DTYPE, PIECE_TYPE_DTYPE,
+    PIECE_SLICE
 )
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ def transform_board_array(board_array: np.ndarray, transform_idx: int) -> np.nda
 # SYMMETRY MANAGER CLASS
 # =============================================================================
 
+
 class SymmetryManager:
     """Numpy-native symmetry manager for 3D chess boards."""
 
@@ -164,6 +166,12 @@ class SymmetryManager:
 
         # For this set of rotations, each transform is its own inverse
         self.inverse_transforms = np.arange(N_SYMMETRIES, dtype=INDEX_DTYPE)
+        
+        # Canonical form cache: hash -> (canonical_array, transform_idx)
+        self._canonical_cache = {}
+        self._cache_size_limit = 10000
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def get_canonical_form(self, board) -> Tuple[np.ndarray, int]:
         """
@@ -193,13 +201,31 @@ class SymmetryManager:
                 f"got {board_array.shape}"
             )
 
-        # Special case: empty board is its own canonical form
+        # ✅ OPTIMIZATION 1: Early exit for empty board
         if np.sum(board_array) == 0:
             return board_array, 0
+        
+        # ✅ OPTIMIZATION 2: Early exit for single-piece boards
+        # Single piece has no meaningful symmetry advantage
+        piece_planes = board_array[PIECE_SLICE]
+        n_pieces = np.count_nonzero(piece_planes)
+        if n_pieces == 1:
+            return board_array, 0
+
+        # ✅ OPTIMIZATION 3: Check cache using hash as key
+        from game3d.cache.caches.zobrist import compute_zobrist
+        board_hash = compute_zobrist(board_array, Color.WHITE)
+        
+        if board_hash in self._canonical_cache:
+            self._cache_hits += 1
+            cached_canonical, cached_transform = self._canonical_cache[board_hash]
+            # Return copy to avoid mutation issues
+            return cached_canonical.copy(), cached_transform
+
+        self._cache_misses += 1
 
         # Initialize with original board
-        from game3d.cache.caches.zobrist import compute_zobrist
-        min_hash = compute_zobrist(board_array, Color.WHITE)
+        min_hash = board_hash
         min_transform = 0
         min_array = board_array
 
@@ -217,7 +243,17 @@ class SymmetryManager:
                 min_transform = i
                 min_array = transformed
 
+        # ✅ OPTIMIZATION 4: Cache the result
+        # Implement simple LRU by removing oldest entry when full
+        if len(self._canonical_cache) >= self._cache_size_limit:
+            # Remove first (oldest) entry
+            first_key = next(iter(self._canonical_cache))
+            del self._canonical_cache[first_key]
+        
+        self._canonical_cache[board_hash] = (min_array.copy(), min_transform)
+
         return min_array, min_transform
+
 
     def transform_move(self, move: 'CompactMove', transform_idx: int) -> 'CompactMove':
         """

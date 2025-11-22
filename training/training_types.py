@@ -186,7 +186,7 @@ class TrainingConfig:
     # Training hyperparameters
     learning_rate: float = 8e-4  # Scaled down for larger batch size
     weight_decay: float = 1e-4
-    batch_size: int = 48  # Optimized for RX 7900 XTX 24GB VRAM
+    batch_size: int = 128  # Optimized for RX 7900 XTX 24GB VRAM
     epochs: int = 50  # Reduced - larger batches converge faster
     warmup_epochs: int = 5  # Reduced proportionally
     
@@ -390,57 +390,77 @@ class TrainingExample:
     ) -> List['TrainingExample']:
         """
         HIGH-PERFORMANCE batch creation for self-play.
-        Creates ONE shared state tensor + shared policy targets for all examples.
-
-        CRITICAL: Handles dtype conversion in Python layer before Numba call.
+        Creates UNIQUE policy targets for EACH move (FIXES catastrophic loss bug).
         """
         from game3d.common.shared_types import Color
+        from game3d.common.coord_utils import coord_to_idx
 
-        # ✅ SAFE DTYE CONVERSION - before Numba sees the arrays
+        # SAFE DTYPE CONVERSION
         if from_logits.dtype not in (np.float32, np.float64):
             from_logits = from_logits.astype(np.float32, copy=False)
         if to_logits.dtype not in (np.float32, np.float64):
             to_logits = to_logits.astype(np.float32, copy=False)
 
-        # Ensure they're float32 (Numba's preferred type)
         from_logits = from_logits.astype(np.float32, copy=False)
         to_logits = to_logits.astype(np.float32, copy=False)
-
-        # Get policy targets from pool (already float32)
-        from_target = PolicyTargetPool.get()
-        to_target = PolicyTargetPool.get()
 
         # Normalize state to uint8 (75% memory savings)
         normalized_state = (state_array * 255).clip(0, 255).astype(np.uint8)
         state_shared = StateTensorPool.get_shared(game_id, normalized_state)
 
         # Convert coordinates to flat indices
-        from game3d.common.coord_utils import coord_to_idx
-
         from_idx_array = coord_to_idx(legal_moves[:, :3])
         to_idx_array = coord_to_idx(legal_moves[:, 3:6])
 
-        # Compute sparse policy targets (Numba function - no dtype checks inside)
-        _compute_sparse_policy_targets(
-            from_logits, to_logits,
-            from_idx_array, to_idx_array,
-            from_target, to_target
-        )
+        # Compute softmax probabilities ONCE
+        from_max = np.max(from_logits)
+        to_max = np.max(to_logits)
+        from_exp = np.exp(from_logits - from_max)
+        to_exp = np.exp(to_logits - to_max)
+        from_probs = from_exp / (np.sum(from_exp) + 1e-8)
+        to_probs = to_exp / (np.sum(to_exp) + 1e-8)
 
-        # Create examples with SHARED references
+        # Create examples with UNIQUE policy targets per move
         n_moves = len(legal_moves)
         player_sign = 1.0 if player_color == Color.WHITE.value else -1.0
+        examples = []
 
-        # Use Numba JIT loop for high-speed object creation
-        examples = cls._create_examples_python(  # Changed from _create_examples_numba
-            state_shared, from_target, to_target,
-            float(value_pred), n_moves, move_count,
-            player_sign, game_id
-        )
+        for i in range(n_moves):
+            # CRITICAL: Get FRESH policy targets for EACH move
+            from_target = PolicyTargetPool.get()
+            to_target = PolicyTargetPool.get()
 
-        # Mark as shared to prevent premature pool reclamation
-        for ex in examples:
-            ex._is_shared = True
+            # Fill ONLY for this specific move (sparse)
+            from_idx = from_idx_array[i]
+            to_idx = to_idx_array[i]
+
+            if 0 <= from_idx < POLICY_DIM:
+                from_target[from_idx] = from_probs[from_idx]
+            if 0 <= to_idx < POLICY_DIM:
+                to_target[to_idx] = to_probs[to_idx]
+
+            # Normalize INDIVIDUALLY (CRITICAL - prevents gradient explosion)
+            from_sum = from_target.sum()
+            to_sum = to_target.sum()
+            if from_sum > 0:
+                from_target /= (from_sum + 1e-8)
+            if to_sum > 0:
+                to_target /= (to_sum + 1e-8)
+
+            # Create example with shared state but unique policy targets
+            ex = TrainingExample.__new__(TrainingExample)
+            ex.state_tensor = state_shared      # SHARED reference
+            ex.from_target = from_target        # UNIQUE per move
+            ex.to_target = to_target            # UNIQUE per move
+            ex.value_target = float(value_pred)
+            ex.move_count = move_count
+            ex.player_sign = player_sign
+            ex.game_id = game_id
+            ex._is_validated = True             # Skip validation for speed
+            ex._is_shared = True               # Mark as shared
+            ex._owns_state = False             # State tensor is shared
+
+            examples.append(ex)
 
         return examples
 
