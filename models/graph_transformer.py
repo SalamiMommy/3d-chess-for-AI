@@ -318,6 +318,15 @@ def create_optimized_model(
             "ff_mult": 4,
             "dropout": 0.1,
             "use_gradient_checkpointing": True
+        },
+        "huge": {
+            "dim": 1024,
+            "depth": 24,
+            "heads": 16,
+            "dim_head": 64,
+            "ff_mult": 4,
+            "dropout": 0.1,
+            "use_gradient_checkpointing": True
         }
     }
 
@@ -444,7 +453,7 @@ def test_model_memory_usage():
     print(f"Testing model on: {device}")
 
     # Test different model sizes
-    for size in ["small", "default", "large"]:
+    for size in ["small", "default", "large", "huge"]:
         print(f"\nTesting {size} model...")
 
         # Create model

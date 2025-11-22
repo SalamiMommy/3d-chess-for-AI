@@ -385,8 +385,8 @@ CPU_COUNT_FALLBACK = 6  # Default CPU count for parallel processing
 MIN_WORKERS = 1  # Minimum number of workers for parallel processing
 
 # Game rule constants
-FIFTY_MOVE_RULE = 100  # Half-moves for fifty-move rule
-REPETITION_LIMIT = 3  # Maximum position repetitions before draw
+FIFTY_MOVE_RULE = 150  # Half-moves for 75-move rule
+REPETITION_LIMIT = 5  # Maximum position repetitions before draw
 INSUFFICIENT_MATERIAL_THRESHOLD = 5  # Threshold for insufficient material detection
 
 # Test and benchmark constants

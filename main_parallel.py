@@ -106,7 +106,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-parallel", type=int, default=4)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
-    parser.add_argument("--max-replay", type=int, default=150000)  # Increased to utilize 64GB RAM
+    parser.add_argument("--max-replay", type=int, default=200000)  # Increased to utilize 64GB RAM
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--opponent-types", type=str, nargs="+", default=AVAILABLE_OPPONENTS)
     parser.add_argument("--epsilon", type=float, default=0.1)
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume-from", type=str, default=None)
     parser.add_argument("--load-model", type=str, default=None)
     parser.add_argument("--training-mode", type=str, default="fresh", choices=["fresh", "resume"])
-    parser.add_argument("--model-size", type=str, default="large", choices=["small", "default", "large"])
+    parser.add_argument("--model-size", type=str, default="huge", choices=["small", "default", "large", "huge"])
     parser.add_argument("--use-mixed-precision", action="store_true", default=True)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2,
                        help="Gradient accumulation steps for larger effective batch size")
@@ -311,16 +311,23 @@ if __name__ == "__main__":
             pbar.write(f"{'='*60}")
 
             try:
-                # Generate training data
+                # Save current model state to temporary checkpoint
+                temp_checkpoint = run_dir / "temp_model_for_selfplay.pt"
+                torch.save(trainer.model.state_dict(), temp_checkpoint)
+                logger.info(f"Saved temporary checkpoint: {temp_checkpoint}")
+                
+                # Generate training data with per-worker models
                 fresh = generate_training_data_parallel(
-                    trainer.model,
+                    model_checkpoint_path=str(temp_checkpoint),
                     num_games=args.games_per_iter,
                     device=args.device,
                     opponent_types=[white_type, black_type],
                     epsilon=args.epsilon,
                     num_parallel=args.num_parallel,
                     max_moves=100000,
+                    model_size=args.model_size,
                 )
+
 
                 if not fresh:
                     logger.warning("No training examples generated this iteration")

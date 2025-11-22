@@ -151,18 +151,18 @@ def _build_piece_counts_from_occupancy(colors: np.ndarray, piece_types: np.ndarr
 
     return piece_counts
 
-def is_fifty_move_draw(game_state) -> bool:
-    """Check fifty-move rule using centralized constant."""
+def is_move_rule_draw(game_state) -> bool:
+    """Check move rule draw (75 moves) using centralized constant."""
     halfmove = getattr(game_state, 'halfmove_clock', 0)
     result = halfmove >= FIFTY_MOVE_RULE
 
     if _should_log_debug(game_state):
-        logger.debug(f"50-move check: halfmove={halfmove}, result={result}")
+        logger.debug(f"Move rule check: halfmove={halfmove}, result={result}")
 
     return result
 
-def is_threefold_repetition(game_state) -> bool:
-    """Check threefold repetition using centralized constant."""
+def is_repetition_draw(game_state) -> bool:
+    """Check repetition draw (5-fold) using centralized constant."""
     current_zkey = getattr(game_state, 'zkey', 0)
     idx = np.searchsorted(game_state._position_keys, current_zkey)
 
@@ -171,31 +171,7 @@ def is_threefold_repetition(game_state) -> bool:
         result = game_state._position_counts[idx] >= REPETITION_LIMIT
 
     if _should_log_debug(game_state):
-        logger.debug(f"3-fold repetition: zkey={current_zkey}, idx={idx}, count={game_state._position_counts[idx] if idx < game_state._position_counts.size else 'N/A'}, result={result}")
-
-    return result
-
-def is_fivefold_repetition(game_state) -> bool:
-    """Check fivefold repetition using centralized constant."""
-    current_zkey = getattr(game_state, 'zkey', 0)
-    idx = np.searchsorted(game_state._position_keys, current_zkey)
-
-    result = False
-    if idx < game_state._position_keys.size and game_state._position_keys[idx] == current_zkey:
-        result = game_state._position_counts[idx] >= (REPETITION_LIMIT + 2)
-
-    if _should_log_debug(game_state):
-        logger.debug(f"5-fold repetition: zkey={current_zkey}, result={result}")
-
-    return result
-
-def is_seventy_five_move_draw(game_state) -> bool:
-    """Check seventy-five move rule using optimized constant."""
-    halfmove = getattr(game_state, 'halfmove_clock', 0)
-    result = halfmove >= (FIFTY_MOVE_RULE + 50)
-
-    if _should_log_debug(game_state):
-        logger.debug(f"75-move check: halfmove={halfmove}, result={result}")
+        logger.debug(f"Repetition check: zkey={current_zkey}, idx={idx}, count={game_state._position_counts[idx] if idx < game_state._position_counts.size else 'N/A'}, result={result}")
 
     return result
 
@@ -206,22 +182,13 @@ def is_game_over(game_state) -> bool:
     if _should_log_debug(game_state):
         logger.debug(f"Checking game over: zkey={game_state.zkey}, halfmove={game_state.halfmove_clock}")
 
-    if is_fivefold_repetition(game_state):
+    if is_repetition_draw(game_state):
         # Always log when game-ending condition is met
-        logger.warning("Game over: fivefold repetition")
+        logger.warning("Game over: repetition draw")
         return True
 
-    if is_threefold_repetition(game_state):
-        logger.warning("Game over: threefold repetition")
-        return True
-
-    if is_seventy_five_move_draw(game_state):
-        # Always log when game-ending condition is met
-        logger.warning("Game over: 75-move draw")
-        return True
-
-    if is_fifty_move_draw(game_state):
-        logger.warning("Game over: 50-move draw")
+    if is_move_rule_draw(game_state):
+        logger.warning("Game over: move rule draw")
         return True
 
     if is_insufficient_material(game_state):
@@ -255,11 +222,10 @@ def result(game_state) -> Optional[int]:
     current_color = game_state.color
 
     # Check for draw conditions in optimized order
+    # Check for draw conditions in optimized order
     draw_conditions = [
-        is_fivefold_repetition,
-        is_seventy_five_move_draw,
-        is_fifty_move_draw,
-        is_threefold_repetition,
+        is_repetition_draw,
+        is_move_rule_draw,
         is_insufficient_material,
         is_stalemate
     ]
@@ -335,14 +301,11 @@ def get_draw_reason(game_state) -> Optional[str]:
         return None
 
     # Use early return pattern for efficiency
-    if is_fivefold_repetition(game_state):
-        return "Fivefold repetition (automatic draw)"
-    if is_seventy_five_move_draw(game_state):
-        return "75-move rule (automatic draw)"
-    if is_fifty_move_draw(game_state):
-        return "50-move rule"
-    if is_threefold_repetition(game_state):
-        return "Threefold repetition"
+    # Use early return pattern for efficiency
+    if is_repetition_draw(game_state):
+        return "Repetition draw"
+    if is_move_rule_draw(game_state):
+        return "Move rule draw"
     if is_insufficient_material(game_state):
         return "Insufficient material"
     if is_stalemate(game_state):
@@ -357,10 +320,10 @@ def batch_check_game_over_vectorized(states, zkeys, halfmove_clocks, position_ke
         # Simplified: check repetition and halfmove
         current_zkey = zkeys[i]
         idx = np.searchsorted(position_keys[i], current_zkey)
-        if idx < position_keys[i].size and position_keys[i][idx] == current_zkey and position_counts[i][idx] >= REPETITION_LIMIT + 2:
+        if idx < position_keys[i].size and position_keys[i][idx] == current_zkey and position_counts[i][idx] >= REPETITION_LIMIT:
             results[i] = True
             continue
-        if halfmove_clocks[i] >= FIFTY_MOVE_RULE + 50:
+        if halfmove_clocks[i] >= FIFTY_MOVE_RULE:
             results[i] = True
             continue
         # Placeholder for other checks

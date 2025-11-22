@@ -14,7 +14,8 @@ from game3d.game.terminal import (
     is_check,
     is_stalemate,
     is_insufficient_material,
-    is_fifty_move_draw,
+    is_move_rule_draw,
+    is_repetition_draw,
     is_game_over,
     result,
     is_terminal,
@@ -47,7 +48,8 @@ def _bind_game_state_methods():
     GameState.is_check = staticmethod(is_check)
     GameState.is_stalemate = staticmethod(is_stalemate)
     GameState.is_insufficient_material = staticmethod(is_insufficient_material)
-    GameState.is_fifty_move_draw = staticmethod(is_fifty_move_draw)
+    GameState.is_move_rule_draw = staticmethod(is_move_rule_draw)
+    GameState.is_repetition_draw = staticmethod(is_repetition_draw)
     GameState.is_terminal = staticmethod(is_terminal)
     GameState.outcome = staticmethod(outcome)
 
@@ -103,7 +105,8 @@ __all__ = [
     "is_check",
     "is_stalemate",
     "is_insufficient_material",
-    "is_fifty_move_draw",
+    "is_move_rule_draw",
+    "is_repetition_draw",
     "is_game_over",
     "result",
     "is_terminal",

@@ -178,6 +178,86 @@ def _compute_attack_defense_rewards_vectorized(
     return rewards
 
 
+@njit(cache=True, fastmath=True, parallel=True)
+def _compute_check_potential_vectorized(
+    to_coords: np.ndarray,
+    piece_types: np.ndarray,
+    enemy_king_pos: np.ndarray,
+    check_reward: float
+) -> np.ndarray:
+    """Vectorized check potential reward (approximate)."""
+    n_moves = len(to_coords)
+    rewards = np.zeros(n_moves, dtype=FLOAT_DTYPE)
+    
+    if enemy_king_pos is None:
+        return rewards
+        
+    kx, ky, kz = enemy_king_pos[0], enemy_king_pos[1], enemy_king_pos[2]
+
+    for i in prange(n_moves):
+        # Skip if piece is empty (shouldn't happen in valid moves)
+        if piece_types[i] == 0:
+            continue
+            
+        tx, ty, tz = to_coords[i]
+        pt = piece_types[i]
+        
+        is_check = False
+        
+        # Approximate check detection based on piece type and destination
+        # This does NOT account for blocking pieces (ray casting is expensive here)
+        # But for a reward signal, it's often sufficient
+        
+        dx = abs(tx - kx)
+        dy = abs(ty - ky)
+        dz = abs(tz - kz)
+        
+        if pt == PieceType.PAWN.value:
+            # Pawn attacks diagonally forward (simplified for 3D: any diagonal step?)
+            # Actually pawns capture differently. Let's assume standard 3D pawn capture:
+            # Forward diagonal. But direction depends on color. 
+            # Simplified: if dist is small and not same file
+            if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz) >= 2:
+                 is_check = True
+                 
+        elif pt == PieceType.KNIGHT.value:
+            # 1, 2 jump
+            dist_sq = dx*dx + dy*dy + dz*dz
+            if dist_sq == 5: # 1^2 + 2^2 + 0^2
+                is_check = True
+                
+        elif pt == PieceType.BISHOP.value:
+            # Diagonal
+            if (dx == dy and dz == 0) or (dx == dz and dy == 0) or (dy == dz and dx == 0):
+                is_check = True
+            elif dx == dy and dy == dz: # Tri-diagonal
+                is_check = True
+                
+        elif pt == PieceType.ROOK.value:
+            # Orthogonal
+            if (dx == 0 and dy == 0) or (dx == 0 and dz == 0) or (dy == 0 and dz == 0):
+                is_check = True
+                
+        elif pt == PieceType.QUEEN.value:
+            # Bishop + Rook
+            if (dx == 0 and dy == 0) or (dx == 0 and dz == 0) or (dy == 0 and dz == 0):
+                is_check = True
+            elif (dx == dy and dz == 0) or (dx == dz and dy == 0) or (dy == dz and dx == 0):
+                is_check = True
+            elif dx == dy and dy == dz:
+                is_check = True
+                
+        elif pt == PieceType.PRIEST.value:
+             # Priest moves like King (1 step) but captures? 
+             # Priest usually doesn't capture or check in some variants, but let's assume it can for now if it moves.
+             if dx <= 1 and dy <= 1 and dz <= 1:
+                 is_check = True
+
+        if is_check:
+            rewards[i] = check_reward
+
+    return rewards
+
 # =============================================================================
 # OPTIMIZED OPPONENT BASE CLASS
 # =============================================================================
@@ -362,22 +442,35 @@ class AdaptiveOpponent(OpponentBase):
             )
             rewards += attack_rewards
 
+
         # 5. King approach (only if no enemy priests)
-        if not cache_manager.occupancy_cache.has_priest(self.color.opposite()):
-            enemy_king_pos = cache_manager.occupancy_cache.find_king(self.color.opposite())
+        enemy_priest_count = 0
+        enemy_color = self.color.opposite()
+        if cache_manager.occupancy_cache.has_priest(enemy_color):
+             enemy_priest_count = 1 # Simplified check
+
+        if enemy_priest_count == 0:
+            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                 # Filter relevant pieces
                 relevant_mask = (from_types != PieceType.KING.value)
                 if np.any(relevant_mask):
                     filtered_from = from_coords[relevant_mask]
                     filtered_to = to_coords[relevant_mask]
+                    filtered_types = from_types[relevant_mask]
 
                     king_targets = np.array([enemy_king_pos], dtype=COORD_DTYPE)
                     distance_rewards = _compute_distance_rewards_vectorized(
                         filtered_from, filtered_to, king_targets,
-                        from_types[relevant_mask], 0.05
+                        filtered_types, 0.05
                     )
                     rewards[relevant_mask] += distance_rewards
+                    
+                    # NEW: Check reward
+                    check_rewards = _compute_check_potential_vectorized(
+                        filtered_to, filtered_types, enemy_king_pos, 1.5
+                    )
+                    rewards[relevant_mask] += check_rewards
 
         return rewards
 
@@ -442,6 +535,16 @@ class CenterControlOpponent(OpponentBase):
             center_rewards_pieces = _compute_center_control_rewards_vectorized(to_coords[piece_mask])
             rewards[piece_mask] += center_rewards_pieces * 0.33  # 0.1 / 0.3 ratio
 
+        # 6. Conditional Check Reward
+        enemy_color = self.color.opposite()
+        if not cache_manager.occupancy_cache.has_priest(enemy_color):
+            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
+            if enemy_king_pos is not None:
+                 check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 1.5
+                )
+                 rewards += check_rewards
+
         return rewards
 
 
@@ -482,6 +585,18 @@ class PieceCaptureOpponent(OpponentBase):
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
+        # 4. Conditional Check Reward
+        enemy_color = self.color.opposite()
+        if not cache_manager.occupancy_cache.has_priest(enemy_color):
+            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
+            if enemy_king_pos is not None:
+                 # Need from_types for check calculation
+                 from_types = state.cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])[1]
+                 check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 1.5
+                )
+                 rewards += check_rewards
+
         return rewards
 
 
@@ -520,10 +635,11 @@ class PriestHunterOpponent(OpponentBase):
         if halfmove_clock > 90:
             clock_multiplier = 2.5
         
+
         for i in range(len(moves)):
             if captured_colors[i] == self.color.opposite().value:
                 if captured_types[i] == PieceType.PRIEST.value:
-                    rewards[i] += 3.0 * clock_multiplier
+                    rewards[i] += 3.0 * clock_multiplier # INCREASED REWARD
                 else:
                     rewards[i] += 0.2 * clock_multiplier
 
@@ -537,6 +653,16 @@ class PriestHunterOpponent(OpponentBase):
                 piece_types, 0.1
             )
             rewards += approach_rewards
+
+        # 5. Conditional Check Reward
+        enemy_color = self.color.opposite()
+        if not cache_manager.occupancy_cache.has_priest(enemy_color):
+            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
+            if enemy_king_pos is not None:
+                 check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 1.5
+                )
+                 rewards += check_rewards
 
         return rewards
 
@@ -618,6 +744,16 @@ class GraphAwareOpponent(OpponentBase):
         if halfmove_clock > 90:
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
+
+        # 5. Conditional Check Reward
+        enemy_color = self.color.opposite()
+        if not cache_manager.occupancy_cache.has_priest(enemy_color):
+            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
+            if enemy_king_pos is not None:
+                 check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 1.5
+                )
+                 rewards += check_rewards
 
         return rewards
 

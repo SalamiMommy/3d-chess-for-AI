@@ -35,14 +35,22 @@ if torch.cuda.is_available():
     try:
         vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         if vram_gb >= 23:
-            BATCH_SIZE = 128  # 24GB+ cards (3090, 4090, 7900XTX)
+            # Check if we are using the huge model
+            if hasattr(TrainingConfig, 'model_size') and TrainingConfig.model_size == 'huge':
+                BATCH_SIZE = 32  # Lower batch size for huge model
+                print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM (Huge Model)")
+            else:
+                BATCH_SIZE = 128  # 24GB+ cards (3090, 4090, 7900XTX)
+                print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
         elif vram_gb >= 15:
             BATCH_SIZE = 64   # 16GB cards
+            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
         elif vram_gb >= 11:
             BATCH_SIZE = 32   # 12GB cards
+            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
         else:
             BATCH_SIZE = 16   # 8GB or less
-        print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
+            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
     except:
         print("Could not detect VRAM, using default batch size 32")
 else:
@@ -208,6 +216,14 @@ class ChessTrainer:
         
         # Gradient accumulation for larger effective batch size
         self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
+        
+        # Auto-adjust gradient accumulation for huge model if batch size was lowered
+        if config.model_size == 'huge' and config.batch_size < 128:
+            target_effective_batch = 128
+            calculated_steps = max(1, target_effective_batch // config.batch_size)
+            if calculated_steps > self.gradient_accumulation_steps:
+                print(f"Auto-adjusting gradient accumulation to {calculated_steps} for huge model")
+                self.gradient_accumulation_steps = calculated_steps
 
         if config.use_ema:
             self.ema_model = self._create_model()
@@ -602,10 +618,31 @@ def load_or_init_model(config: TrainingConfig) -> tuple[nn.Module, optim.Optimiz
     return model, optimizer, 0
 
 def train_with_self_play(config: TrainingConfig, num_games: int = 10) -> Dict[str, Any]:
+    """Train model with self-play generated data."""
     model, _, _ = load_or_init_model(config)
-    examples = generate_training_data_parallel(model, num_games=num_games, device=config.device)
-    trainer = ChessTrainer(config)
-    return trainer.train(examples)
+    
+    # Save model to temporary checkpoint
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.pt', delete=False) as f:
+        torch.save(model.state_dict(), f.name)
+        checkpoint_path = f.name
+    
+    try:
+        # Generate training data with per-worker models
+        examples = generate_training_data_parallel(
+            model_checkpoint_path=checkpoint_path,
+            num_games=num_games,
+            device=config.device,
+            model_size=config.model_size
+        )
+        trainer = ChessTrainer(config, model=model)
+        return trainer.train(examples)
+    finally:
+        # Clean up temporary checkpoint
+        import os
+        if os.path.exists(checkpoint_path):
+            os.unlink(checkpoint_path)
+
 
 class GraphTransformerDataset(Dataset):
     """Dataset optimized for Graph Transformer - keeps data on GPU."""
@@ -661,6 +698,6 @@ class GraphTransformerDataset(Dataset):
         return convert_examples_to_tensors(batch_examples, self.device)
 
 if __name__ == "__main__":
-    config = TrainingConfig()
+    config = TrainingConfig(batch_size=BATCH_SIZE)
     results = train_with_self_play(config, num_games=5)
     print(f"Training completed! Best val loss: {results['best_val_loss']}")

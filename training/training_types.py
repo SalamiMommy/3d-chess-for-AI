@@ -181,12 +181,12 @@ class TrainingConfig:
     # Model configuration
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     model_type: str = "transformer"
-    model_size: str = "large"
+    model_size: str = "huge"
 
     # Training hyperparameters
     learning_rate: float = 8e-4  # Scaled down for larger batch size
     weight_decay: float = 1e-4
-    batch_size: int = 128  # Optimized for RX 7900 XTX 24GB VRAM
+    batch_size: int = 32
     epochs: int = 50  # Reduced - larger batches converge faster
     warmup_epochs: int = 5  # Reduced proportionally
     
