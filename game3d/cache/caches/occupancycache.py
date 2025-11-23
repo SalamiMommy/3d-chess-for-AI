@@ -1,5 +1,6 @@
 """
 High-performance occupancy cache with numpy vectorization and incremental king tracking.
+Coordinates are stored in (x, y, z) order matching the external API.
 """
 import logging
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def _vectorized_batch_occupied(occ: np.ndarray, coords: np.ndarray) -> np.ndarra
     for i in prange(n):
         x, y, z = coords[i]
         if (0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE):
-            out[i] = occ[z, y, x] != 0
+            out[i] = occ[x, y, z] != 0
 
     return out
 
@@ -57,8 +58,8 @@ def _vectorized_batch_attributes(occ: np.ndarray, ptype: np.ndarray, coords: np.
     for i in prange(n):
         x, y, z = coords[i]
         if (0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE):
-            colors[i] = occ[z, y, x]
-            types[i] = ptype[z, y, x]
+            colors[i] = occ[x, y, z]
+            types[i] = ptype[x, y, z]
         else:
             colors[i] = 0
             types[i] = 0
@@ -89,14 +90,14 @@ def _parallel_find_king(occ: np.ndarray, ptype: np.ndarray, color_code: COLOR_DT
     result = np.array([-1, -1, -1], dtype=COORD_DTYPE)
     found = False
 
-    for z in prange(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
+    for x in prange(SIZE):  # Iterate x first for (x, y, z) order
         if found:
             continue
-        for y in range(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
+        for y in range(SIZE):
             if found:
                 continue
-            for x in range(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
-                if occ[z, y, x] == color_code and ptype[z, y, x] == PieceType.KING.value:  # Fixed enum
+            for z in range(SIZE):
+                if occ[x, y, z] == color_code and ptype[x, y, z] == PieceType.KING.value:
                     result = np.array([x, y, z], dtype=COORD_DTYPE)
                     found = True
                     break
@@ -112,8 +113,8 @@ def _vectorized_batch_update(occ: np.ndarray, ptype: np.ndarray,
     y = coords[:, 1]
     z = coords[:, 2]
 
-    occ[z, y, x] = pieces[:, 1]
-    ptype[z, y, x] = pieces[:, 0]
+    occ[x, y, z] = pieces[:, 1]
+    ptype[x, y, z] = pieces[:, 0]
 
 
 @njit(cache=True, nogil=True, parallel=True)
@@ -122,11 +123,11 @@ def _parallel_piece_counts(occ: np.ndarray, ptype: np.ndarray, color_code: COLOR
     max_piece_types = 11  # Support 0-10 piece types
     type_counts = np.zeros(max_piece_types, dtype=INDEX_DTYPE)
 
-    for z in prange(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
-        for y in range(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
-            for x in range(SIZE):  # FIXED: Changed from BOARD_SIZE to SIZE
-                if occ[z, y, x] == color_code:
-                    piece_type = ptype[z, y, x]
+    for x in prange(SIZE):  # Iterate x first for (x, y, z) order
+        for y in range(SIZE):
+            for z in range(SIZE):
+                if occ[x, y, z] == color_code:
+                    piece_type = ptype[x, y, z]
                     if 0 <= piece_type < max_piece_types:
                         type_counts[piece_type] += 1
 
@@ -141,7 +142,7 @@ def _batch_occupied_numba(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
     for i in prange(n):
         x, y, z = coords[i]
         if (0 <= x <= max_val and 0 <= y <= max_val and 0 <= z <= max_val):
-            out[i] = occ[z, y, x] != 0
+            out[i] = occ[x, y, z] != 0
 
     return out
 
@@ -209,15 +210,15 @@ class OccupancyCache:
         except Exception:
             return None
 
-        # Check bounds (consistent with set_position)
-        if not (0 <= x < self._occ.shape[2] and 0 <= y < self._occ.shape[1] and 0 <= z < self._occ.shape[0]):
+        # Check bounds (updated for x, y, z indexing)
+        if not (0 <= x < self._occ.shape[0] and 0 <= y < self._occ.shape[1] and 0 <= z < self._occ.shape[2]):
             return None
 
-        color = self._occ[z, y, x]
+        color = self._occ[x, y, z]
         if color == 0:  # Empty square
             return None
 
-        piece_type = self._ptype[z, y, x]
+        piece_type = self._ptype[x, y, z]
 
         return {
             "piece_type": int(piece_type),
@@ -253,8 +254,8 @@ class OccupancyCache:
         z = coords[:, 2].astype(INDEX_DTYPE)
 
         # Update occupancy and piece type arrays atomically
-        self._occ[z, y, x] = pieces[:, 1]  # colors
-        self._ptype[z, y, x] = pieces[:, 0]  # piece types
+        self._occ[x, y, z] = pieces[:, 1]  # colors
+        self._ptype[x, y, z] = pieces[:, 0]  # piece types
 
         # Invalidate cached views
         self._flat_occ_view = None
@@ -283,7 +284,8 @@ class OccupancyCache:
         if coords.size == 0:
             return np.empty((0, 3), dtype=self._coord_dtype)
 
-        return coords[:, [2, 1, 0]].astype(self._coord_dtype)  # x,y,z order
+        # No reordering needed - argwhere returns (x, y, z) from array indexed as [x, y, z]
+        return coords.astype(self._coord_dtype)
 
     def rebuild(self, coords: np.ndarray, colors: np.ndarray, types: np.ndarray) -> None:
         """Rebuild cache from coordinate arrays using vectorized operations."""
@@ -303,8 +305,8 @@ class OccupancyCache:
         y = coords[:, 1].astype(INDEX_DTYPE)
         z = coords[:, 2].astype(INDEX_DTYPE)
 
-        self._occ[z, y, x] = colors
-        self._ptype[z, y, x] = types
+        self._occ[x, y, z] = colors
+        self._ptype[x, y, z] = types
 
         # ✅ REBUILD KING CACHE
         king_mask = (types == PieceType.KING.value)
@@ -355,13 +357,13 @@ class OccupancyCache:
         mid = SIZE // 2
         
         # Check center region first (3x3x3 cube around center)
-        for dz in range(-1, 2):
+        for dx in range(-1, 2):
             for dy in range(-1, 2):
-                for dx in range(-1, 2):
-                    z, y, x = mid + dz, mid + dy, mid + dx
+                for dz in range(-1, 2):
+                    x, y, z = mid + dx, mid + dy, mid + dz
                     if (0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE):
-                        if (self._occ[z, y, x] == color_code and 
-                            self._ptype[z, y, x] == PieceType.KING.value):
+                        if (self._occ[x, y, z] == color_code and 
+                            self._ptype[x, y, z] == PieceType.KING.value):
                             return np.array([x, y, z], dtype=self._coord_dtype)
         
         return None  # Not found in fast scan
@@ -468,18 +470,18 @@ class OccupancyCache:
         """Set piece at coordinate incrementally with king tracking."""
         coord = self._normalize_coords(coord)
         x, y, z = coord[0]
-        old_color = self._occ[z, y, x]
-        old_type = self._ptype[z, y, x]
+        old_color = self._occ[x, y, z]
+        old_type = self._ptype[x, y, z]
 
         if piece is None:
-            self._occ[z, y, x] = 0
-            self._ptype[z, y, x] = 0
+            self._occ[x, y, z] = 0
+            self._ptype[x, y, z] = 0
             if old_type == PieceType.PRIEST.value:
                 color_idx = 0 if old_color == Color.WHITE else 1
                 self._priest_count[color_idx] -= 1
         else:
-            self._occ[z, y, x] = piece[1]
-            self._ptype[z, y, x] = piece[0]
+            self._occ[x, y, z] = piece[1]
+            self._ptype[x, y, z] = piece[0]
             if old_type == PieceType.PRIEST.value:
                 color_idx = 0 if old_color == Color.WHITE else 1
                 self._priest_count[color_idx] -= 1
@@ -523,7 +525,7 @@ class OccupancyCache:
         key = coords.data.tobytes()
 
         if key not in self._flat_indices_cache:
-            # Vectorized calculation
+            # Vectorized calculation - matches array indexing [x, y, z] and ravel('C') order
             self._flat_indices_cache[key] = (
                 coords[:, 0] + SIZE * coords[:, 1] + SIZE * SIZE * coords[:, 2]
             ).astype(np.int32)
@@ -540,19 +542,19 @@ class OccupancyCache:
             - colors: (N,) array of color IDs
         """
         occupied_mask = self._occ != 0
-        coords = np.argwhere(occupied_mask)  # Returns (z, y, x)
+        coords = np.argwhere(occupied_mask)  # Returns (x, y, z) with new indexing
 
         if coords.shape[0] == 0:
             return (np.empty((0, 3), dtype=self._coord_dtype),
                     np.empty(0, dtype=PIECE_TYPE_DTYPE),
                     np.empty(0, dtype=COLOR_DTYPE))
 
-        # Reorder coords from (z, y, x) to (x, y, z)
-        coords_xyz = coords[:, [2, 1, 0]].astype(self._coord_dtype)
+        # No reordering needed - coords are already in (x, y, z) order
+        coords_xyz = coords.astype(self._coord_dtype)
 
         # Extract piece types and colors at these positions (vectorized)
-        z, y, x = coords[:, 0], coords[:, 1], coords[:, 2]
-        piece_types = self._ptype[z, y, x].astype(PIECE_TYPE_DTYPE)
-        colors = self._occ[z, y, x].astype(COLOR_DTYPE)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        piece_types = self._ptype[x, y, z].astype(PIECE_TYPE_DTYPE)
+        colors = self._occ[x, y, z].astype(COLOR_DTYPE)
 
         return coords_xyz, piece_types, colors

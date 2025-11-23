@@ -617,8 +617,8 @@ def generate_legal_moves_for_piece(game_state: 'GameState', coord: np.ndarray) -
         return np.empty(0, dtype=MOVE_DTYPE)
 
     # Vectorized filter for this piece's moves
-    from_coord = coord_arr[0]
-    piece_moves_mask = np.all(all_moves[:, :3] == from_coord, axis=1)
+    # coord_arr is already shape (3,) after flattening on line 601
+    piece_moves_mask = np.all(all_moves[:, :3] == coord_arr, axis=1)
     return all_moves[piece_moves_mask]
 
 def validate_move_via_generator(state: "GameState", move: Union[Move, np.ndarray]) -> bool:

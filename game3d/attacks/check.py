@@ -73,39 +73,43 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
         if cached_moves is None or len(cached_moves) == 0:
             return mask
 
-        # Extract destination coordinates from cached moves to determine attacked squares
+        # Extract destination coordinates from cached moves (MOVE_DTYPE: [from_x, from_y, from_z, to_x, to_y, to_z])
         for move in cached_moves:
-            dest = move.to_coord.astype(COORD_DTYPE)
-            if (0 <= dest[0] < SIZE and 0 <= dest[1] < SIZE and 0 <= dest[2] < SIZE):
-                mask[dest[2], dest[1], dest[0]] = True
+            # Moves are numpy arrays with columns: [from_x, from_y, from_z, to_x, to_y, to_z]
+            to_x, to_y, to_z = int(move[3]), int(move[4]), int(move[5])
+            if (0 <= to_x < SIZE and 0 <= to_y < SIZE and 0 <= to_z < SIZE):
+                # Use (x, y, z) indexing as per occupancycache.py architecture
+                mask[to_x, to_y, to_z] = True
 
         return mask
 
     return mask
 
 
-def _generate_piece_moves(board, coord: np.ndarray, piece: np.ndarray, cache=None) -> List['Move']:
+def _generate_piece_moves(board, coord: np.ndarray, piece: np.ndarray, cache=None) -> np.ndarray:
     """Generate moves for a piece using cache manager.
 
     This function leverages the move cache for optimal performance.
+    Returns numpy array of moves in MOVE_DTYPE format.
     """
     cache = cache or getattr(board, 'cache_manager', None)
 
     if cache is None or not hasattr(cache, 'move_cache'):
-        return []
+        return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Get cached moves from move cache
     cached_moves = cache.move_cache.get_cached_moves(piece["color"])
     if cached_moves is None or len(cached_moves) == 0:
-        return []
+        return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Filter moves for this specific piece
+    # Filter moves for this specific piece (moves are numpy arrays: [from_x, from_y, from_z, to_x, to_y, to_z])
     piece_moves = []
     for move in cached_moves:
-        if np.array_equal(move.from_coord, coord):
+        # Compare from coordinates (columns 0, 1, 2)
+        if np.array_equal(move[:3], coord):
             piece_moves.append(move)
 
-    return piece_moves
+    return np.array(piece_moves) if piece_moves else np.empty((0, 6), dtype=COORD_DTYPE)
 
 def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None) -> bool:
     """Check if a square is attacked by a specific color."""
@@ -117,7 +121,8 @@ def square_attacked_by(board, current_player: Color, square: np.ndarray, attacke
 
     attacked_mask = _get_attacked_squares_from_move_cache(board, attacker_color, cache)
     x, y, z = square[0], square[1], square[2]
-    return bool(attacked_mask[z, y, x])
+    # Use (x, y, z) indexing as per occupancycache.py architecture
+    return bool(attacked_mask[x, y, z])
 
 def king_in_check(board, current_player: Color, king_color: int, cache=None) -> bool:
     """Check if king is in check - only when king has 0 priests."""
@@ -213,12 +218,14 @@ def get_check_summary(board, cache=None) -> Dict[str, Any]:
     # Check white king safety (only when no priests)
     if wk is not None and white_priests == 0:
         wk_coords = wk.astype(COORD_DTYPE)
-        summary['white_check'] = bool(summary['attacked_mask_black'][wk_coords[2], wk_coords[1], wk_coords[0]])
+        # Use (x, y, z) indexing as per occupancycache.py architecture
+        summary['white_check'] = bool(summary['attacked_mask_black'][wk_coords[0], wk_coords[1], wk_coords[2]])
 
     # Check black king safety (only when no priests)
     if bk is not None and black_priests == 0:
         bk_coords = bk.astype(COORD_DTYPE)
-        summary['black_check'] = bool(summary['attacked_mask_white'][bk_coords[2], bk_coords[1], bk_coords[0]])
+        # Use (x, y, z) indexing as per occupancycache.py architecture
+        summary['black_check'] = bool(summary['attacked_mask_white'][bk_coords[0], bk_coords[1], bk_coords[2]])
 
     return summary
 

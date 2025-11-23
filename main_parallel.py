@@ -102,8 +102,8 @@ if __name__ == "__main__":
 
     # CLI configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games-per-iter", type=int, default=4)  # Increased from 24 for more data
-    parser.add_argument("--num-parallel", type=int, default=4)  # Optimized for 6-core CPU
+    parser.add_argument("--games-per-iter", type=int, default=1)  # Increased from 24 for more data
+    parser.add_argument("--num-parallel", type=int, default=1)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
     parser.add_argument("--max-replay", type=int, default=200000)  # Increased to utilize 64GB RAM

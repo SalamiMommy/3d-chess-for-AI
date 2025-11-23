@@ -431,22 +431,22 @@ class ConsolidatedAuraCache(CacheListener):
         frozen_indices = np.argwhere(self._frozen_squares)
         if frozen_indices.size == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
-        # Convert from (z, y, x) to (x, y, z)
-        return frozen_indices[:, [2, 1, 0]].astype(COORD_DTYPE)
+        # argwhere returns (x, y, z) for arrays indexed as [x, y, z]
+        return frozen_indices.astype(COORD_DTYPE)
 
     def get_buffed_squares(self, color: int) -> np.ndarray:
         """Get all buffed squares as coordinate array."""
         buffed_indices = np.argwhere(self._buffed_squares)
         if buffed_indices.size == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
-        return buffed_indices[:, [2, 1, 0]].astype(COORD_DTYPE)
+        return buffed_indices.astype(COORD_DTYPE)
 
     def get_debuffed_squares(self, color: int) -> np.ndarray:
         """Get all debuffed squares as coordinate array."""
         debuffed_indices = np.argwhere(self._debuffed_squares)
         if debuffed_indices.size == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
-        return debuffed_indices[:, [2, 1, 0]].astype(COORD_DTYPE)
+        return debuffed_indices.astype(COORD_DTYPE)
     
     def trigger_freeze(self, color: int, turn_number: int) -> None:
         """Apply freeze effects from friendly FREEZER pieces.
@@ -488,7 +488,7 @@ class ConsolidatedAuraCache(CacheListener):
 
         result = np.empty((pull_sources.shape[0], 2, 3), dtype=COORD_DTYPE)
         for i, (x, y, z) in enumerate(pull_sources):
-            source = np.array([z, y, x], dtype=COORD_DTYPE)
+            source = np.array([x, y, z], dtype=COORD_DTYPE)
             target = self._pull_map[x, y, z]
             result[i] = [source, target]
 
@@ -502,7 +502,7 @@ class ConsolidatedAuraCache(CacheListener):
 
         result = np.empty((push_sources.shape[0], 2, 3), dtype=COORD_DTYPE)
         for i, (x, y, z) in enumerate(push_sources):
-            source = np.array([z, y, x], dtype=COORD_DTYPE)
+            source = np.array([x, y, z], dtype=COORD_DTYPE)
             target = self._push_map[x, y, z]
             result[i] = [source, target]
 

@@ -1136,3 +1136,132 @@ RuntimeError: Error(s) in loading state_dict for OptimizedModule:
 2025-11-22 15:15:22,859 - game3d.game.turnmove - INFO - Move 700: WHITE EDGEROOK from [8 2 2] to [8 0 0] (Capture)
 2025-11-22 15:15:25,683 - __main__ - INFO - Training interrupted by user
 2025-11-22 15:15:25,683 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-23 12:50:19,485 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-23 12:50:19,488 - __main__ - INFO - Testing move generation...
+2025-11-23 12:50:25,321 - __main__ - INFO - [OK] Generated 2282 moves
+2025-11-23 12:50:25,321 - __main__ - INFO - Testing GameState caching...
+2025-11-23 12:50:25,321 - __main__ - INFO - [OK] GameState caching works
+2025-11-23 12:50:25,321 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-23 12:50:25,322 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-23 12:50:25,322 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(2282), 'white_moves_cached': 2282, 'black_moves_cached': 0, 'reverse_map_size': 372, 'piece_moves_cache_size': 168, 'prune_operations': 0}
+2025-11-23 12:50:26,779 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251123_125015/temp_model_for_selfplay.pt
+2025-11-23 12:50:26,779 - training.parallel_self_play - INFO - Starting parallel self-play: 4 games, 4 workers
+2025-11-23 12:50:26,779 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251123_125015/temp_model_for_selfplay.pt
+2025-11-23 12:50:26,779 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-23 12:50:26,783 - training.parallel_self_play - INFO - Launching 4 game workers...
+2025-11-23 12:50:35,368 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-23 12:50:35,376 - worker.3 - INFO - Worker 3 starting, loading model...
+2025-11-23 12:50:35,396 - worker.1 - INFO - Worker 1 starting, loading model...
+2025-11-23 12:50:35,402 - worker.2 - INFO - Worker 2 starting, loading model...
+2025-11-23 12:50:40,113 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-23 12:50:40,114 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-23 12:50:40,141 - worker.1 - INFO - Worker 1 model compiled with torch.compile
+2025-11-23 12:50:40,142 - worker.1 - INFO - Worker 1 model loaded successfully
+2025-11-23 12:50:40,150 - worker.3 - INFO - Worker 3 model compiled with torch.compile
+2025-11-23 12:50:40,151 - worker.3 - INFO - Worker 3 model loaded successfully
+2025-11-23 12:50:40,173 - worker.2 - INFO - Worker 2 model compiled with torch.compile
+2025-11-23 12:50:40,174 - worker.2 - INFO - Worker 2 model loaded successfully
+2025-11-23 12:50:40,460 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139985439604544
+2025-11-23 12:50:40,464 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139993740098176
+2025-11-23 12:50:40,486 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139908595174464
+2025-11-23 12:50:40,502 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140279652935040
+2025-11-23 12:50:59,969 - __main__ - INFO - Training interrupted by user
+2025-11-23 12:50:59,969 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-23 12:51:36,548 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-23 12:51:36,550 - __main__ - INFO - Testing move generation...
+2025-11-23 12:51:43,880 - __main__ - INFO - [OK] Generated 2282 moves
+2025-11-23 12:51:43,880 - __main__ - INFO - Testing GameState caching...
+2025-11-23 12:51:43,881 - __main__ - INFO - [OK] GameState caching works
+2025-11-23 12:51:43,881 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-23 12:51:43,882 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-23 12:51:43,882 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(2282), 'white_moves_cached': 2282, 'black_moves_cached': 0, 'reverse_map_size': 372, 'piece_moves_cache_size': 168, 'prune_operations': 0}
+2025-11-23 12:51:45,837 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251123_125132/temp_model_for_selfplay.pt
+2025-11-23 12:51:45,837 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-23 12:51:45,837 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251123_125132/temp_model_for_selfplay.pt
+2025-11-23 12:51:45,837 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-23 12:51:45,839 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-23 12:51:53,425 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-23 12:51:58,109 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-23 12:51:58,110 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-23 12:51:58,438 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140253377380032
+2025-11-23 12:52:14,627 - game3d.game.turnmove - INFO - Move 100: BLACK ARMOUR from [7 7 5] to [7 7 6] (Capture)
+2025-11-23 12:52:20,431 - __main__ - INFO - Training interrupted by user
+2025-11-23 12:52:20,431 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-23 13:02:17,722 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-23 13:02:17,725 - __main__ - INFO - Testing move generation...
+2025-11-23 13:02:23,456 - __main__ - INFO - [OK] Generated 4395 moves
+2025-11-23 13:02:23,456 - __main__ - INFO - Testing GameState caching...
+2025-11-23 13:02:23,457 - __main__ - INFO - [OK] GameState caching works
+2025-11-23 13:02:23,457 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-23 13:02:23,457 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-23 13:02:23,457 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(4395), 'white_moves_cached': 4395, 'black_moves_cached': 0, 'reverse_map_size': 500, 'piece_moves_cache_size': 211, 'prune_operations': 0}
+2025-11-23 13:02:24,919 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251123_130213/temp_model_for_selfplay.pt
+2025-11-23 13:02:24,919 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-23 13:02:24,919 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251123_130213/temp_model_for_selfplay.pt
+2025-11-23 13:02:24,919 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-23 13:02:24,921 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-23 13:02:31,600 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-23 13:02:35,758 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-23 13:02:35,759 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-23 13:02:36,059 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140350439510336
+2025-11-23 13:02:54,388 - game3d.game.turnmove - INFO - Move 100: BLACK PAWN from [6 2 3] to [6 1 3] (Capture)
+2025-11-23 13:02:57,273 - __main__ - INFO - Training interrupted by user
+2025-11-23 13:02:57,274 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-23 13:21:05,918 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-23 13:21:05,920 - __main__ - INFO - Testing move generation...
+2025-11-23 13:21:11,748 - __main__ - INFO - [OK] Generated 4395 moves
+2025-11-23 13:21:11,748 - __main__ - INFO - Testing GameState caching...
+2025-11-23 13:21:11,748 - __main__ - INFO - [OK] GameState caching works
+2025-11-23 13:21:11,748 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-23 13:21:11,749 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-23 13:21:11,749 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(4395), 'white_moves_cached': 4395, 'black_moves_cached': 0, 'reverse_map_size': 500, 'piece_moves_cache_size': 211, 'prune_operations': 0}
+2025-11-23 13:21:13,155 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251123_132101/temp_model_for_selfplay.pt
+2025-11-23 13:21:13,155 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-23 13:21:13,155 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251123_132101/temp_model_for_selfplay.pt
+2025-11-23 13:21:13,155 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-23 13:21:13,157 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-23 13:21:19,963 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-23 13:21:24,336 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-23 13:21:24,337 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-23 13:21:24,636 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139887111796736
+2025-11-23 13:21:34,648 - game3d.game3d - INFO - ✓ Hive moved - 4 unmoved hive(s) remaining
+2025-11-23 13:21:42,199 - game3d.game3d - INFO - ✓ Hive moved - 4 unmoved hive(s) remaining
+2025-11-23 13:21:44,838 - game3d.game.turnmove - INFO - Move 100: BLACK BISHOP from [7 0 4] to [8 1 4] (Capture)
+2025-11-23 13:21:47,648 - __main__ - INFO - Training interrupted by user
+2025-11-23 13:21:47,648 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-23 13:33:01,212 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-23 13:33:01,215 - __main__ - INFO - Testing move generation...
+2025-11-23 13:33:07,142 - __main__ - INFO - [OK] Generated 4395 moves
+2025-11-23 13:33:07,142 - __main__ - INFO - Testing GameState caching...
+2025-11-23 13:33:07,142 - __main__ - INFO - [OK] GameState caching works
+2025-11-23 13:33:07,142 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-23 13:33:07,142 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-23 13:33:07,143 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(4395), 'white_moves_cached': 4395, 'black_moves_cached': 0, 'reverse_map_size': 500, 'piece_moves_cache_size': 211, 'prune_operations': 0}
+2025-11-23 13:33:08,630 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251123_133257/temp_model_for_selfplay.pt
+2025-11-23 13:33:08,630 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-23 13:33:08,630 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251123_133257/temp_model_for_selfplay.pt
+2025-11-23 13:33:08,630 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-23 13:33:08,632 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-23 13:33:15,526 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-23 13:33:19,737 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-23 13:33:19,738 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-23 13:33:20,058 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140229255019520
+2025-11-23 13:33:40,234 - game3d.game.turnmove - INFO - Move 100: BLACK VECTORSLIDER from [2 1 2] to [2 2 1] (Capture)
+2025-11-23 13:33:53,710 - game3d.game.turnmove - INFO - Move 200: BLACK FRIENDLYTELEPORTER from [8 6 7] to [5 7 6] (Move)
+2025-11-23 13:33:58,986 - game3d.game.turnmove - INFO - Move 300: BLACK GEOMANCER from [7 8 5] to [5 6 4] (Move)
+2025-11-23 13:34:02,590 - game3d.game.turnmove - INFO - Move 400: BLACK GEOMANCER from [7 8 5] to [5 6 4] (Move)
+2025-11-23 13:34:03,101 - game3d.game3d - INFO - ✓ Hive moved - 3 unmoved hive(s) remaining
+2025-11-23 13:34:06,485 - game3d.game.turnmove - INFO - Move 500: WHITE GEOMANCER from [1 0 3] to [2 2 1] (Move)
+2025-11-23 13:34:09,760 - game3d.game.turnmove - INFO - Move 600: WHITE GEOMANCER from [1 0 3] to [2 2 1] (Move)
+2025-11-23 13:34:12,719 - game3d.game.turnmove - INFO - Move 700: WHITE GEOMANCER from [1 0 3] to [2 2 1] (Move)
+2025-11-23 13:34:15,538 - game3d.game.turnmove - INFO - Move 800: WHITE GEOMANCER from [1 0 3] to [2 2 1] (Move)
+2025-11-23 13:34:18,393 - game3d.game.turnmove - INFO - Move 900: WHITE KNIGHT31 from [3 3 7] to [6 4 6] (Capture)
+2025-11-23 13:34:22,573 - game3d.game3d - INFO - ✓ Hive moved - 3 unmoved hive(s) remaining
+2025-11-23 13:34:23,078 - game3d.game.turnmove - INFO - Move 1000: BLACK KNIGHT from [5 7 6] to [5 6 4] (Move)
+2025-11-23 13:34:26,311 - game3d.game.turnmove - INFO - Move 1100: BLACK KNIGHT from [5 6 4] to [5 7 6] (Move)
+2025-11-23 13:34:29,870 - game3d.game.turnmove - INFO - Move 1200: BLACK KNIGHT from [5 6 4] to [5 7 6] (Move)
+2025-11-23 13:34:35,701 - game3d.game.turnmove - INFO - Move 1300: BLACK YZZIGZAG from [8 2 2] to [8 2 2] (Capture)
+2025-11-23 13:34:39,038 - game3d.game.turnmove - INFO - Move 1400: BLACK ARCHER from [7 1 0] to [7 1 2] (Capture)
+2025-11-23 13:34:43,453 - game3d.game.turnmove - INFO - Move 1500: BLACK EDGEROOK from [8 8 1] to [8 8 2] (Move)
+2025-11-23 13:34:47,088 - __main__ - INFO - Training interrupted by user
+2025-11-23 13:34:47,088 - __main__ - INFO - 🧹 Clearing all caches...
