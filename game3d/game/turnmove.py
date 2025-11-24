@@ -81,6 +81,216 @@ def _generate_moves_vectorized(from_coords: np.ndarray) -> tuple[np.ndarray, np.
 # =============================================================================
 # MAIN MOVE FUNCTIONS (Optimized with centralized utilities)
 # =============================================================================
+# =============================================================================
+# MOVE FILTERING (King Safety)
+# =============================================================================
+
+def is_square_attacked_static(game_state: 'GameState', square: np.ndarray, attacker_color: int) -> bool:
+    """
+    Check if a square is attacked by any piece of the attacker_color using static analysis.
+    This avoids full move generation and is optimized for lightweight checks.
+    """
+    cache_manager = game_state.cache_manager
+    occ_cache = cache_manager.occupancy_cache
+    
+    # Get all attacker pieces
+    attacker_coords = occ_cache.get_positions(attacker_color)
+    print(f"DEBUG: Checking attacks on {square} by {attacker_color}. Attackers found: {attacker_coords.shape[0]}")
+    if attacker_coords.size == 0:
+        return False
+        
+    # Iterate through attackers and check if they can attack the square
+    # We use raw numpy arrays for speed
+    
+    # Pre-calculate vectors from attackers to target
+    # shape: (N, 3)
+    diffs = square.reshape(1, 3) - attacker_coords
+    
+    # Calculate distances
+    abs_diffs = np.abs(diffs)
+    chebyshev_dist = np.max(abs_diffs, axis=1)
+    manhattan_dist = np.sum(abs_diffs, axis=1)
+    
+    # Get piece types
+    _, piece_types = occ_cache.batch_get_attributes(attacker_coords)
+    
+    for i in range(len(attacker_coords)):
+        ptype = piece_types[i]
+        diff = diffs[i]
+        abs_diff = abs_diffs[i]
+        dist_cheb = chebyshev_dist[i]
+        dist_man = manhattan_dist[i]
+        
+        # 1. LEAPERS (Knight, King, etc.)
+        if ptype == PieceType.KNIGHT:
+            # Standard Knight: L-shape (2,1,0)
+            # Sorted abs diffs should be (2, 1, 0)
+            sorted_diff = np.sort(abs_diff)
+            if sorted_diff[2] == 2 and sorted_diff[1] == 1 and sorted_diff[0] == 0:
+                return True
+                
+        elif ptype == PieceType.KING:
+            # King: Chebyshev distance 1
+            if dist_cheb == 1:
+                return True
+                
+        elif ptype == PieceType.KNIGHT32:
+            # (3,2,0)
+            sorted_diff = np.sort(abs_diff)
+            if sorted_diff[2] == 3 and sorted_diff[1] == 2 and sorted_diff[0] == 0:
+                return True
+                
+        elif ptype == PieceType.KNIGHT31:
+            # (3,1,0)
+            sorted_diff = np.sort(abs_diff)
+            if sorted_diff[2] == 3 and sorted_diff[1] == 1 and sorted_diff[0] == 0:
+                return True
+        
+        # 2. PAWNS
+        elif ptype == PieceType.PAWN:
+            # Pawns attack diagonally forward
+            # Direction depends on color
+            direction = 1 if attacker_color == Color.WHITE else -1
+            
+            # Check z-direction (forward)
+            if diff[2] == direction: # 1 step forward relative to attacker
+                # Must be diagonal in x or y (capture)
+                # Capture pattern: (1,0,1) or (0,1,1) or (1,1,1)?
+                # Standard 3D chess pawn capture: diagonal in any forward direction?
+                # Usually (dx=1, dy=0, dz=1) or (dx=0, dy=1, dz=1) or (dx=1, dy=1, dz=1)
+                # Let's assume any forward diagonal (chebyshev=1, z=direction)
+                # But strictly, it shouldn't be straight forward (0,0,1)
+                if dist_cheb == 1 and (abs_diff[0] > 0 or abs_diff[1] > 0):
+                    return True
+                    
+        # 3. SLIDERS (Rook, Bishop, Queen)
+        elif ptype in [PieceType.ROOK, PieceType.BISHOP, PieceType.QUEEN]:
+            # Check if aligned
+            is_orthogonal = (np.sum(abs_diff > 0) == 1) # Only 1 coord is non-zero
+            is_diagonal = (abs_diff[0] == abs_diff[1] == abs_diff[2]) or \
+                          (abs_diff[0] == abs_diff[1] and abs_diff[2] == 0) or \
+                          (abs_diff[0] == abs_diff[2] and abs_diff[1] == 0) or \
+                          (abs_diff[1] == abs_diff[2] and abs_diff[0] == 0)
+            
+            can_attack = False
+            if ptype == PieceType.ROOK and is_orthogonal:
+                can_attack = True
+            elif ptype == PieceType.BISHOP and is_diagonal:
+                can_attack = True
+            elif ptype == PieceType.QUEEN and (is_orthogonal or is_diagonal):
+                can_attack = True
+                
+            if can_attack:
+                # Check for blocking pieces
+                # Get path between attacker and target
+                from game3d.common.coord_utils import get_path_between
+                path = get_path_between(attacker_coords[i], square)
+                
+                print(f"DEBUG: Attacker {attacker_coords[i]} Type {ptype} Target {square} Path {path}")
+                
+                # If path is empty, it's a hit
+                if path.size == 0:
+                    # Adjacent or same square (already checked dist > 0 implicitly by loop logic if distinct)
+                    # If adjacent, it's a hit
+                    print("DEBUG: Path empty -> Hit")
+                    return True
+                
+                # Check occupancy of path
+                # We can use batch_is_occupied
+                occupied = occ_cache.batch_is_occupied(path)
+                if not np.any(occupied):
+                    print("DEBUG: Path clear -> Hit")
+                    return True
+                else:
+                    print(f"DEBUG: Path blocked by {occupied}")
+
+        # 4. ARCHER
+        elif ptype == PieceType.ARCHER:
+            # Attacks exactly at distance 2 (Chebyshev or Euclidean? Rules say "radius 2")
+            # Usually Chebyshev 2 in this engine context for "radius"
+            if dist_cheb == 2:
+                return True
+                
+        # TODO: Add other piece types as needed (TrigonalBishop, etc.)
+        
+    return False
+
+def filter_safe_moves(game_state: 'GameState', moves: np.ndarray) -> np.ndarray:
+    """
+    Filter out moves that leave the king in check (Self-Check),
+    BUT ONLY if the player has NO PRIESTS.
+    """
+    if moves.size == 0:
+        return moves
+        
+    # 1. Check Priest condition
+    # If player has any priest, they are immune to king capture rules (or rather, king capture is allowed/prevented differently)
+    # The request specifically says: "filters out... ONLY when the current player has 0 priests"
+    if game_state.cache_manager.occupancy_cache.has_priest(game_state.color):
+        return moves
+        
+    # 2. Filter moves
+    safe_moves = []
+    
+    # Get King position
+    king_pos = game_state.cache_manager.occupancy_cache.find_king(game_state.color)
+    if king_pos is None:
+        # No king? Should not happen in standard game, but if so, no check possible.
+        return moves
+        
+    # We need to simulate each move
+    # Optimization: Use lightweight simulation (modify cache directly then revert)
+    
+    occ_cache = game_state.cache_manager.occupancy_cache
+    opponent_color = game_state.color.opposite()
+    
+    # Pre-allocate for speed
+    original_pos_val = np.zeros(2, dtype=np.int32) # type, color
+    
+    for i in range(moves.shape[0]):
+        move = moves[i]
+        from_coord = move[:3]
+        to_coord = move[3:]
+        
+        # Get piece at from_coord
+        piece_data = occ_cache.get(from_coord)
+        if piece_data is None:
+            continue # Should not happen for legal moves
+            
+        p_type = piece_data['piece_type']
+        p_color = piece_data['color']
+        
+        # Save state of to_coord (captured piece or empty)
+        captured_data = occ_cache.get(to_coord)
+        
+        # --- SIMULATE ---
+        # 1. Remove from old
+        occ_cache.set_position(from_coord, None)
+        # 2. Place at new
+        occ_cache.set_position(to_coord, np.array([p_type, p_color]))
+        
+        # Update King position if King moved
+        current_king_pos = king_pos
+        if p_type == PieceType.KING:
+            current_king_pos = to_coord
+            
+        # Check if King is attacked
+        is_check = is_square_attacked_static(game_state, current_king_pos, opponent_color)
+        
+        # --- REVERT ---
+        # 1. Restore from_coord
+        occ_cache.set_position(from_coord, np.array([p_type, p_color]))
+        # 2. Restore to_coord
+        if captured_data:
+            occ_cache.set_position(to_coord, np.array([captured_data['piece_type'], captured_data['color']]))
+        else:
+            occ_cache.set_position(to_coord, None)
+            
+        if not is_check:
+            safe_moves.append(move)
+            
+    return np.array(safe_moves, dtype=MOVE_DTYPE)
+
 def legal_moves(game_state: 'GameState') -> np.ndarray:
     """Return legal moves as structured NumPy array using centralized cache."""
     logger = logging.getLogger(__name__)
@@ -121,6 +331,10 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
 
     # logger.info(f"Final structured_moves size: {structured_moves.size}")
 
+    # ✅ FILTER SAFE MOVES (Self-Check Prevention)
+    if structured_moves.size > 0:
+        structured_moves = filter_safe_moves(game_state, structured_moves)
+
     if structured_moves.size > 0:
         game_state._legal_moves_cache = structured_moves
         game_state._legal_moves_cache_key = cache_key
@@ -140,7 +354,8 @@ def legal_moves_for_piece(game_state: 'GameState', coord: np.ndarray) -> np.ndar
     raw = generate_legal_moves_for_piece(game_state, coord_arr[0])
 
     if isinstance(raw, np.ndarray):
-        return raw
+        # ✅ FILTER SAFE MOVES
+        return filter_safe_moves(game_state, raw)
 
     return np.empty(0, dtype=MOVE_DTYPE)
 

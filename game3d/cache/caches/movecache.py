@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, Union
 from dataclasses import dataclass
 import threading
 import logging
-from collections import deque
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,9 @@ class MoveCache:
         self._affected_color_idx_list = []
         self._affected_coord_keys = np.empty(0, dtype=np.int64)
         self._affected_color_idx = np.empty(0, dtype=np.int8)
-        self._piece_moves_cache = {}
-        self._piece_coord_keys = np.empty(0, dtype=np.int64)
-        self._piece_moves_data = np.empty(0, dtype=object)
-        self._piece_color_idx = np.empty(0, dtype=np.int8)
+        
+        # ✅ OPTIMIZED: Use OrderedDict for LRU cache
+        self._piece_moves_cache = OrderedDict()
 
         # Reverse Move Map: Square Key -> Set of Piece Keys
         # Used for incremental updates to find pieces attacking a square
@@ -84,7 +83,6 @@ class MoveCache:
 
         # ✅ NEW: LRU tracking and size limits to prevent memory explosion
         self._max_piece_entries = 1000
-        self._access_order = deque()  # Track access order for LRU eviction
         self._prune_triggered = 0  # Statistics
 
     def get_cached_moves(self, color: int) -> Optional[np.ndarray]:
@@ -187,10 +185,6 @@ class MoveCache:
             self._piece_moves_cache.clear()
             self._reverse_map.clear()
             self._piece_targets.clear()
-            self._access_order.clear()  # ✅ NEW: Clear access order
-            self._piece_coord_keys = np.empty(0, dtype=np.int64)
-            self._piece_moves_data = np.empty(0, dtype=object)
-            self._piece_color_idx = np.empty(0, dtype=np.int8)
             self._affected_coord_keys = np.empty(0, dtype=np.int64)
             self._affected_color_idx = np.empty(0, dtype=np.int8)
             self._affected_coord_keys_list = []  # ✅ Clear lists
@@ -220,7 +214,13 @@ class MoveCache:
         else:
             int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
 
-        return (color_idx, int_key) in self._piece_moves_cache
+        with self._lock:
+            piece_id = (color_idx, int_key)
+            if piece_id in self._piece_moves_cache:
+                # Move to end to mark as recently used
+                self._piece_moves_cache.move_to_end(piece_id)
+                return True
+            return False
 
     def get_piece_moves(self, color: int, coord_key: Union[int, bytes]) -> np.ndarray:
         """Retrieve cached moves for a piece."""
@@ -230,9 +230,16 @@ class MoveCache:
             int_key = int(coord_key)
         else:
             int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
-
-        return self._piece_moves_cache.get((color_idx, int_key),
-                                        np.empty((0, 6), dtype=MOVE_DTYPE))
+        
+        piece_id = (color_idx, int_key)
+        
+        with self._lock:
+            if piece_id in self._piece_moves_cache:
+                # Move to end to mark as recently used
+                self._piece_moves_cache.move_to_end(piece_id)
+                return self._piece_moves_cache[piece_id]
+            
+            return np.empty((0, 6), dtype=MOVE_DTYPE)
 
     def store_piece_moves(self, color: int, coord_key: Union[int, bytes], moves: np.ndarray) -> None:
         """Cache moves for a specific piece - USE INTEGER KEYS."""
@@ -254,19 +261,11 @@ class MoveCache:
             # Update Reverse Map
             self._update_reverse_map(piece_id, moves)
 
-            # NOTE: Legacy numpy arrays are kept but not pruned to maintain compatibility
-            # In production, these should be removed entirely as they're unused
-            self._piece_coord_keys = np.append(self._piece_coord_keys, int_key)
-            self._piece_moves_data = np.append(self._piece_moves_data, moves)
-            self._piece_color_idx = np.append(self._piece_color_idx, color_idx)
-
             # Update dictionary cache (primary storage)
+            # OrderedDict handles insertion order automatically
             self._piece_moves_cache[piece_id] = moves
-
-            # ✅ NEW: Track access order for LRU
-            if piece_id in self._access_order:
-                self._access_order.remove(piece_id)
-            self._access_order.append(piece_id)  # Mark as most recently used
+            # Ensure it's marked as most recently used (if it was already there)
+            self._piece_moves_cache.move_to_end(piece_id)
 
     def _update_reverse_map(self, piece_id: tuple, moves: np.ndarray) -> None:
         """Update the reverse map for a piece."""
@@ -350,26 +349,23 @@ class MoveCache:
 
         prune_start = len(self._piece_moves_cache)
         prune_target = int(self._max_piece_entries * 0.8)  # Keep 80%
+        num_to_remove = prune_start - prune_target
 
-        # Remove oldest entries (first in access_order)
-        keys_to_remove = list(self._access_order)[:prune_start - prune_target]
-
-        for piece_id in keys_to_remove:
-            # Remove from dictionary cache
-            if piece_id in self._piece_moves_cache:
-                del self._piece_moves_cache[piece_id]
-
-            # Clean up reverse map
-            if piece_id in self._piece_targets:
-                for target_key in self._piece_targets[piece_id]:
-                    if target_key in self._reverse_map:
-                        self._reverse_map[target_key].discard(piece_id)
-                        if not self._reverse_map[target_key]:
-                            del self._reverse_map[target_key]
-                del self._piece_targets[piece_id]
-
-            # Remove from access order
-            self._access_order.remove(piece_id)
+        for _ in range(num_to_remove):
+            # Remove oldest entry (first in OrderedDict)
+            try:
+                piece_id, _ = self._piece_moves_cache.popitem(last=False)
+                
+                # Clean up reverse map
+                if piece_id in self._piece_targets:
+                    for target_key in self._piece_targets[piece_id]:
+                        if target_key in self._reverse_map:
+                            self._reverse_map[target_key].discard(piece_id)
+                            if not self._reverse_map[target_key]:
+                                del self._reverse_map[target_key]
+                    del self._piece_targets[piece_id]
+            except KeyError:
+                break
 
         prune_end = len(self._piece_moves_cache)
         self._prune_triggered += 1
