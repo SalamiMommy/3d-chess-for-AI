@@ -37,6 +37,10 @@ def _generate_all_slider_moves(
     # Process each direction sequentially
     for d in range(n_dirs):
         direction = directions[d]
+        
+        # Skip zero vectors - only bomb can move to same position (self-detonation)
+        if direction[0] == 0 and direction[1] == 0 and direction[2] == 0:
+            continue
 
         # Start from original position for each direction
         current_x = pos[0] + direction[0]

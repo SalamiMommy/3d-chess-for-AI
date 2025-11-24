@@ -130,9 +130,11 @@ class ConsolidatedAuraCache(CacheListener):
         self._frozen_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
         # Expiry arrays: When does the freeze expire for a specific VICTIM color?
         # _freeze_expiry[Color.WHITE] -> When White pieces are free to move again
+        # ✅ CRITICAL FIX: Initialize to -1 to prevent false positives when turn_number is 0
+        # (0 >= 0 would mark all squares as frozen without this fix)
         self._freeze_expiry = {
-            Color.WHITE: np.zeros((SIZE, SIZE, SIZE), dtype=INDEX_DTYPE),
-            Color.BLACK: np.zeros((SIZE, SIZE, SIZE), dtype=INDEX_DTYPE)
+            Color.WHITE: np.full((SIZE, SIZE, SIZE), -1, dtype=INDEX_DTYPE),
+            Color.BLACK: np.full((SIZE, SIZE, SIZE), -1, dtype=INDEX_DTYPE)
         }
         self._debuffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
         self._buffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
@@ -395,11 +397,16 @@ class ConsolidatedAuraCache(CacheListener):
     # ========================================================================
 
     def batch_is_frozen(self, coords: np.ndarray, turn_number: int, victim_color: int) -> np.ndarray:
-        """Batch check frozen status for a specific victim color."""
+        """Batch check frozen status for a specific victim color.
+        
+        Coordinates are in (x, y, z) order, and arrays are indexed as [x, y, z].
+        This matches the convention used in occupancycache.
+        """
         coords = self._ensure_coords(coords)
         if coords.size == 0:
             return np.empty(0, dtype=BOOL_DTYPE)
 
+        # Coords are (x, y, z), arrays indexed as [x, y, z]
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         
         # Check expiry for this victim color
@@ -409,7 +416,7 @@ class ConsolidatedAuraCache(CacheListener):
         return np.zeros(coords.shape[0], dtype=BOOL_DTYPE)
 
     def batch_is_debuffed(self, coords: np.ndarray, color: int) -> np.ndarray:
-        """Batch check debuffed status."""
+        """Batch check debuffed status. Coords are (x, y, z), arrays indexed as [x, y, z]."""
         coords = self._ensure_coords(coords)
         if coords.size == 0:
             return np.empty(0, dtype=BOOL_DTYPE)
@@ -418,7 +425,7 @@ class ConsolidatedAuraCache(CacheListener):
         return self._debuffed_squares[x, y, z]
 
     def batch_is_buffed(self, coords: np.ndarray, color: int) -> np.ndarray:
-        """Batch check buffed status."""
+        """Batch check buffed status. Coords are (x, y, z), arrays indexed as [x, y, z]."""
         coords = self._ensure_coords(coords)
         if coords.size == 0:
             return np.empty(0, dtype=BOOL_DTYPE)
@@ -473,12 +480,26 @@ class ConsolidatedAuraCache(CacheListener):
         # - At turn_number + 2 (next friendly turn), they are unfrozen (expiry < turn_number)
         expiry_turn = turn_number + 1
         
-        # Update freeze expiry for the enemy color
+        # ✅ FIX: Only set expiry if not already frozen to prevent perpetual renewal
+        # frozen_coords are (x, y, z), arrays indexed as [x, y, z]
         x, y, z = frozen_coords[:, 0], frozen_coords[:, 1], frozen_coords[:, 2]
-        self._freeze_expiry[enemy_color][x, y, z] = expiry_turn
         
-        # Also mark as frozen in the frozen_squares grid for compatibility
-        self._frozen_squares[x, y, z] = True
+        # Get current expiry values for these squares
+        current_expiry = self._freeze_expiry[enemy_color][x, y, z]
+        
+        # Only update expiry for squares that are NOT currently frozen (expiry < turn_number)
+        # This allows existing freezes to expire naturally without being renewed
+        should_update = current_expiry < turn_number
+        
+        # Update only the squares that need freezing
+        if np.any(should_update):
+            update_x = x[should_update]
+            update_y = y[should_update]
+            update_z = z[should_update]
+            
+            self._freeze_expiry[enemy_color][update_x, update_y, update_z] = expiry_turn
+            self._frozen_squares[update_x, update_y, update_z] = True
+
 
     def pull_map(self, controller: int) -> np.ndarray:
         """Get pull map as array of (source, target) pairs."""

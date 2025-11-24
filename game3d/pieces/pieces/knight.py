@@ -40,6 +40,7 @@ def generate_knight_moves(
         pos=pos_arr,
         directions=KNIGHT_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.KNIGHT
     )
 
 @register(PieceType.KNIGHT)

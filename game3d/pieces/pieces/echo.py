@@ -60,6 +60,7 @@ def generate_echo_moves(
         pos=start,
         directions=_ECHO_DIRECTIONS,
         allow_capture=True,
+        piece_type=PieceType.ECHO
     )
 
 @register(PieceType.ECHO)

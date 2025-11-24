@@ -26,7 +26,8 @@ KING_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 def generate_king_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
-    pos: np.ndarray
+    pos: np.ndarray,
+    piece_type: PieceType = None
 ) -> np.ndarray:
     pos_arr = pos.astype(COORD_DTYPE)
 
@@ -41,15 +42,16 @@ def generate_king_moves(
         pos=pos_arr,
         directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=piece_type
     )
 
 # Dispatchers for king and priest (same movement pattern)
 @register(PieceType.PRIEST)
 def priest_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_king_moves(state.cache_manager, state.color, pos)
+    return generate_king_moves(state.cache_manager, state.color, pos, piece_type=PieceType.PRIEST)
 
 @register(PieceType.KING)
 def king_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_king_moves(state.cache_manager, state.color, pos)
+    return generate_king_moves(state.cache_manager, state.color, pos, piece_type=PieceType.KING)
 
 __all__ = ['KING_MOVEMENT_VECTORS', 'generate_king_moves']

@@ -5,16 +5,55 @@ Validation happens in generator.py.
 """
 
 import numpy as np
+import os
 from numba import njit, prange
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Dict, Any
 
 from game3d.common.shared_types import (
-    COORD_DTYPE, BOOL_DTYPE, COLOR_DTYPE, SIZE, MAX_COORD_VALUE
+    COORD_DTYPE, BOOL_DTYPE, COLOR_DTYPE, SIZE, MAX_COORD_VALUE,
+    PieceType, compute_board_index, SIZE_SQUARED
 )
 from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:
     from game3d.cache.manager import UnifiedCacheManager
+
+# Module-level cache for precomputed moves
+_PRECOMPUTED_MOVES: Dict[int, np.ndarray] = {}
+_PRECOMPUTED_LOADED = False
+
+def _load_precomputed_moves():
+    """Load precomputed move tables from disk."""
+    global _PRECOMPUTED_LOADED
+    if _PRECOMPUTED_LOADED:
+        return
+
+    # Path to precomputed directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    precomputed_dir = os.path.join(current_dir, "precomputed")
+    
+    if not os.path.exists(precomputed_dir):
+        # Silent fail or log warning - we don't want to crash if files are missing
+        # print(f"Warning: Precomputed directory not found at {precomputed_dir}")
+        _PRECOMPUTED_LOADED = True
+        return
+
+    # Map PieceType name to file suffix
+    # We iterate through PieceType members
+    for piece_type in PieceType:
+        name = piece_type.name
+        filename = f"moves_{name}.npy"
+        path = os.path.join(precomputed_dir, filename)
+        
+        if os.path.exists(path):
+            try:
+                # Load the object array (jagged array of moves)
+                moves_array = np.load(path, allow_pickle=True)
+                _PRECOMPUTED_MOVES[piece_type.value] = moves_array
+            except Exception as e:
+                print(f"Failed to load precomputed moves for {name}: {e}")
+    
+    _PRECOMPUTED_LOADED = True
 
 
 @njit(cache=True, fastmath=True, parallel=True)
@@ -46,6 +85,10 @@ class JumpMovementEngine:
 
     def __init__(self, cache_manager: 'UnifiedCacheManager'):
         self.cache_manager = cache_manager
+        
+        # Ensure precomputed moves are loaded
+        if not _PRECOMPUTED_LOADED:
+            _load_precomputed_moves()
 
 
     def generate_jump_moves(
@@ -53,9 +96,19 @@ class JumpMovementEngine:
             color: COLOR_DTYPE,
             pos: np.ndarray,
             directions: np.ndarray,          # (N,3) jump offsets
-            allow_capture: bool = True
+            allow_capture: bool = True,
+            allow_zero_direction: bool = False,  # Allow (0,0,0) self-targeting moves
+            piece_type: Optional[PieceType] = None # Optional piece type for precomputed lookup
         ) -> np.ndarray:
             """Generate jump moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
+            
+            # Filter out zero-direction vectors unless explicitly allowed (e.g., for BOMB self-detonation)
+            if not allow_zero_direction:
+                zero_mask = ~((directions[:, 0] == 0) & (directions[:, 1] == 0) & (directions[:, 2] == 0))
+                directions = directions[zero_mask]
+                
+                if directions.shape[0] == 0:
+                    return np.empty((0, 6), dtype=COORD_DTYPE)
             
             # Check for Speeder buff
             # We need to find the ConsolidatedAuraCache to check for buffs
@@ -72,27 +125,45 @@ class JumpMovementEngine:
                             is_buffed = True
                         break
             
-            current_directions = directions
-            if is_buffed:
-                # Apply buff: increase length of longest directional vector(s) by 1
-                # Create a copy to avoid modifying the original static array
-                current_directions = directions.copy()
+            targets = None
+            
+            # Try to use precomputed moves if available and not buffed
+            if not is_buffed and piece_type is not None and piece_type in _PRECOMPUTED_MOVES:
+                # Calculate flat index
+                # pos is (3,) array
+                flat_idx = pos[0] + SIZE * pos[1] + SIZE_SQUARED * pos[2]
                 
-                # Vectorized application of the rule
-                abs_dirs = np.abs(current_directions)
-                max_vals = np.max(abs_dirs, axis=1, keepdims=True)
-                
-                # Identify components that are equal to the max value (longest components)
-                # and add 1 in the direction of the sign
-                mask = (abs_dirs == max_vals)
-                sign = np.sign(current_directions)
-                
-                # Add sign to the components where mask is True
-                # We use += to modify in place
-                # If sign is 0 (shouldn't happen for jump vectors usually, but good to be safe), it adds 0
-                current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
+                # Retrieve targets from precomputed array
+                # _PRECOMPUTED_MOVES[piece_type] is an object array of arrays
+                try:
+                    targets = _PRECOMPUTED_MOVES[piece_type][flat_idx]
+                except IndexError:
+                    # Fallback if index out of bounds (shouldn't happen with valid pos)
+                    pass
 
-            targets = _generate_jump_targets(pos, current_directions)
+            # Fallback to vector calculation if no precomputed moves or buffed
+            if targets is None:
+                current_directions = directions
+                if is_buffed:
+                    # Apply buff: increase length of longest directional vector(s) by 1
+                    # Create a copy to avoid modifying the original static array
+                    current_directions = directions.copy()
+                    
+                    # Vectorized application of the rule
+                    abs_dirs = np.abs(current_directions)
+                    max_vals = np.max(abs_dirs, axis=1, keepdims=True)
+                    
+                    # Identify components that are equal to the max value (longest components)
+                    # and add 1 in the direction of the sign
+                    mask = (abs_dirs == max_vals)
+                    sign = np.sign(current_directions)
+                    
+                    # Add sign to the components where mask is True
+                    # We use += to modify in place
+                    # If sign is 0 (shouldn't happen for jump vectors usually, but good to be safe), it adds 0
+                    current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
+
+                targets = _generate_jump_targets(pos, current_directions)
 
             if targets.shape[0] == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)

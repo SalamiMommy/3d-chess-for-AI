@@ -54,6 +54,7 @@ def generate_knight31_moves(
         pos=pos_arr,
         directions=KNIGHT31_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.KNIGHT31
     )
 
 def generate_knight32_moves(
@@ -74,6 +75,7 @@ def generate_knight32_moves(
         pos=pos_arr,
         directions=KNIGHT32_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.KNIGHT32
     )
 
 @register(PieceType.KNIGHT31)

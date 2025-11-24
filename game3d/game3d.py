@@ -174,13 +174,13 @@ class OptimizedGame3D:
         
         # Auto-finalize: If no more movable hives, switch turn and clear tracking
         if unmoved_hives.size == 0:
-            logger.info(f"✓ All hives moved - finalizing turn for {Color(self.current_player).name}")
+            # logger.info(f"✓ All hives moved - finalizing turn for {Color(self.current_player).name}")
             # Switch to opponent's turn
             new_state = new_state._switch_turn()
             # Clear hive tracking for next turn
             new_state.clear_hive_move_tracking()
-        else:
-            logger.info(f"✓ Hive moved - {len(unmoved_hives)} unmoved hive(s) remaining")
+        # else:
+        #     logger.info(f"✓ Hive moved - {len(unmoved_hives)} unmoved hive(s) remaining")
 
         return new_state
 

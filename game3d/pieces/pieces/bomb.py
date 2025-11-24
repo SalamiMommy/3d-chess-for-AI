@@ -43,6 +43,8 @@ def generate_bomb_moves(
         pos=pos_arr,
         directions=BOMB_MOVEMENT_VECTORS,
         allow_capture=True,
+        allow_zero_direction=True,  # BOMB needs this for self-detonation
+        piece_type=PieceType.KING # Use King precomputed moves for movement
     )
 
     # 2. Self-detonation if it would affect enemy pieces

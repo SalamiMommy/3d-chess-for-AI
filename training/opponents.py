@@ -3,7 +3,12 @@ from numba import njit, prange
 import logging
 from typing import Optional
 
-from game3d.common.shared_types import Color, PieceType, COLOR_EMPTY, COORD_DTYPE, INDEX_DTYPE, FLOAT_DTYPE, HASH_DTYPE
+from game3d.common.shared_types import Color, PieceType, COLOR_EMPTY, COORD_DTYPE, INDEX_DTYPE, FLOAT_DTYPE, HASH_DTYPE, N_PIECE_TYPES
+import game3d.cache.caches.zobrist as zobrist_module
+
+# Initialize Zobrist keys if not already done and get the table
+zobrist_module._init_zobrist()
+ZOBRIST_TABLE = zobrist_module._PIECE_KEYS
 from game3d.movement.movepiece import Move
 
 logger = logging.getLogger(__name__)
@@ -21,42 +26,10 @@ def _manhattan_distance(coord1: np.ndarray, coord2: np.ndarray) -> int:
 # VECTORIZED UTILITY FUNCTIONS (Compiled)
 # =============================================================================
 
-@njit(cache=True, fastmath=True, parallel=True)
-def _compute_repetition_penalties_vectorized(
-    moves: np.ndarray,
-    position_hashes: np.ndarray,
-    recent_moves: np.ndarray,
-    move_count: int,
-    repetition_penalty: float
-) -> np.ndarray:
-    """Vectorized repetition penalty for ALL moves at once."""
-    n_moves = moves.shape[0]
-    penalties = np.zeros(n_moves, dtype=FLOAT_DTYPE)
-
-    for i in prange(n_moves):
-        move = moves[i]
-
-        # Check position repetition in position_hashes
-        count = 0
-        for j in range(len(position_hashes)):
-            if position_hashes[j] == move[0]:  # Simplified hash check
-                count += 1
-
-        if count >= 3:
-            penalties[i] = repetition_penalty * 4
-        elif count >= 2:
-            penalties[i] = repetition_penalty * 2
-        elif count >= 1:
-            penalties[i] = repetition_penalty
-
-        # Check move repetition pattern (last 4 moves)
-        if move_count >= 4:
-            # Compare move patterns in recent_moves array
-            if (recent_moves[0, 0] == recent_moves[2, 0] and
-                recent_moves[1, 0] == recent_moves[3, 0]):
-                penalties[i] += repetition_penalty * 3
-
-    return penalties
+# REMOVED: Old broken _compute_repetition_penalties_vectorized
+# The old function compared position_hashes[j] == move[0] which compared
+# a hash value to a move coordinate - completely wrong!
+# Repetition penalty is now applied via batch_reward using game state data
 
 
 @njit(cache=True, fastmath=True, parallel=True)
@@ -258,25 +231,68 @@ def _compute_check_potential_vectorized(
 
     return rewards
 
-# =============================================================================
-# OPTIMIZED OPPONENT BASE CLASS
-# =============================================================================
+@njit(cache=True, fastmath=True, parallel=True)
+def _compute_next_state_repetition_penalty(
+    from_coords: np.ndarray,
+    to_coords: np.ndarray,
+    from_types: np.ndarray,
+    from_colors: np.ndarray,
+    captured_types: np.ndarray,
+    captured_colors: np.ndarray,
+    current_zkey: int,
+    position_keys: np.ndarray,
+    position_counts: np.ndarray,
+    zobrist_table: np.ndarray,
+    penalty_weight: float
+) -> np.ndarray:
+    """Vectorized check for moves that lead to repeated positions."""
+    n_moves = len(from_coords)
+    penalties = np.zeros(n_moves, dtype=FLOAT_DTYPE)
+    
+    for i in prange(n_moves):
+        # 1. Calculate next Zkey incrementally
+        next_zkey = current_zkey
+        
+        # Remove moving piece from source
+        p_type = from_types[i]
+        p_color = from_colors[i]
+        
+        if p_type == 0: continue 
+        
+        # Zobrist table from cache.caches.zobrist is 5D: (piece_type, color_idx, x, y, z)
+        # piece_type is 0-indexed (p_type - 1)
+        # color_idx is 0-indexed (p_color - 1)
+        
+        fx, fy, fz = from_coords[i]
+        next_zkey ^= zobrist_table[p_type - 1, p_color - 1, fx, fy, fz]
+        
+        # Add moving piece to dest
+        tx, ty, tz = to_coords[i]
+        next_zkey ^= zobrist_table[p_type - 1, p_color - 1, tx, ty, tz]
+        
+        # Remove captured piece if any
+        c_type = captured_types[i]
+        if c_type != 0:
+            c_color = captured_colors[i]
+            next_zkey ^= zobrist_table[c_type - 1, c_color - 1, tx, ty, tz]
+            
+        # 2. Check repetition in game state history
+        idx = np.searchsorted(position_keys, next_zkey)
+        if idx < position_keys.size and position_keys[idx] == next_zkey:
+            count = position_counts[idx]
+            # Apply penalty
+            if count >= 2: # 3rd repetition imminent (Draw)
+                penalties[i] = penalty_weight * 5.0 # Heavy penalty
+            elif count >= 1: # 2nd repetition
+                penalties[i] = penalty_weight
+                
+    return penalties
 
 class OpponentBase:
     def __init__(self, color: Color):
         self.color = color
-        # ✅ OPTIMIZED: Pre-allocated circular buffer instead of append
-        self._position_hashes_buffer = np.zeros(1000, dtype=HASH_DTYPE)  # 1000-move buffer
-        self._position_hashes_count = 0
         self.repetition_penalty = -5.0
-        self.recent_moves = np.zeros((10, 2, 3), dtype=COORD_DTYPE)
-        self.move_count = 0
     
-    @property
-    def position_hashes(self) -> np.ndarray:
-        """Get active portion of position hashes buffer."""
-        return self._position_hashes_buffer[:self._position_hashes_count]
-
     def reward(self, state: 'GameState', move: Move) -> float:
         """Single move reward - delegates to batch version."""
         moves_array = np.array([[move.from_coord[0], move.from_coord[1], move.from_coord[2],
@@ -289,51 +305,44 @@ class OpponentBase:
     def batch_reward(self, state: 'GameState', moves: np.ndarray) -> np.ndarray:
         """Batch reward computation - MUST be overridden."""
         raise NotImplementedError
-
-    def get_repetition_penalty(self, state: 'GameState', move: Move) -> float:
-        """Single move penalty - delegates to vectorized version."""
-        move_array = np.array([[move.from_coord[0], move.from_coord[1], move.from_coord[2],
-                               move.to_coord[0], move.to_coord[1], move.to_coord[2]]],
-                              dtype=COORD_DTYPE)
-
-        penalties = _compute_repetition_penalties_vectorized(
-            move_array, self.position_hashes, self.recent_moves,
-            self.move_count, self.repetition_penalty
-        )
-        return float(penalties[0])
-
-    def get_repetition_penalties_batch(self, moves: np.ndarray) -> np.ndarray:
-        """Vectorized repetition penalty for batch."""
-        return _compute_repetition_penalties_vectorized(
-            moves, self.position_hashes, self.recent_moves,
-            self.move_count, self.repetition_penalty
-        )
+    
+    @staticmethod
+    def get_halfmove_penalty(halfmove_clock: int) -> float:
+        """Progressive penalty as game approaches move rule draw."""
+        if halfmove_clock < 50:
+            return 0.0
+        elif halfmove_clock < 70:
+            return (halfmove_clock - 50) * 0.3
+        elif halfmove_clock < 90:
+            return (50 - 50) * 0.3 + (halfmove_clock - 70) * 0.5
+        elif halfmove_clock < 120:
+            return ((50 - 50) * 0.3 + (90 - 70) * 0.5 + (halfmove_clock - 90) * 1.0)
+        else:
+            # Extreme penalty near draw limit (150 halfmoves)
+            base = ((50 - 50) * 0.3 + (90 - 70) * 0.5 + (120 - 90) * 1.0)
+            return base + (halfmove_clock - 120) * 2.0
+    
+    @staticmethod  
+    def get_position_repetition_penalty(state: 'GameState') -> float:
+        """Get penalty based on how many times current position has occurred."""
+        current_zkey = state.zkey
+        idx = np.searchsorted(state._position_keys, current_zkey)
+        
+        if idx < state._position_keys.size and state._position_keys[idx] == current_zkey:
+            count = state._position_counts[idx]
+            if count >= 4:
+                return -10.0  # Very close to 5-fold repetition draw!
+            elif count >= 3:
+                return -5.0   # 4-fold repetition
+            elif count >= 2:
+                return -2.0   # 3-fold repetition
+            elif count >= 1:
+                return -0.5   # 2-fold
+        return 0.0
 
     def observe(self, state: 'GameState', move: Move):
-        """Observe a move - optimized to avoid coordinate mutation."""
-        board_hash = state.board.byte_hash()
-
-        move_from = np.array([move.from_coord[0], move.from_coord[1], move.from_coord[2]],
-                            dtype=COORD_DTYPE)
-        move_to = np.array([move.to_coord[0], move.to_coord[1], move.to_coord[2]],
-                          dtype=COORD_DTYPE)
-
-        position_hash = hash((board_hash, tuple(move_from), tuple(move_to), state.color))
-
-        # ✅ OPTIMIZED: Circular buffer instead of np.append
-        if self._position_hashes_count < len(self._position_hashes_buffer):
-            # Still have space in buffer
-            self._position_hashes_buffer[self._position_hashes_count] = position_hash
-            self._position_hashes_count += 1
-        else:
-            # Buffer full - shift left and add at end (FIFO)
-            self._position_hashes_buffer[:-1] = self._position_hashes_buffer[1:]
-            self._position_hashes_buffer[-1] = position_hash
-
-        idx = self.move_count % 10
-        self.recent_moves[idx, 0] = move_from
-        self.recent_moves[idx, 1] = move_to
-        self.move_count += 1
+        """Observe a move - now a no-op since we use game state tracking."""
+        pass
 
     def select_move(self, state: 'GameState', from_logits: np.ndarray, to_logits: np.ndarray,
                     legal_moves, epsilon: float = 0.1):
@@ -393,28 +402,24 @@ class AdaptiveOpponent(OpponentBase):
         # Pre-allocate rewards array
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
-        # 1. Repetition penalty (vectorized)
-        repetition_penalties = self.get_repetition_penalties_batch(moves)
+        # 1. Repetition penalty (ACCURATE next-state check)
+        repetition_penalties = _compute_next_state_repetition_penalty(
+            from_coords, to_coords, from_types, from_colors,
+            captured_types, captured_colors,
+            state.zkey, state._position_keys, state._position_counts,
+            ZOBRIST_TABLE, self.repetition_penalty
+        )
         rewards += repetition_penalties
 
-        # 2. Improved halfmove clock penalty (exponential scaling to avoid 50-move draw)
+        # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 50:
-            # Progressive penalties:
-            # 50-70: -0.3 per move
-            # 70-90: -0.5 per move 
-            # 90+: -1.0 per move with exponential growth
-            base_penalty = (halfmove_clock - 50) * 0.3
-            if halfmove_clock > 70:
-                base_penalty += (halfmove_clock - 70) * 0.2  # Total -0.5 per move
-            if halfmove_clock > 90:
-                base_penalty *= 1.5  # Exponential growth
-            rewards -= base_penalty
+        clock_penalty = self.get_halfmove_penalty(halfmove_clock)
+        rewards -= clock_penalty
 
         # 3. Capture rewards (vectorized) with bonus multiplier for high halfmove clock
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=1.0, queen_rook_bonus=0.3
+            priest_bonus=5.0, queen_rook_bonus=0.3
         )
         # Boost capture rewards when clock is dangerously high
         if halfmove_clock > 70:
@@ -443,7 +448,12 @@ class AdaptiveOpponent(OpponentBase):
             rewards += attack_rewards
 
 
-        # 5. King approach (only if no enemy priests)
+        # 5. Geomancer penalty (to reduce overuse)
+        geomancer_mask = (from_types == PieceType.GEOMANCER.value)
+        if np.any(geomancer_mask):
+            rewards[geomancer_mask] -= 0.2
+
+        # 6. King approach (only if no enemy priests)
         enemy_priest_count = 0
         enemy_color = self.color.opposite()
         if cache_manager.occupancy_cache.has_priest(enemy_color):
@@ -468,7 +478,7 @@ class AdaptiveOpponent(OpponentBase):
                     
                     # NEW: Check reward
                     check_rewards = _compute_check_potential_vectorized(
-                        filtered_to, filtered_types, enemy_king_pos, 1.5
+                        filtered_to, filtered_types, enemy_king_pos, 4.0
                     )
                     rewards[relevant_mask] += check_rewards
 
@@ -493,17 +503,18 @@ class CenterControlOpponent(OpponentBase):
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
         # 1. Repetition penalty
-        rewards += self.get_repetition_penalties_batch(moves)
+        repetition_penalties = _compute_next_state_repetition_penalty(
+            from_coords, to_coords, from_types, from_colors,
+            captured_types, captured_colors,
+            state.zkey, state._position_keys, state._position_counts,
+            ZOBRIST_TABLE, self.repetition_penalty
+        )
+        rewards += repetition_penalties
 
         # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 50:
-            base_penalty = (halfmove_clock - 50) * 0.3
-            if halfmove_clock > 70:
-                base_penalty += (halfmove_clock - 70) * 0.2
-            if halfmove_clock > 90:
-                base_penalty *= 1.5
-            rewards -= base_penalty
+        clock_penalty = self.get_halfmove_penalty(halfmove_clock)
+        rewards -= clock_penalty
 
         # 3. Center control (vectorized)
         center_rewards = _compute_center_control_rewards_vectorized(to_coords)
@@ -512,7 +523,7 @@ class CenterControlOpponent(OpponentBase):
         # 4. Capture rewards with bonus for high clock
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=1.0, queen_rook_bonus=0.0
+            priest_bonus=5.0, queen_rook_bonus=0.0
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -535,13 +546,18 @@ class CenterControlOpponent(OpponentBase):
             center_rewards_pieces = _compute_center_control_rewards_vectorized(to_coords[piece_mask])
             rewards[piece_mask] += center_rewards_pieces * 0.33  # 0.1 / 0.3 ratio
 
-        # 6. Conditional Check Reward
+        # 6. Geomancer penalty (to reduce overuse)
+        geomancer_mask = (from_types == PieceType.GEOMANCER.value)
+        if np.any(geomancer_mask):
+            rewards[geomancer_mask] -= 0.2
+
+        # 7. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 1.5
+                    to_coords, from_types, enemy_king_pos, 4.0
                 )
                  rewards += check_rewards
 
@@ -560,24 +576,30 @@ class PieceCaptureOpponent(OpponentBase):
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
         # 1. Repetition penalty
-        rewards += self.get_repetition_penalties_batch(moves)
+        # Need to extract from_types/colors first for PieceCaptureOpponent
+        from_coords = moves[:, :3]
+        from_colors, from_types = state.cache_manager.occupancy_cache.batch_get_attributes(from_coords)
+        captured_colors, captured_types = state.cache_manager.occupancy_cache.batch_get_attributes(to_coords)
+        
+        repetition_penalties = _compute_next_state_repetition_penalty(
+            from_coords, to_coords, from_types, from_colors,
+            captured_types, captured_colors,
+            state.zkey, state._position_keys, state._position_counts,
+            ZOBRIST_TABLE, self.repetition_penalty
+        )
+        rewards += repetition_penalties
 
         # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 50:
-            base_penalty = (halfmove_clock - 50) * 0.3
-            if halfmove_clock > 70:
-                base_penalty += (halfmove_clock - 70) * 0.2
-            if halfmove_clock > 90:
-                base_penalty *= 1.5
-            rewards -= base_penalty
+        clock_penalty = self.get_halfmove_penalty(halfmove_clock)
+        rewards -= clock_penalty
 
         # 3. Capture rewards (primary) with high-clock bonus
         captured_colors, captured_types = state.cache_manager.occupancy_cache.batch_get_attributes(to_coords)
 
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=1.0, queen_rook_bonus=0.3
+            priest_bonus=5.0, queen_rook_bonus=0.3
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -585,15 +607,19 @@ class PieceCaptureOpponent(OpponentBase):
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
-        # 4. Conditional Check Reward
+        # 4. Geomancer penalty (to reduce overuse)
+        from_types = state.cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])[1]
+        geomancer_mask = (from_types == PieceType.GEOMANCER.value)
+        if np.any(geomancer_mask):
+            rewards[geomancer_mask] -= 0.2
+
+        # 5. Conditional Check Reward
         enemy_color = self.color.opposite()
-        if not cache_manager.occupancy_cache.has_priest(enemy_color):
-            enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
+        if not state.cache_manager.occupancy_cache.has_priest(enemy_color):
+            enemy_king_pos = state.cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
-                 # Need from_types for check calculation
-                 from_types = state.cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])[1]
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 1.5
+                    to_coords, from_types, enemy_king_pos, 4.0
                 )
                  rewards += check_rewards
 
@@ -614,17 +640,21 @@ class PriestHunterOpponent(OpponentBase):
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
         # 1. Repetition penalty
-        rewards += self.get_repetition_penalties_batch(moves)
+        from_colors, from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
+        captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
+        
+        repetition_penalties = _compute_next_state_repetition_penalty(
+            from_coords, to_coords, from_types, from_colors,
+            captured_types, captured_colors,
+            state.zkey, state._position_keys, state._position_counts,
+            ZOBRIST_TABLE, self.repetition_penalty
+        )
+        rewards += repetition_penalties
 
         # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 50:
-            base_penalty = (halfmove_clock - 50) * 0.3
-            if halfmove_clock > 70:
-                base_penalty += (halfmove_clock - 70) * 0.2
-            if halfmove_clock > 90:
-                base_penalty *= 1.5
-            rewards -= base_penalty
+        clock_penalty = self.get_halfmove_penalty(halfmove_clock)
+        rewards -= clock_penalty
 
         # 3. Capture rewards (priest-focused) with high-clock multiplier
         captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
@@ -639,7 +669,7 @@ class PriestHunterOpponent(OpponentBase):
         for i in range(len(moves)):
             if captured_colors[i] == self.color.opposite().value:
                 if captured_types[i] == PieceType.PRIEST.value:
-                    rewards[i] += 3.0 * clock_multiplier # INCREASED REWARD
+                    rewards[i] += 8.0 * clock_multiplier # INCREASED REWARD
                 else:
                     rewards[i] += 0.2 * clock_multiplier
 
@@ -654,13 +684,19 @@ class PriestHunterOpponent(OpponentBase):
             )
             rewards += approach_rewards
 
-        # 5. Conditional Check Reward
+        # 5. Geomancer penalty (to reduce overuse)
+        from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
+        geomancer_mask = (from_types == PieceType.GEOMANCER.value)
+        if np.any(geomancer_mask):
+            rewards[geomancer_mask] -= 0.2
+
+        # 6. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 1.5
+                    to_coords, from_types, enemy_king_pos, 4.0
                 )
                  rewards += check_rewards
 
@@ -698,17 +734,21 @@ class GraphAwareOpponent(OpponentBase):
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
         # 1. Repetition penalty
-        rewards += self.get_repetition_penalties_batch(moves)
+        from_colors, from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
+        captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
+        
+        repetition_penalties = _compute_next_state_repetition_penalty(
+            from_coords, to_coords, from_types, from_colors,
+            captured_types, captured_colors,
+            state.zkey, state._position_keys, state._position_counts,
+            ZOBRIST_TABLE, self.repetition_penalty
+        )
+        rewards += repetition_penalties
 
         # 2. Improved halfmove clock penalty
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
-        if halfmove_clock > 50:
-            base_penalty = (halfmove_clock - 50) * 0.3
-            if halfmove_clock > 70:
-                base_penalty += (halfmove_clock - 70) * 0.2
-            if halfmove_clock > 90:
-                base_penalty *= 1.5
-            rewards -= base_penalty
+        clock_penalty = self.get_halfmove_penalty(halfmove_clock)
+        rewards -= clock_penalty
 
         # 3. Piece coordination bonus
         from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
@@ -737,7 +777,7 @@ class GraphAwareOpponent(OpponentBase):
 
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=1.0, queen_rook_bonus=0.0
+            priest_bonus=5.0, queen_rook_bonus=0.0
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -745,13 +785,18 @@ class GraphAwareOpponent(OpponentBase):
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
-        # 5. Conditional Check Reward
+        # 5. Geomancer penalty (to reduce overuse)
+        geomancer_mask = (from_types == PieceType.GEOMANCER.value)
+        if np.any(geomancer_mask):
+            rewards[geomancer_mask] -= 0.2
+
+        # 6. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 1.5
+                    to_coords, from_types, enemy_king_pos, 4.0
                 )
                  rewards += check_rewards
 
@@ -775,7 +820,7 @@ def create_opponent(opponent_type: str, color: Color) -> OpponentBase:
     return types[opponent_type](color)
 
 # Explicitly list available opponents - matches the keys above
-AVAILABLE_OPPONENTS = ['adversarial', 'center_control', 'piece_capture', 'priest_hunter', 'graph_aware']
+AVAILABLE_OPPONENTS = ['priest_hunter', 'adversarial', 'center_control', 'piece_capture', 'graph_aware']
 
 __all__ = [
     "OpponentBase",

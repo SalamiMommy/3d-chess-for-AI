@@ -36,6 +36,7 @@ def generate_freezer_moves(
         pos=pos_arr,
         directions=FREEZER_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.FREEZER
     )
 
 def get_all_frozen_squares_numpy(

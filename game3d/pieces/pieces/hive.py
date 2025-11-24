@@ -85,6 +85,11 @@ def apply_multi_hive_move(state: 'GameState', move: Move) -> 'GameState':
     # Preserve current player's turn for additional hive moves
     object.__setattr__(new_state, "color", state.color)
     
+    # ✅ CRITICAL FIX: Reset turn counters to prevent double increment
+    # The turn number should only increment when the turn actually switches (in game3d.py)
+    object.__setattr__(new_state, "turn_number", state.turn_number)
+    object.__setattr__(new_state, "halfmove_clock", state.halfmove_clock)
+    
     # Carry over the hive tracking to the new state
     new_state._moved_hive_positions = state._moved_hive_positions.copy()
     new_state._pending_hive_moves = state._pending_hive_moves.copy()

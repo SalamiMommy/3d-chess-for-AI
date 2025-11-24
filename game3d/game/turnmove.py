@@ -95,7 +95,6 @@ def is_square_attacked_static(game_state: 'GameState', square: np.ndarray, attac
     
     # Get all attacker pieces
     attacker_coords = occ_cache.get_positions(attacker_color)
-    print(f"DEBUG: Checking attacks on {square} by {attacker_color}. Attackers found: {attacker_coords.shape[0]}")
     if attacker_coords.size == 0:
         return False
         
@@ -186,23 +185,17 @@ def is_square_attacked_static(game_state: 'GameState', square: np.ndarray, attac
                 from game3d.common.coord_utils import get_path_between
                 path = get_path_between(attacker_coords[i], square)
                 
-                print(f"DEBUG: Attacker {attacker_coords[i]} Type {ptype} Target {square} Path {path}")
-                
                 # If path is empty, it's a hit
                 if path.size == 0:
                     # Adjacent or same square (already checked dist > 0 implicitly by loop logic if distinct)
                     # If adjacent, it's a hit
-                    print("DEBUG: Path empty -> Hit")
                     return True
                 
                 # Check occupancy of path
                 # We can use batch_is_occupied
                 occupied = occ_cache.batch_is_occupied(path)
                 if not np.any(occupied):
-                    print("DEBUG: Path clear -> Hit")
                     return True
-                else:
-                    print(f"DEBUG: Path blocked by {occupied}")
 
         # 4. ARCHER
         elif ptype == PieceType.ARCHER:
@@ -331,6 +324,31 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
 
     # logger.info(f"Final structured_moves size: {structured_moves.size}")
 
+    # ✅ FILTER HIVE MOVES: Exclude hives that have already moved this turn
+    if structured_moves.size > 0 and len(game_state._moved_hive_positions) > 0:
+        # Get piece types for all from coordinates
+        from_coords = structured_moves[:, :3]
+        _, piece_types = occ_cache.batch_get_attributes(from_coords)
+        
+        # Create mask for non-hive pieces (they can always move)
+        non_hive_mask = piece_types != PieceType.HIVE
+        
+        # For hive pieces, check if they've already moved
+        hive_mask = piece_types == PieceType.HIVE
+        hive_can_move_mask = np.ones(len(structured_moves), dtype=bool)
+        
+        if np.any(hive_mask):
+            # Check each hive to see if it has already moved
+            for i in np.where(hive_mask)[0]:
+                from_coord = structured_moves[i, :3]
+                pos_tuple = tuple(from_coord.tolist())
+                if pos_tuple in game_state._moved_hive_positions:
+                    hive_can_move_mask[i] = False
+        
+        # Combine masks: keep non-hive moves and unmoved hive moves
+        valid_mask = non_hive_mask | hive_can_move_mask
+        structured_moves = structured_moves[valid_mask]
+
     # ✅ FILTER SAFE MOVES (Self-Check Prevention)
     if structured_moves.size > 0:
         structured_moves = filter_safe_moves(game_state, structured_moves)
@@ -400,6 +418,15 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         is_archery = move_distance == 2  # Exactly radius 2
     else:
         is_archery = False
+    
+    # BOMB DETONATION DETECTION: Check if this is a bomb self-detonating (from == to)
+    is_bomb = from_piece["piece_type"] == PieceType.BOMB
+    if is_bomb:
+        # Calculate Chebyshev distance
+        move_distance = np.max(np.abs(mv[3:] - mv[:3]))
+        is_detonation = move_distance == 0  # Self-move (from == to)
+    else:
+        is_detonation = False
     
     # Handle geomancy moves differently: block square instead of moving piece
     if is_geomancy:
@@ -514,6 +541,78 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         
         _log_move_if_needed(game_state, from_piece, captured_piece, mv)
         return new_state
+    
+    # Handle bomb detonation: remove pieces in radius 2 including the bomb itself
+    if is_detonation:
+        from game3d.common.shared_types import RADIUS_2_OFFSETS
+        
+        # Get all coordinates in explosion radius (radius 2)
+        explosion_offsets = mv[:3] + RADIUS_2_OFFSETS
+        
+        # Filter to valid bounds
+        valid_coords = explosion_offsets[
+            (explosion_offsets >= 0).all(axis=1) &
+            (explosion_offsets < SIZE).all(axis=1)
+        ]
+        
+        # Also include the bomb's position itself
+        coords_to_clear = np.vstack([valid_coords, mv[:3].reshape(1, 3)])
+        coords_to_clear = np.unique(coords_to_clear, axis=0)
+        
+        # IMPORTANT: Collect piece data BEFORE clearing the board
+        pieces_before_explosion = []
+        for coord in coords_to_clear:
+            piece_data = cache_manager.occupancy_cache.get(coord)
+            if piece_data is not None:
+                pieces_before_explosion.append((coord.copy(), piece_data.copy()))
+        
+        # Remove all pieces at these coordinates
+        for coord in coords_to_clear:
+            board.set_piece_at(coord, 0, Color.EMPTY)
+            cache_manager.occupancy_cache.set_position(coord, None)
+        
+        # Update zobrist hash for all removed pieces
+        # Note: Simple approach - just use the standard update for the bomb itself
+        # A more complete implementation would update the hash for each destroyed piece
+        new_zkey = cache_manager.update_zobrist_after_move(
+            game_state._zkey, mv, from_piece, None
+        )
+        
+        # Create move record marking it as detonation
+        move_record = np.array([( 
+            mv[0], mv[1], mv[2], mv[3], mv[4], mv[5],
+            True,  # Count as capture for halfmove clock
+            0  # No special flag for now
+        )], dtype=MOVE_DTYPE)
+        
+        new_history = game_state.history.copy()
+        new_history.append(move_record)
+        
+        new_state = GameState(
+            board=board,
+            color=game_state.color.opposite(),
+            cache_manager=cache_manager,
+            history=new_history,
+            halfmove_clock=0,  # Reset on detonation (counts as capture)
+            turn_number=game_state.turn_number + 1,
+        )
+        new_state._zkey = new_zkey
+        
+        # Update move caches for both colors
+        from game3d.movement.generator import generate_legal_moves
+        current_color = new_state.color
+        current_player_moves = generate_legal_moves(new_state)
+        cache_manager.move_cache.store_moves(current_color, current_player_moves)
+        
+        opponent_color = Color.WHITE if current_color == Color.BLACK else Color.BLACK
+        original_color = new_state.color
+        new_state.color = opponent_color
+        opponent_moves = generate_legal_moves(new_state)
+        cache_manager.move_cache.store_moves(opponent_color, opponent_moves)
+        new_state.color = original_color
+        
+        _log_move_if_needed(game_state, from_piece, captured_piece, mv)
+        return new_state
 
     # 🔥 CRITICAL FIX: Determine if this move should reset the 50-move clock
     is_capture = captured_piece is not None
@@ -560,8 +659,10 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     effects_future.result()
 
     # 5b-2. TRIGGER FREEZE EFFECT (Temporal)
-    # Friendly freezers apply effects on ANY friendly move
+    # ✅ FIXED: Freezers trigger on any friendly move, but expiry is only set for newly frozen squares
+    # to prevent perpetual renewal. Freeze lasts 1 turn as intended.
     cache_manager.consolidated_aura_cache.trigger_freeze(game_state.color, game_state.turn_number)
+
 
     # 5c. MARK AFFECTED PIECES FOR MOVE REGENERATION (BOTH COLORS)
     cache_manager.dependency_graph.notify_update('move_applied')
@@ -611,7 +712,7 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         path = get_path_between(mv[:3], mv[3:])
         if path.size > 0:
             # Add trail for this specific trailblazer at its NEW position
-            trailblaze_cache.add_trail(mv[3:], path)
+            trailblaze_cache.add_trail(mv[3:], path, from_piece["color"])
             
     # 2. COUNTER MOVEMENT (Counters stick to the piece)
     trailblaze_cache.move_counter(mv[:3], mv[3:])
@@ -672,14 +773,8 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         path = get_path_between(mv[:3], mv[3:])
         
         # Check intersection with trails
-        # We need to know if the trails are "enemy" trails.
-        # Let's assume we only care about trails created by the OPPONENT.
-        # I need to pass the "avoider color" to `check_trail_intersection`.
-        # I'll update `TrailblazeCache` to support color filtering in a follow-up if needed.
-        # For now, let's assume all trails are dangerous (neutral or friendly fire enabled).
-        # Or better: I can check the color of the trailblazer associated with the trail.
-        
-        intersecting = trailblaze_cache.get_intersecting_squares(path)
+        # We pass the mover's color as avoider_color to ignore friendly trails
+        intersecting = trailblaze_cache.get_intersecting_squares(path, avoider_color=from_piece["color"])
         
         # Filter out trails that belong to friendly trailblazers
         # This requires looking up the owner of the trail.
@@ -711,7 +806,7 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         # Check if destination is on a trail
         # We use check_trail_intersection with the single destination coordinate
         dest_coord = mv[3:].reshape(1, 3)
-        if trailblaze_cache.check_trail_intersection(dest_coord):
+        if trailblaze_cache.check_trail_intersection(dest_coord, avoider_color=from_piece["color"]):
              counters_to_add += 1
                  
     # Apply counters

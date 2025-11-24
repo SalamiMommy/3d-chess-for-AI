@@ -7,7 +7,7 @@ import threading
 
 from game3d.common.shared_types import (
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, SIZE, VOLUME, MAX_COORD_VALUE,
-    Color, TRAILBLAZER, INT8_DTYPE
+    Color, TRAILBLAZER, INT8_DTYPE, COLOR_DTYPE
 )
 from game3d.common.coord_utils import coord_to_idx, idx_to_coord, in_bounds_vectorized
 from game3d.cache.cache_protocols import CacheListener
@@ -31,7 +31,8 @@ TRAIL_DATA_DTYPE = np.dtype([
     ('trail_coords', COORD_DTYPE, (TOTAL_TRAIL_CAPACITY, 3)),  # Pre-allocated trail coordinates
     ('trail_lengths', INDEX_DTYPE, (MAX_TRAIL_HISTORY,)), # Length of each history segment
     ('history_ptr', INDEX_DTYPE),        # Circular buffer pointer
-    ('active', BOOL_DTYPE)               # Whether this entry is active
+    ('active', BOOL_DTYPE),              # Whether this entry is active
+    ('color', COLOR_DTYPE)               # Color of the trailblazer
 ])
 
 # =============================================================================
@@ -175,24 +176,30 @@ class TrailblazeCache(CacheListener):
         flat_coords = self._coords_to_flat(coords)
         return self._is_trailblazer_flat(flat_coords)
 
-    def check_trail_intersection(self, path_coords: np.ndarray) -> bool:
-        """Check if any coordinate in path intersects with ANY active trail."""
+    def check_trail_intersection(self, path_coords: np.ndarray, avoider_color: Optional[int] = None) -> bool:
+        """
+        Check if any coordinate in path intersects with ANY active trail.
+        If avoider_color is provided, ignores trails created by pieces of that color (friendly fire off).
+        """
         if path_coords.size == 0:
             return False
             
-        # Get all active trail squares
-        all_trails = self._get_all_active_trail_squares()
+        # Get all active trail squares, filtering by enemy color if needed
+        all_trails = self._get_all_active_trail_squares(avoider_color)
         if all_trails.size == 0:
             return False
             
         return np.any(_batch_trail_squares_check_numba(all_trails, path_coords))
 
-    def get_intersecting_squares(self, path_coords: np.ndarray) -> np.ndarray:
-        """Get subset of path_coords that intersect with trails."""
+    def get_intersecting_squares(self, path_coords: np.ndarray, avoider_color: Optional[int] = None) -> np.ndarray:
+        """
+        Get subset of path_coords that intersect with trails.
+        If avoider_color is provided, ignores trails created by pieces of that color (friendly fire off).
+        """
         if path_coords.size == 0:
             return np.empty((0, 3), dtype=self._coord_dtype)
             
-        all_trails = self._get_all_active_trail_squares()
+        all_trails = self._get_all_active_trail_squares(avoider_color)
         if all_trails.size == 0:
             return np.empty((0, 3), dtype=self._coord_dtype)
             
@@ -246,7 +253,7 @@ class TrailblazeCache(CacheListener):
     # TRAIL MANAGEMENT
     # ========================================================================
 
-    def add_trail(self, trailblazer_pos: np.ndarray, squares: np.ndarray) -> None:
+    def add_trail(self, trailblazer_pos: np.ndarray, squares: np.ndarray, color: int = Color.WHITE) -> None:
         """Add trail for a specific trailblazer at trailblazer_pos."""
         if squares.size == 0:
             return
@@ -256,7 +263,7 @@ class TrailblazeCache(CacheListener):
             flat_idx = self._coords_to_flat(coords)[0]
             
             # Check if we already have an entry for this trailblazer
-            mask = self._trail_data['flat_idx'] == flat_idx
+            mask = (self._trail_data['flat_idx'] == flat_idx) & self._trail_data['active']
             if np.any(mask):
                 entry_idx = np.where(mask)[0][0]
             else:
@@ -276,6 +283,7 @@ class TrailblazeCache(CacheListener):
             # Activate entry
             self._trail_data[entry_idx]['flat_idx'] = flat_idx
             self._trail_data[entry_idx]['active'] = True
+            self._trail_data[entry_idx]['color'] = color
             
             # Manage circular buffer history
             ptr = self._trail_data[entry_idx]['history_ptr']
@@ -296,9 +304,20 @@ class TrailblazeCache(CacheListener):
             
             self._rebuild_fast_lookups()
 
-    def _get_all_active_trail_squares(self) -> np.ndarray:
-        """Get all active trail squares across all trailblazers."""
+    def _get_all_active_trail_squares(self, avoider_color: Optional[int] = None) -> np.ndarray:
+        """
+        Get all active trail squares across all trailblazers.
+        If avoider_color is provided, excludes trails created by pieces of that color.
+        """
         active_mask = self._trail_data['active']
+        
+        # Filter by color if needed
+        if avoider_color is not None:
+            # We want trails that are NOT owned by avoider_color
+            # i.e. trail_color != avoider_color
+            color_mask = self._trail_data['color'] != avoider_color
+            active_mask = active_mask & color_mask
+            
         if not np.any(active_mask):
             return np.empty((0, 3), dtype=self._coord_dtype)
             

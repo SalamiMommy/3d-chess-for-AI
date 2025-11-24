@@ -127,6 +127,7 @@ def generate_wall_moves(
         pos=anchor,
         directions=WALL_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.WALL
     )
 
 @register(PieceType.WALL)

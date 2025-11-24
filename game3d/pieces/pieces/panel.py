@@ -59,6 +59,7 @@ def generate_panel_moves(
         pos=pos_arr,
         directions=PANEL_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.PANEL
     )
 
 @register(PieceType.PANEL)
