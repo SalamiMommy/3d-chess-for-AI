@@ -1,1 +1,0 @@
-I need a lightweight implementation of move filtering that filters out legal moves that leave the current player's king in check and it should only run when the current player has 0 priests (because they prevent king capture)
