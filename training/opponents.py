@@ -288,6 +288,89 @@ def _compute_next_state_repetition_penalty(
                 
     return penalties
 
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _compute_piece_diversity_rewards_vectorized(
+    from_coords: np.ndarray,
+    history_from_coords: np.ndarray,
+    diversity_reward: float,
+    repetition_penalty: float
+) -> np.ndarray:
+    """Vectorized piece diversity rewards - favor moving different pieces.
+    
+    Args:
+        from_coords: array of from coordinates for candidate moves (n_moves, 3)
+        history_from_coords: array of from coordinates from recent move history (n_history, 3)
+        diversity_reward: reward for moving a piece not recently moved
+        repetition_penalty: penalty for moving a piece that was moved multiple times recently
+    
+    Returns:
+        Array of diversity rewards/penalties for each move
+    """
+    n_moves = len(from_coords)
+    rewards = np.zeros(n_moves, dtype=FLOAT_DTYPE)
+    
+    if history_from_coords.shape[0] == 0:
+        # No history, all moves get diversity bonus
+        rewards[:] = diversity_reward
+        return rewards
+    
+    for i in prange(n_moves):
+        fx, fy, fz = from_coords[i]
+        
+        # Count how many times this piece appears in recent history
+        move_count = 0
+        for j in range(history_from_coords.shape[0]):
+            hx, hy, hz = history_from_coords[j]
+            if hx == fx and hy == fy and hz == fz:
+                move_count += 1
+        
+        # Apply rewards/penalties based on move count
+        if move_count == 0:
+            # Not moved recently - diversity bonus
+            rewards[i] = diversity_reward
+        elif move_count == 1:
+            # Moved once - small bonus
+            rewards[i] = diversity_reward * 0.25
+        else:
+            # Moved 2+ times - penalty for overuse
+            rewards[i] = repetition_penalty * min(move_count - 1, 3)  # Cap at 3x penalty
+    
+    return rewards
+
+
+def _get_recent_history_coords(state: 'GameState', n_recent: int = 8) -> np.ndarray:
+    """Extract from_coords from recent move history.
+    
+    Args:
+        state: GameState object
+        n_recent: Number of recent moves to consider
+    
+    Returns:
+        Array of from coordinates (n_history, 3)
+    """
+    if not hasattr(state, 'history') or len(state.history) == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE)
+    
+    # Get the last n_recent moves
+    # history is a deque, so we need to convert to list for negative indexing
+    history_len = min(n_recent, len(state.history))
+    
+    # Convert deque to list and get last n items
+    history_list = list(state.history)
+    recent_history = history_list[-history_len:]
+    
+    # Extract from_coords from structured array
+    from_coords = np.zeros((history_len, 3), dtype=COORD_DTYPE)
+    for i, move in enumerate(recent_history):
+        from_coords[i, 0] = move['from_x']
+        from_coords[i, 1] = move['from_y']
+        from_coords[i, 2] = move['from_z']
+    
+    return from_coords
+
+
+
 class OpponentBase:
     def __init__(self, color: Color):
         self.color = color
@@ -308,19 +391,19 @@ class OpponentBase:
     
     @staticmethod
     def get_halfmove_penalty(halfmove_clock: int) -> float:
-        """Progressive penalty as game approaches move rule draw."""
+        """Progressive penalty as game approaches move rule draw - PRIORITY 2."""
         if halfmove_clock < 50:
             return 0.0
         elif halfmove_clock < 70:
-            return (halfmove_clock - 50) * 0.3
+            return (halfmove_clock - 50) * 0.5  # Increased from 0.3
         elif halfmove_clock < 90:
-            return (50 - 50) * 0.3 + (halfmove_clock - 70) * 0.5
+            return (50 - 50) * 0.5 + (halfmove_clock - 70) * 1.0  # Increased from 0.5
         elif halfmove_clock < 120:
-            return ((50 - 50) * 0.3 + (90 - 70) * 0.5 + (halfmove_clock - 90) * 1.0)
+            return ((50 - 50) * 0.5 + (90 - 70) * 1.0 + (halfmove_clock - 90) * 2.0)  # Increased from 1.0
         else:
-            # Extreme penalty near draw limit (150 halfmoves)
-            base = ((50 - 50) * 0.3 + (90 - 70) * 0.5 + (120 - 90) * 1.0)
-            return base + (halfmove_clock - 120) * 2.0
+            # Extreme penalty near draw limit (150 halfmoves or 300)
+            base = ((50 - 50) * 0.5 + (90 - 70) * 1.0 + (120 - 90) * 2.0)
+            return base + (halfmove_clock - 120) * 3.0  # Increased from 2.0
     
     @staticmethod  
     def get_position_repetition_penalty(state: 'GameState') -> float:
@@ -402,6 +485,8 @@ class AdaptiveOpponent(OpponentBase):
         # Pre-allocate rewards array
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
+        # ===== PRIORITY 2: MOVE RULE AVOIDANCE (3.0 - 10.0) =====
+        
         # 1. Repetition penalty (ACCURATE next-state check)
         repetition_penalties = _compute_next_state_repetition_penalty(
             from_coords, to_coords, from_types, from_colors,
@@ -411,31 +496,46 @@ class AdaptiveOpponent(OpponentBase):
         )
         rewards += repetition_penalties
 
-        # 2. Improved halfmove clock penalty
+        # 2. Improved halfmove clock penalty (PRIORITY 2)
         halfmove_clock = getattr(state, 'halfmove_clock', 0)
         clock_penalty = self.get_halfmove_penalty(halfmove_clock)
         rewards -= clock_penalty
 
-        # 3. Capture rewards (vectorized) with bonus multiplier for high halfmove clock
+        # 3. Pawn move bonus (resets halfmove clock) - PRIORITY 2
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5  # Total +3.0 at 90+
+
+        # ===== PRIORITY 1: PRIEST HUNTING & CHECKS (10.0 - 20.0) =====
+        
+        # 4. Capture rewards (vectorized) with PRIEST PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=5.0, queen_rook_bonus=0.3
+            priest_bonus=15.0, queen_rook_bonus=0.3  # PRIEST BONUS INCREASED TO 15.0
         )
-        # Boost capture rewards when clock is dangerously high
+        # Boost capture rewards when clock is dangerously high (PRIORITY 2 boost)
         if halfmove_clock > 70:
             capture_rewards *= 1.5
         if halfmove_clock > 90:
             capture_rewards *= (2.5 / 1.5)  # Total 2.5x at 90+
         rewards += capture_rewards
         
-        # 3b. Pawn move bonus (resets halfmove clock)
-        pawn_mask = (from_types == PieceType.PAWN.value)
-        if halfmove_clock > 70 and np.any(pawn_mask):
-            rewards[pawn_mask] += 0.4
-        if halfmove_clock > 90 and np.any(pawn_mask):
-            rewards[pawn_mask] += 0.4  # Total +0.8 at 90+
-
-        # 4. Attack/Defense rewards (only if enemy has moves)
+        # ===== PRIORITY 3: PIECE DIVERSITY (1.0 - 3.0) =====
+        
+        # 5. Piece diversity rewards
+        history_coords = _get_recent_history_coords(state, n_recent=8)
+        diversity_rewards = _compute_piece_diversity_rewards_vectorized(
+            from_coords, history_coords, 
+            diversity_reward=2.0,  # PRIORITY 3
+            repetition_penalty=-1.5  # PRIORITY 3 penalty
+        )
+        rewards += diversity_rewards
+        
+        # ===== PRIORITY 4: OTHER ACTIONS (0.1 - 1.0) =====
+        
+        # 6. Attack/Defense rewards (only if enemy has moves)
         enemy_moves = cache_manager.move_cache.get_cached_moves(self.color.opposite())
         if enemy_moves is not None and len(enemy_moves) > 0:
             enemy_to_coords = enemy_moves[:, 3:6] if enemy_moves.ndim == 2 else enemy_moves['to_x', 'to_y', 'to_z']
@@ -447,19 +547,27 @@ class AdaptiveOpponent(OpponentBase):
             )
             rewards += attack_rewards
 
-
-        # 5. Geomancer penalty (to reduce overuse)
+        # 7. Geomancer penalty (to reduce overuse) - PRIORITY 4
         geomancer_mask = (from_types == PieceType.GEOMANCER.value)
         if np.any(geomancer_mask):
-            rewards[geomancer_mask] -= 0.2
+            rewards[geomancer_mask] -= 0.3  # Increased from 0.2
 
-        # 6. King approach (only if no enemy priests)
+        # ===== PRIORITY 1: CHECK REWARDS (when no priests) =====
+        
+        # 8. King approach and CHECK (only if no enemy priests)
         enemy_priest_count = 0
         enemy_color = self.color.opposite()
         if cache_manager.occupancy_cache.has_priest(enemy_color):
-             enemy_priest_count = 1 # Simplified check
-
-        if enemy_priest_count == 0:
+            # PRIORITY 1: Hunt priests if they exist
+            enemy_priest_positions = self._get_enemy_priest_positions(cache_manager)
+            if len(enemy_priest_positions) > 0:
+                approach_rewards = _compute_distance_rewards_vectorized(
+                    from_coords, to_coords, enemy_priest_positions,
+                    from_types, 0.5  # INCREASED from 0.1 - PRIORITY 1
+                )
+                rewards += approach_rewards
+        else:
+            # No priests - focus on checking king (PRIORITY 1)
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                 # Filter relevant pieces
@@ -472,17 +580,35 @@ class AdaptiveOpponent(OpponentBase):
                     king_targets = np.array([enemy_king_pos], dtype=COORD_DTYPE)
                     distance_rewards = _compute_distance_rewards_vectorized(
                         filtered_from, filtered_to, king_targets,
-                        filtered_types, 0.05
+                        filtered_types, 0.05  # Keep low for king approach
                     )
                     rewards[relevant_mask] += distance_rewards
                     
-                    # NEW: Check reward
+                    # CHECK REWARD - PRIORITY 1
                     check_rewards = _compute_check_potential_vectorized(
-                        filtered_to, filtered_types, enemy_king_pos, 4.0
+                        filtered_to, filtered_types, enemy_king_pos, 12.0  # INCREASED from 4.0
                     )
                     rewards[relevant_mask] += check_rewards
 
         return rewards
+
+    def _get_enemy_priest_positions(self, cache_manager) -> np.ndarray:
+        """Get all enemy priest positions as a single array."""
+        enemy_color = self.color.opposite()
+        all_positions = cache_manager.occupancy_cache.get_positions(enemy_color.value)
+
+        if len(all_positions) == 0:
+            return np.empty((0, 3), dtype=COORD_DTYPE)
+
+        # Filter for priests
+        priest_positions = []
+        for coord in all_positions:
+            piece = cache_manager.occupancy_cache.get(coord.reshape(1, 3))
+            if piece and piece['piece_type'] == PieceType.PRIEST.value:
+                priest_positions.append(coord)
+
+        return np.array(priest_positions, dtype=COORD_DTYPE) if priest_positions else np.empty((0, 3), dtype=COORD_DTYPE)
+
 
 
 # =============================================================================
@@ -502,6 +628,8 @@ class CenterControlOpponent(OpponentBase):
 
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
+        # ===== PRIORITY 2: MOVE RULE AVOIDANCE =====
+        
         # 1. Repetition penalty
         repetition_penalties = _compute_next_state_repetition_penalty(
             from_coords, to_coords, from_types, from_colors,
@@ -516,29 +644,44 @@ class CenterControlOpponent(OpponentBase):
         clock_penalty = self.get_halfmove_penalty(halfmove_clock)
         rewards -= clock_penalty
 
-        # 3. Center control (vectorized)
-        center_rewards = _compute_center_control_rewards_vectorized(to_coords)
-        rewards += center_rewards
+        # 3. Pawn move bonus - PRIORITY 2
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
 
-        # 4. Capture rewards with bonus for high clock
+        # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
+        
+        # 4. Capture rewards with bonus for high clock - PRIEST PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=5.0, queen_rook_bonus=0.0
+            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
         if halfmove_clock > 90:
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
-        
-        # 4b. Pawn move bonus
-        pawn_mask = (from_types == PieceType.PAWN.value)
-        if halfmove_clock > 70 and np.any(pawn_mask):
-            rewards[pawn_mask] += 0.4
-        if halfmove_clock > 90 and np.any(pawn_mask):
-            rewards[pawn_mask] += 0.4
 
-        # 5. Bonus for moving pieces TO center
+        # ===== PRIORITY 3: PIECE DIVERSITY =====
+        
+        # 5. Piece diversity rewards
+        history_coords = _get_recent_history_coords(state, n_recent=8)
+        diversity_rewards = _compute_piece_diversity_rewards_vectorized(
+            from_coords, history_coords,
+            diversity_reward=2.0,
+            repetition_penalty=-1.5
+        )
+        rewards += diversity_rewards
+        
+        # ===== PRIORITY 4: OTHER ACTIONS =====
+        
+        # 6. Center control (vectorized)
+        center_rewards = _compute_center_control_rewards_vectorized(to_coords)
+        rewards += center_rewards * 0.67  # Scale down from 0.3 to 0.2
+
+        # 7. Bonus for moving pieces TO center
         relevant_pieces = (PieceType.KNIGHT.value, PieceType.BISHOP.value, PieceType.QUEEN.value)
         piece_mask = np.isin(from_types, relevant_pieces)
 
@@ -546,18 +689,20 @@ class CenterControlOpponent(OpponentBase):
             center_rewards_pieces = _compute_center_control_rewards_vectorized(to_coords[piece_mask])
             rewards[piece_mask] += center_rewards_pieces * 0.33  # 0.1 / 0.3 ratio
 
-        # 6. Geomancer penalty (to reduce overuse)
+        # 8. Geomancer penalty
         geomancer_mask = (from_types == PieceType.GEOMANCER.value)
         if np.any(geomancer_mask):
-            rewards[geomancer_mask] -= 0.2
+            rewards[geomancer_mask] -= 0.3  # INCREASED
 
-        # 7. Conditional Check Reward
+        # ===== PRIORITY 1: CHECK REWARD =====
+        
+        # 9. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 4.0
+                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
                 )
                  rewards += check_rewards
 
@@ -572,15 +717,17 @@ class PieceCaptureOpponent(OpponentBase):
     def batch_reward(self, state: 'GameState', moves: np.ndarray) -> np.ndarray:
         """Pure capture-focused rewards."""
         to_coords = moves[:, 3:6]
+        from_coords = moves[:, :3]
 
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
-        # 1. Repetition penalty
-        # Need to extract from_types/colors first for PieceCaptureOpponent
-        from_coords = moves[:, :3]
+        # Get attributes
         from_colors, from_types = state.cache_manager.occupancy_cache.batch_get_attributes(from_coords)
         captured_colors, captured_types = state.cache_manager.occupancy_cache.batch_get_attributes(to_coords)
         
+        # ===== PRIORITY 2: MOVE RULE AVOIDANCE =====
+        
+        # 1. Repetition penalty
         repetition_penalties = _compute_next_state_repetition_penalty(
             from_coords, to_coords, from_types, from_colors,
             captured_types, captured_colors,
@@ -594,12 +741,19 @@ class PieceCaptureOpponent(OpponentBase):
         clock_penalty = self.get_halfmove_penalty(halfmove_clock)
         rewards -= clock_penalty
 
-        # 3. Capture rewards (primary) with high-clock bonus
-        captured_colors, captured_types = state.cache_manager.occupancy_cache.batch_get_attributes(to_coords)
+        # 3. Pawn move bonus - PRIORITY 2
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
 
+        # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
+        
+        # 4. Capture rewards (primary) with high-clock bonus - PRIEST PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=5.0, queen_rook_bonus=0.3
+            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -607,19 +761,33 @@ class PieceCaptureOpponent(OpponentBase):
             capture_rewards *= (2.5 / 1.5)
         rewards += capture_rewards
 
-        # 4. Geomancer penalty (to reduce overuse)
-        from_types = state.cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])[1]
+        # ===== PRIORITY 3: PIECE DIVERSITY =====
+        
+        # 5. Piece diversity rewards
+        history_coords = _get_recent_history_coords(state, n_recent=8)
+        diversity_rewards = _compute_piece_diversity_rewards_vectorized(
+            from_coords, history_coords,
+            diversity_reward=2.0,
+            repetition_penalty=-1.5
+        )
+        rewards += diversity_rewards
+        
+        # ===== PRIORITY 4: OTHER ACTIONS =====
+        
+        # 6. Geomancer penalty
         geomancer_mask = (from_types == PieceType.GEOMANCER.value)
         if np.any(geomancer_mask):
-            rewards[geomancer_mask] -= 0.2
+            rewards[geomancer_mask] -= 0.3  # INCREASED
 
-        # 5. Conditional Check Reward
+        # ===== PRIORITY 1: CHECK REWARD =====
+        
+        # 7. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not state.cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = state.cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 4.0
+                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
                 )
                  rewards += check_rewards
 
@@ -639,10 +807,13 @@ class PriestHunterOpponent(OpponentBase):
 
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
-        # 1. Repetition penalty
+        # Get attributes
         from_colors, from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
         captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
         
+        # ===== PRIORITY 2: MOVE RULE AVOIDANCE =====
+        
+        # 1. Repetition penalty
         repetition_penalties = _compute_next_state_repetition_penalty(
             from_coords, to_coords, from_types, from_colors,
             captured_types, captured_colors,
@@ -656,47 +827,65 @@ class PriestHunterOpponent(OpponentBase):
         clock_penalty = self.get_halfmove_penalty(halfmove_clock)
         rewards -= clock_penalty
 
-        # 3. Capture rewards (priest-focused) with high-clock multiplier
-        captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
+        # 3. Pawn move bonus - PRIORITY 2
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
 
+        # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
+        
+        # 4. Capture rewards (priest-focused) with high-clock multiplier
         clock_multiplier = 1.0
         if halfmove_clock > 70:
             clock_multiplier = 1.5
         if halfmove_clock > 90:
             clock_multiplier = 2.5
         
-
         for i in range(len(moves)):
             if captured_colors[i] == self.color.opposite().value:
                 if captured_types[i] == PieceType.PRIEST.value:
-                    rewards[i] += 8.0 * clock_multiplier # INCREASED REWARD
+                    rewards[i] += 15.0 * clock_multiplier  # PRIORITY 1 - INCREASED
                 else:
-                    rewards[i] += 0.2 * clock_multiplier
+                    rewards[i] += 0.3 * clock_multiplier  # PRIORITY 4
 
-        # 4. Approach enemy priests
+        # 5. Approach enemy priests - PRIORITY 1
         enemy_priest_positions = self._get_enemy_priest_positions(cache_manager)
         if len(enemy_priest_positions) > 0:
-            piece_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
-
             approach_rewards = _compute_distance_rewards_vectorized(
                 from_coords, to_coords, enemy_priest_positions,
-                piece_types, 0.1
+                from_types, 0.5  # INCREASED from 0.1 - PRIORITY 1
             )
             rewards += approach_rewards
 
-        # 5. Geomancer penalty (to reduce overuse)
-        from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
+        # ===== PRIORITY 3: PIECE DIVERSITY =====
+        
+        # 6. Piece diversity rewards
+        history_coords = _get_recent_history_coords(state, n_recent=8)
+        diversity_rewards = _compute_piece_diversity_rewards_vectorized(
+            from_coords, history_coords,
+            diversity_reward=2.0,
+            repetition_penalty=-1.5
+        )
+        rewards += diversity_rewards
+        
+        # ===== PRIORITY 4: OTHER ACTIONS =====
+        
+        # 7. Geomancer penalty
         geomancer_mask = (from_types == PieceType.GEOMANCER.value)
         if np.any(geomancer_mask):
-            rewards[geomancer_mask] -= 0.2
+            rewards[geomancer_mask] -= 0.3  # INCREASED
 
-        # 6. Conditional Check Reward
+        # ===== PRIORITY 1: CHECK REWARD =====
+        
+        # 8. Conditional Check Reward (when no priests left)
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 4.0
+                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
                 )
                  rewards += check_rewards
 
@@ -733,10 +922,13 @@ class GraphAwareOpponent(OpponentBase):
 
         rewards = np.zeros(len(moves), dtype=FLOAT_DTYPE)
 
-        # 1. Repetition penalty
+        # Get attributes
         from_colors, from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
         captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
         
+        # ===== PRIORITY 2: MOVE RULE AVOIDANCE =====
+        
+        # 1. Repetition penalty
         repetition_penalties = _compute_next_state_repetition_penalty(
             from_coords, to_coords, from_types, from_colors,
             captured_types, captured_colors,
@@ -750,9 +942,40 @@ class GraphAwareOpponent(OpponentBase):
         clock_penalty = self.get_halfmove_penalty(halfmove_clock)
         rewards -= clock_penalty
 
-        # 3. Piece coordination bonus
-        from_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)[1]
+        # 3. Pawn move bonus - PRIORITY 2
+        pawn_mask = (from_types == PieceType.PAWN.value)
+        if halfmove_clock > 70 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
+        if halfmove_clock > 90 and np.any(pawn_mask):
+            rewards[pawn_mask] += 1.5
 
+        # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
+        
+        # 4. Capture rewards with high-clock multiplier - PRIEST PRIORITY
+        capture_rewards = _compute_capture_rewards_vectorized(
+            to_coords, captured_colors, captured_types, self.color.value,
+            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
+        )
+        if halfmove_clock > 70:
+            capture_rewards *= 1.5
+        if halfmove_clock > 90:
+            capture_rewards *= (2.5 / 1.5)
+        rewards += capture_rewards
+
+        # ===== PRIORITY 3: PIECE DIVERSITY =====
+        
+        # 5. Piece diversity rewards
+        history_coords = _get_recent_history_coords(state, n_recent=8)
+        diversity_rewards = _compute_piece_diversity_rewards_vectorized(
+            from_coords, history_coords,
+            diversity_reward=2.0,
+            repetition_penalty=-1.5
+        )
+        rewards += diversity_rewards
+        
+        # ===== PRIORITY 4: OTHER ACTIONS =====
+        
+        # 6. Piece coordination bonus
         for i in range(len(moves)):
             if from_types[i] == 0:
                 continue
@@ -772,31 +995,20 @@ class GraphAwareOpponent(OpponentBase):
             if allies_near_new > 1:
                 rewards[i] += 0.1 * (allies_near_new - 1)
 
-        # 4. Capture rewards with high-clock multiplier
-        captured_colors, captured_types = cache_manager.occupancy_cache.batch_get_attributes(to_coords)
-
-        capture_rewards = _compute_capture_rewards_vectorized(
-            to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=5.0, queen_rook_bonus=0.0
-        )
-        if halfmove_clock > 70:
-            capture_rewards *= 1.5
-        if halfmove_clock > 90:
-            capture_rewards *= (2.5 / 1.5)
-        rewards += capture_rewards
-
-        # 5. Geomancer penalty (to reduce overuse)
+        # 7. Geomancer penalty
         geomancer_mask = (from_types == PieceType.GEOMANCER.value)
         if np.any(geomancer_mask):
-            rewards[geomancer_mask] -= 0.2
+            rewards[geomancer_mask] -= 0.3  # INCREASED
 
-        # 6. Conditional Check Reward
+        # ===== PRIORITY 1: CHECK REWARD =====
+        
+        # 8. Conditional Check Reward
         enemy_color = self.color.opposite()
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 4.0
+                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
                 )
                  rewards += check_rewards
 
