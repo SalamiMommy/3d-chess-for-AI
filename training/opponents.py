@@ -39,6 +39,7 @@ def _compute_capture_rewards_vectorized(
     captured_types: np.ndarray,
     player_color: int,
     priest_bonus: float,
+    freezer_bonus: float,
     queen_rook_bonus: float
 ) -> np.ndarray:
     """Vectorized capture reward calculation."""
@@ -53,6 +54,8 @@ def _compute_capture_rewards_vectorized(
 
             if captured_types[i] == PieceType.PRIEST.value:
                 rewards[i] += priest_bonus
+            elif captured_types[i] == PieceType.FREEZER.value:
+                rewards[i] += freezer_bonus
             elif captured_types[i] in (PieceType.QUEEN.value, PieceType.ROOK.value):
                 rewards[i] += queen_rook_bonus
 
@@ -510,10 +513,10 @@ class AdaptiveOpponent(OpponentBase):
 
         # ===== PRIORITY 1: PRIEST HUNTING & CHECKS (10.0 - 20.0) =====
         
-        # 4. Capture rewards (vectorized) with PRIEST PRIORITY
+        # 4. Capture rewards (vectorized) with PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, queen_rook_bonus=0.3  # PRIEST BONUS INCREASED TO 15.0
+            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # PRIEST & FREEZER BONUSES
         )
         # Boost capture rewards when clock is dangerously high (PRIORITY 2 boost)
         if halfmove_clock > 70:
@@ -653,10 +656,10 @@ class CenterControlOpponent(OpponentBase):
 
         # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
         
-        # 4. Capture rewards with bonus for high clock - PRIEST PRIORITY
+        # 4. Capture rewards with bonus for high clock - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -750,10 +753,10 @@ class PieceCaptureOpponent(OpponentBase):
 
         # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
         
-        # 4. Capture rewards (primary) with high-clock bonus - PRIEST PRIORITY
+        # 4. Capture rewards (primary) with high-clock bonus - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -951,10 +954,10 @@ class GraphAwareOpponent(OpponentBase):
 
         # ===== PRIORITY 1: PRIEST HUNTING & CHECKS =====
         
-        # 4. Capture rewards with high-clock multiplier - PRIEST PRIORITY
+        # 4. Capture rewards with high-clock multiplier - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5

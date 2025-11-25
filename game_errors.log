@@ -62,3 +62,638 @@
 2025-11-25 13:43:21,185 - __main__ - INFO - Training interrupted by user
 2025-11-25 13:43:21,186 - __main__ - INFO - 🧹 Clearing all caches...
 2025-11-25 13:43:22,978 - __main__ - INFO - Final model saved to model_checkpoints/train_huge_20251125_133947/model_final.pt
+2025-11-25 14:16:29,741 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 14:16:29,743 - __main__ - INFO - Testing move generation...
+2025-11-25 14:16:35,936 - __main__ - INFO - [OK] Generated 3712 moves
+2025-11-25 14:16:35,936 - __main__ - INFO - Testing GameState caching...
+2025-11-25 14:16:35,937 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 14:16:35,937 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 14:16:35,937 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 14:16:35,937 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 14:16:37,544 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_141625/temp_model_for_selfplay.pt
+2025-11-25 14:16:37,544 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 14:16:37,545 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_141625/temp_model_for_selfplay.pt
+2025-11-25 14:16:37,545 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 14:16:37,546 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 14:16:44,653 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 14:16:48,902 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 14:16:48,903 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 14:16:49,233 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140197639377216
+2025-11-25 14:17:06,083 - game3d.game.turnmove - INFO - Move 100: BLACK SWAPPER from [8 3 7] to [7 8 0] (Capture)
+2025-11-25 14:17:12,585 - game3d.game.turnmove - INFO - Move 200: BLACK PAWN from [6 7 8] to [6 6 8] (Capture)
+2025-11-25 14:17:17,497 - game3d.game.turnmove - INFO - Move 300: BLACK ARCHER from [6 2 6] to [6 3 5] (Capture)
+2025-11-25 14:17:21,620 - game3d.game.turnmove - INFO - Move 400: BLACK REFLECTOR from [8 0 0] to [6 2 2] (Capture)
+2025-11-25 14:17:24,925 - game3d.game.turnmove - INFO - Move 500: BLACK PAWN from [6 6 4] to [5 5 5] (Move)
+2025-11-25 14:17:27,931 - game3d.game.turnmove - INFO - Move 600: BLACK PAWN from [6 6 2] to [6 5 2] (Move)
+2025-11-25 14:17:30,886 - game3d.game.turnmove - INFO - Move 700: BLACK YZQUEEN from [7 6 8] to [7 6 3] (Move)
+2025-11-25 14:17:33,787 - game3d.game.turnmove - INFO - Move 800: BLACK YZQUEEN from [8 1 7] to [8 4 4] (Move)
+2025-11-25 14:17:36,711 - game3d.game.turnmove - INFO - Move 900: BLACK YZZIGZAG from [8 2 4] to [8 2 5] (Move)
+2025-11-25 14:17:39,741 - game3d.game.turnmove - INFO - Move 1000: BLACK YZZIGZAG from [8 2 5] to [8 2 6] (Move)
+2025-11-25 14:17:42,659 - game3d.game.turnmove - INFO - Move 1100: BLACK SLOWER from [8 3 6] to [7 4 5] (Move)
+2025-11-25 14:17:45,664 - game3d.game.turnmove - INFO - Move 1200: BLACK SLOWER from [7 2 5] to [8 3 6] (Move)
+2025-11-25 14:17:48,716 - game3d.game.turnmove - INFO - Move 1300: BLACK SLOWER from [7 4 5] to [8 3 6] (Move)
+2025-11-25 14:17:51,792 - game3d.game.turnmove - INFO - Move 1400: BLACK SLOWER from [7 2 5] to [8 3 6] (Move)
+2025-11-25 14:17:55,301 - game3d.game.turnmove - INFO - Move 1500: BLACK SLOWER from [7 4 5] to [8 3 6] (Move)
+2025-11-25 14:17:58,460 - game3d.game.turnmove - INFO - Move 1600: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:01,914 - game3d.game.turnmove - INFO - Move 1700: BLACK SLOWER from [6 5 4] to [7 6 3] (Move)
+2025-11-25 14:18:05,068 - game3d.game.turnmove - INFO - Move 1800: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:07,942 - game3d.game.turnmove - INFO - Move 1900: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:10,843 - game3d.game.turnmove - INFO - Move 2000: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:13,740 - game3d.game.turnmove - INFO - Move 2100: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:16,662 - game3d.game.turnmove - INFO - Move 2200: BLACK SLOWER from [8 1 6] to [7 2 5] (Move)
+2025-11-25 14:18:19,552 - game3d.game.turnmove - INFO - Move 2300: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:22,420 - game3d.game.turnmove - INFO - Move 2400: BLACK SLOWER from [8 3 6] to [7 2 5] (Move)
+2025-11-25 14:18:25,274 - game3d.game.turnmove - INFO - Move 2500: BLACK SLOWER from [8 3 6] to [7 4 5] (Move)
+2025-11-25 14:18:28,236 - game3d.game.turnmove - INFO - Move 2600: BLACK SLOWER from [6 1 8] to [7 0 7] (Move)
+2025-11-25 14:18:31,196 - game3d.game.turnmove - INFO - Move 2700: BLACK SLOWER from [8 1 6] to [7 0 7] (Move)
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,293 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,294 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,294 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,295 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,296 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,296 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,297 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,298 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,299 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,299 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,315 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,316 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,316 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,317 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,318 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,319 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,319 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,320 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,320 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,321 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,322 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,323 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,323 - worker.0 - INFO - GAME FINISHED: 0 | DRAW (Stalemate) | 2789 moves | 103.1s | Mat: W=29/B=4 | Priests: W=Y B=Y
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,324 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,325 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,325 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 2738)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - Current player: 2
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - Material count: Me=4, Opponent=29
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - King positions: Me=[8 4 4], Opponent=[0 4 4]
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - Halfmove clock: 46
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING -   After raw generation:    24 moves
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-24)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:18:32,326 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:18:34,127 - training.parallel_self_play - INFO - Game completed: 2789 examples collected
+2025-11-25 14:18:36,619 - training.parallel_self_play - INFO - Self-play complete: 2789 total examples from 1 games
+2025-11-25 14:19:02,769 - __main__ - INFO - Training interrupted by user
+2025-11-25 14:19:02,775 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-25 14:19:04,766 - __main__ - INFO - Final model saved to model_checkpoints/train_huge_20251125_141625/model_final.pt
+2025-11-25 14:29:03,643 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 14:29:03,646 - __main__ - INFO - Testing move generation...
+2025-11-25 14:29:09,504 - __main__ - INFO - [OK] Generated 3712 moves
+2025-11-25 14:29:09,505 - __main__ - INFO - Testing GameState caching...
+2025-11-25 14:29:09,505 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 14:29:09,505 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 14:29:09,506 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 14:29:09,506 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 14:29:10,961 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_142859/temp_model_for_selfplay.pt
+2025-11-25 14:29:10,961 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 14:29:10,961 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_142859/temp_model_for_selfplay.pt
+2025-11-25 14:29:10,961 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 14:29:10,963 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 14:29:17,729 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 14:29:21,993 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 14:29:21,993 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 14:29:22,305 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140118811185472
+2025-11-25 14:29:38,414 - game3d.game.turnmove - INFO - Move 100: BLACK PAWN from [6 8 3] to [6 7 3] (Capture)
+2025-11-25 14:29:44,861 - game3d.game.turnmove - INFO - Move 200: BLACK XZZIGZAG from [1 1 5] to [0 1 5] (Capture)
+2025-11-25 14:29:50,460 - game3d.game.turnmove - INFO - Move 300: BLACK FRIENDLYTELEPORTER from [7 4 4] to [8 7 4] (Move)
+2025-11-25 14:29:55,601 - game3d.game.turnmove - INFO - Move 400: BLACK EDGEROOK from [8 8 3] to [8 5 1] (Move)
+2025-11-25 14:29:59,518 - game3d.game.turnmove - INFO - Move 500: BLACK TRIGONALBISHOP from [3 4 7] to [4 5 8] (Move)
+2025-11-25 14:30:03,492 - game3d.game.turnmove - INFO - Move 600: BLACK REFLECTOR from [7 4 4] to [0 3 5] (Move)
+2025-11-25 14:30:06,710 - game3d.game.turnmove - INFO - Move 700: BLACK PAWN from [7 2 2] to [8 1 1] (Move)
+2025-11-25 14:30:09,542 - game3d.game.turnmove - INFO - Move 800: BLACK TRIGONALBISHOP from [5 4 7] to [8 7 4] (Move)
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,487 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,488 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,488 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,489 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,489 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,490 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,491 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,492 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,497 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,498 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,498 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,498 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,498 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,498 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,499 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,500 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,501 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,501 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,502 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,503 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,503 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,504 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,505 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,506 - worker.0 - INFO - GAME FINISHED: 0 | DRAW (Stalemate) | 888 moves | 49.2s | Mat: W=12/B=66 | Priests: W=Y B=Y
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,506 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,507 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,507 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - MOVE GENERATION FAILURE DIAGNOSTICS (Turn 869)
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - Current player: 1
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - Material count: Me=12, Opponent=66
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - Priests: Me=YES, Opponent=YES
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - King positions: Me=[0 4 4], Opponent=[8 4 4]
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - Halfmove clock: 0
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING - FILTERING BREAKDOWN:
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING -   After raw generation:    228 moves
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING -   After frozen filter:     0 moves (-228)
+2025-11-25 14:30:11,508 - game3d.game.turnmove - WARNING -   After hive filter:       0 moves (-0)
+2025-11-25 14:30:11,509 - game3d.game.turnmove - WARNING -   After king capture:      0 moves (-0)
+2025-11-25 14:30:11,509 - game3d.game.turnmove - WARNING -   After safe moves filter: 0 moves (-0)
+2025-11-25 14:30:11,509 - game3d.game.turnmove - WARNING - 
+2025-11-25 14:30:11,509 - game3d.game.turnmove - WARNING - ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)
+2025-11-25 14:30:11,509 - game3d.game.turnmove - WARNING - ================================================================================
+2025-11-25 14:30:12,165 - training.parallel_self_play - INFO - Game completed: 888 examples collected
+2025-11-25 14:30:14,380 - training.parallel_self_play - INFO - Self-play complete: 888 total examples from 1 games
+2025-11-25 14:30:16,271 - __main__ - INFO - Training interrupted by user
+2025-11-25 14:30:16,273 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-25 14:34:55,384 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 14:34:55,386 - __main__ - INFO - Testing move generation...
+2025-11-25 14:34:55,763 - __main__ - INFO - [OK] Generated 3712 moves
+2025-11-25 14:34:55,763 - __main__ - INFO - Testing GameState caching...
+2025-11-25 14:34:55,763 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 14:34:55,764 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 14:34:55,764 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 14:34:55,764 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 14:34:57,243 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_143451/temp_model_for_selfplay.pt
+2025-11-25 14:34:57,243 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 14:34:57,243 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_143451/temp_model_for_selfplay.pt
+2025-11-25 14:34:57,243 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 14:34:57,245 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 14:35:03,994 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 14:35:08,179 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 14:35:08,180 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 14:35:08,431 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139747525040768
+2025-11-25 14:35:18,627 - game3d.game.turnmove - INFO - Move 100: BLACK CONESLIDER from [6 2 4] to [2 3 0] (Capture)
+2025-11-25 14:35:24,581 - game3d.game.turnmove - INFO - Move 200: BLACK BISHOP from [7 4 8] to [2 4 3] (Capture)
+2025-11-25 14:35:29,178 - game3d.game.turnmove - INFO - Move 300: BLACK NEBULA from [8 4 1] to [8 5 3] (Capture)
+2025-11-25 14:35:33,205 - game3d.game.turnmove - INFO - Move 400: BLACK PAWN from [7 5 6] to [6 4 7] (Move)
+2025-11-25 14:35:36,843 - game3d.game.turnmove - INFO - Move 500: BLACK EDGEROOK from [8 8 2] to [8 4 4] (Move)
+2025-11-25 14:35:40,549 - game3d.game.turnmove - INFO - Move 600: BLACK TRIGONALBISHOP from [6 4 7] to [2 8 3] (Capture)
+2025-11-25 14:35:44,181 - game3d.game.turnmove - INFO - Move 700: BLACK BOMB from [6 5 6] to [7 4 5] (Move)
+2025-11-25 14:35:47,293 - game3d.game.turnmove - INFO - Move 800: BLACK SLOWER from [7 2 5] to [6 1 4] (Move)
+2025-11-25 14:35:50,199 - game3d.game.turnmove - INFO - Move 900: BLACK BOMB from [6 5 6] to [7 6 7] (Move)
+2025-11-25 14:35:53,110 - game3d.game.turnmove - INFO - Move 1000: BLACK NEBULA from [8 8 2] to [7 7 3] (Move)
+2025-11-25 14:35:56,035 - game3d.game.turnmove - INFO - Move 1100: BLACK SLOWER from [7 2 5] to [6 1 4] (Move)
+2025-11-25 14:35:58,933 - game3d.game.turnmove - INFO - Move 1200: BLACK BOMB from [6 5 6] to [7 6 7] (Move)
+2025-11-25 14:36:01,816 - game3d.game.turnmove - INFO - Move 1300: BLACK NEBULA from [8 8 2] to [7 7 3] (Move)
+2025-11-25 14:36:04,690 - game3d.game.turnmove - INFO - Move 1400: BLACK WHITEHOLE from [6 7 3] to [7 6 2] (Move)
+2025-11-25 14:36:07,585 - game3d.game.turnmove - INFO - Move 1500: BLACK SLOWER from [6 1 4] to [7 2 5] (Move)
+2025-11-25 14:36:10,694 - game3d.game.turnmove - INFO - Move 1600: BLACK GEOMANCER from [7 8 5] to [7 6 4] (Move)
+2025-11-25 14:36:13,866 - game3d.game.turnmove - INFO - Move 1700: BLACK NEBULA from [7 7 3] to [8 8 2] (Move)
+2025-11-25 14:36:17,110 - game3d.game.turnmove - INFO - Move 1800: BLACK NEBULA from [8 8 2] to [7 7 3] (Move)
+2025-11-25 14:36:20,306 - game3d.game.turnmove - INFO - Move 1900: BLACK HIVE from [5 1 2] to [6 0 3] (Capture)
+2025-11-25 14:36:20,339 - game3d.game.turnmove - INFO - Move 1900: BLACK SLOWER from [5 3 4] to [6 4 5] (Move)
+2025-11-25 14:36:23,319 - game3d.game.turnmove - INFO - Move 2000: BLACK PAWN from [6 8 5] to [5 7 4] (Move)
+2025-11-25 14:36:26,214 - game3d.game.turnmove - INFO - Move 2100: BLACK WHITEHOLE from [6 7 3] to [7 6 2] (Move)
+2025-11-25 14:36:30,267 - game3d.game.turnmove - INFO - Move 2200: BLACK HIVE from [1 1 3] to [0 2 2] (Move)
+2025-11-25 14:36:30,301 - game3d.game.turnmove - INFO - Move 2200: BLACK HIVE from [5 7 3] to [4 6 4] (Move)
+2025-11-25 14:36:30,335 - game3d.game.turnmove - INFO - Move 2200: BLACK NEBULA from [8 5 0] to [8 2 0] (Move)
+2025-11-25 14:36:35,385 - game3d.game.turnmove - INFO - Move 2300: BLACK HIVE from [4 6 4] to [5 7 3] (Move)
+2025-11-25 14:36:35,416 - game3d.game.turnmove - INFO - Move 2300: BLACK NEBULA from [8 2 0] to [8 5 0] (Move)
+2025-11-25 14:36:40,591 - game3d.game.turnmove - INFO - Move 2400: BLACK HIVE from [2 8 1] to [3 7 0] (Move)
+2025-11-25 14:36:40,622 - game3d.game.turnmove - INFO - Move 2400: BLACK NEBULA from [6 2 4] to [7 0 4] (Move)
+2025-11-25 14:36:44,845 - game3d.game.turnmove - INFO - Move 2500: BLACK YZZIGZAG from [8 2 5] to [8 2 4] (Move)
+2025-11-25 14:36:48,503 - game3d.game.turnmove - INFO - Move 2600: BLACK NEBULA from [7 0 4] to [6 2 4] (Move)
+2025-11-25 14:36:51,854 - game3d.game.turnmove - INFO - Move 2700: BLACK YZZIGZAG from [8 2 5] to [8 2 4] (Move)
+2025-11-25 14:36:54,772 - game3d.game.turnmove - INFO - Move 2800: BLACK GEOMANCER from [4 1 0] to [1 0 1] (Move)
+2025-11-25 14:36:57,895 - game3d.game.turnmove - INFO - Move 2900: BLACK NEBULA from [2 0 2] to [3 1 3] (Move)
+2025-11-25 14:37:01,030 - game3d.game.turnmove - INFO - Move 3000: BLACK HIVE from [2 7 0] to [3 6 1] (Move)
+2025-11-25 14:37:01,054 - game3d.game.turnmove - INFO - Move 3000: BLACK GEOMANCER from [4 1 0] to [4 3 3] (Move)
+2025-11-25 14:37:05,661 - game3d.game.turnmove - INFO - Move 3100: BLACK YZZIGZAG from [8 2 4] to [8 2 5] (Move)
+2025-11-25 14:37:10,416 - game3d.game.turnmove - INFO - Move 3200: BLACK HIVE from [2 4 5] to [1 3 6] (Move)
+2025-11-25 14:37:10,446 - game3d.game.turnmove - INFO - Move 3200: BLACK HIVE from [1 3 6] to [0 2 7] (Move)
+2025-11-25 14:37:10,470 - game3d.game.turnmove - INFO - Move 3200: BLACK GEOMANCER from [6 7 8] to [3 6 7] (Move)
+2025-11-25 14:37:14,194 - game3d.game.turnmove - INFO - Move 3300: BLACK HIVE from [5 3 0] to [6 4 1] (Move)
+2025-11-25 14:37:14,222 - game3d.game.turnmove - INFO - Move 3300: BLACK YZZIGZAG from [8 2 4] to [8 2 5] (Move)
+2025-11-25 14:37:18,276 - game3d.game.turnmove - INFO - Move 3400: BLACK HIVE from [6 4 1] to [5 3 0] (Move)
+2025-11-25 14:37:18,304 - game3d.game.turnmove - INFO - Move 3400: BLACK HIVE from [5 3 0] to [6 4 1] (Move)
+2025-11-25 14:37:18,332 - game3d.game.turnmove - INFO - Move 3400: BLACK PAWN from [4 2 6] to [5 1 7] (Move)
+2025-11-25 14:37:22,334 - game3d.game.turnmove - INFO - Move 3500: BLACK YZZIGZAG from [8 2 5] to [8 2 4] (Move)
+2025-11-25 14:37:25,863 - game3d.game.turnmove - INFO - Move 3600: BLACK HIVE from [3 6 1] to [2 5 0] (Move)
+2025-11-25 14:37:25,889 - game3d.game.turnmove - INFO - Move 3600: BLACK HIVE from [2 5 0] to [3 6 1] (Move)
+2025-11-25 14:37:25,917 - game3d.game.turnmove - INFO - Move 3600: BLACK WHITEHOLE from [7 6 2] to [6 7 3] (Move)
+2025-11-25 14:37:29,007 - game3d.game.turnmove - INFO - Move 3700: BLACK HIVE from [2 5 0] to [3 6 1] (Move)
+2025-11-25 14:37:29,029 - game3d.game.turnmove - INFO - Move 3700: BLACK GEOMANCER from [5 2 3] to [7 2 3] (Move)
+2025-11-25 14:37:31,805 - game3d.game.turnmove - INFO - Move 3800: BLACK PAWN from [6 2 3] to [5 1 2] (Move)
+2025-11-25 14:37:34,721 - game3d.game.turnmove - INFO - Move 3900: BLACK WHITEHOLE from [5 3 0] to [6 4 1] (Move)
+2025-11-25 14:37:37,601 - game3d.game.turnmove - INFO - Move 4000: BLACK WHITEHOLE from [6 4 1] to [5 3 0] (Move)
+2025-11-25 14:37:40,572 - game3d.game.turnmove - INFO - Move 4100: BLACK WHITEHOLE from [6 4 1] to [5 3 0] (Move)
+2025-11-25 14:37:45,322 - game3d.game.turnmove - INFO - Move 4200: BLACK SLOWER from [5 0 1] to [4 1 0] (Move)
+2025-11-25 14:37:45,818 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,818 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,818 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,844 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,844 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,844 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:45,844 - worker.0 - INFO - GAME FINISHED: 0 | DRAW (Move rule draw) | 4989 moves | 157.4s | Mat: W=6/B=6 | Priests: W=Y B=Y
+2025-11-25 14:37:45,844 - game3d.game.terminal - WARNING - Game over: move rule draw
+2025-11-25 14:37:48,599 - training.parallel_self_play - INFO - Game completed: 4989 examples collected
+2025-11-25 14:37:50,717 - training.parallel_self_play - INFO - Self-play complete: 4989 total examples from 1 games
+2025-11-25 14:38:01,903 - __main__ - INFO - Training interrupted by user
+2025-11-25 14:38:01,910 - __main__ - INFO - 🧹 Clearing all caches...

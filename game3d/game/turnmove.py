@@ -334,6 +334,13 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         structured_moves = np.empty(0, dtype=MOVE_DTYPE)
 
     # logger.info(f"Final structured_moves size: {structured_moves.size}")
+    
+    # Track move counts for diagnostic logging (only if we end up with zero moves)
+    move_count_after_raw = structured_moves.size
+    move_count_after_frozen = move_count_after_raw
+    move_count_after_hive = move_count_after_raw
+    move_count_after_king_capture = move_count_after_raw
+    move_count_after_safe = move_count_after_raw
 
     # ✅ FILTER FROZEN MOVES: Exclude moves from frozen pieces
     if structured_moves.size > 0:
@@ -346,6 +353,7 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         
         if np.any(is_frozen):
             structured_moves = structured_moves[~is_frozen]
+        move_count_after_frozen = structured_moves.size
 
     # ✅ FILTER HIVE MOVES: Exclude hives that have already moved this turn
     if structured_moves.size > 0 and len(game_state._moved_hive_positions) > 0:
@@ -371,6 +379,7 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         # Combine masks: keep non-hive moves and unmoved hive moves
         valid_mask = non_hive_mask | hive_can_move_mask
         structured_moves = structured_moves[valid_mask]
+    move_count_after_hive = structured_moves.size
 
     # ✅ FILTER KING CAPTURE: Cannot capture King if opponent has Priests
     if structured_moves.size > 0:
@@ -389,10 +398,12 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
                 
                 if np.any(captures_king):
                     structured_moves = structured_moves[~captures_king]
+    move_count_after_king_capture = structured_moves.size
 
     # ✅ FILTER SAFE MOVES (Self-Check Prevention)
     if structured_moves.size > 0:
         structured_moves = filter_safe_moves(game_state, structured_moves)
+    move_count_after_safe = structured_moves.size
 
     if structured_moves.size > 0:
         game_state._legal_moves_cache = structured_moves
@@ -401,6 +412,46 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         # logger.info(f"Cached {structured_moves.size} moves")
     else:
         logger.warning("⚠️ No legal moves generated - game loop will exit")
+        
+        # DIAGNOSTIC LOGGING: Only when no moves remain
+        my_king = occ_cache.find_king(game_state.color)
+        opp_king = occ_cache.find_king(game_state.color.opposite())
+        my_priest = occ_cache.has_priest(game_state.color)
+        opp_priest = occ_cache.has_priest(game_state.color.opposite())
+        
+        # Count pieces by color
+        my_coords = occ_cache.get_positions(game_state.color)
+        opp_coords = occ_cache.get_positions(game_state.color.opposite())
+        
+        logger.warning("=" * 80)
+        logger.warning(f"MOVE GENERATION FAILURE DIAGNOSTICS (Turn {game_state.turn_number})")
+        logger.warning("=" * 80)
+        logger.warning(f"Current player: {game_state.color}")
+        logger.warning(f"Material count: Me={len(my_coords)}, Opponent={len(opp_coords)}")
+        logger.warning(f"Priests: Me={'YES' if my_priest else 'NO'}, Opponent={'YES' if opp_priest else 'NO'}")
+        logger.warning(f"King positions: Me={my_king}, Opponent={opp_king}")
+        logger.warning(f"Halfmove clock: {game_state.halfmove_clock}")
+        logger.warning("")
+        logger.warning("FILTERING BREAKDOWN:")
+        logger.warning(f"  After raw generation:    {move_count_after_raw} moves")
+        logger.warning(f"  After frozen filter:     {move_count_after_frozen} moves (-{move_count_after_raw - move_count_after_frozen})")
+        logger.warning(f"  After hive filter:       {move_count_after_hive} moves (-{move_count_after_frozen - move_count_after_hive})")
+        logger.warning(f"  After king capture:      {move_count_after_king_capture} moves (-{move_count_after_hive - move_count_after_king_capture})")
+        logger.warning(f"  After safe moves filter: {move_count_after_safe} moves (-{move_count_after_king_capture - move_count_after_safe})")
+        logger.warning("")
+        
+        # Identify the culprit filter
+        if move_count_after_raw == 0:
+            logger.warning("ROOT CAUSE: Raw move generator returned 0 moves")
+        elif move_count_after_frozen == 0:
+            logger.warning("ROOT CAUSE: Frozen filter removed all moves (all pieces frozen)")
+        elif move_count_after_hive == 0:
+            logger.warning("ROOT CAUSE: Hive filter removed all moves")
+        elif move_count_after_king_capture == 0:
+            logger.warning("ROOT CAUSE: King capture filter removed all moves")
+        elif move_count_after_safe == 0:
+            logger.warning("ROOT CAUSE: Safe moves filter removed all moves (all moves put king in check)")
+        logger.warning("=" * 80)
 
     return structured_moves
 
