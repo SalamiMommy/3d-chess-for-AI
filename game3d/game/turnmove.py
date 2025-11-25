@@ -315,6 +315,17 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
     # Generate moves using centralized generator
     raw = generate_legal_moves(game_state)
     # logger.info(f"Move generator returned {type(raw)} with size {getattr(raw, 'size', 'N/A')}")
+    
+    # DEBUG: Log king position and check if any moves target it
+    if hasattr(game_state, '_debug_king_capture'):
+        opp_color = game_state.color.opposite()
+        opp_king = occ_cache.find_king(opp_color)
+        if opp_king is not None and isinstance(raw, np.ndarray) and raw.size > 0:
+            for move in raw:
+                to_coord = np.array([move['to_x'], move['to_y'], move['to_z']])
+                if np.array_equal(to_coord, opp_king):
+                    logger.warning(f"RAW GENERATOR: Found king capture move! To: {to_coord}")
+
 
     if isinstance(raw, np.ndarray):
         structured_moves = raw
@@ -361,6 +372,24 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         valid_mask = non_hive_mask | hive_can_move_mask
         structured_moves = structured_moves[valid_mask]
 
+    # ✅ FILTER KING CAPTURE: Cannot capture King if opponent has Priests
+    if structured_moves.size > 0:
+        opponent_color = game_state.color.opposite()
+        if occ_cache.has_priest(opponent_color):
+            opponent_king_pos = occ_cache.find_king(opponent_color)
+            if opponent_king_pos is not None:
+                # Filter out moves targeting the king
+                # to_coords are at indices 3, 4, 5
+                to_coords = structured_moves[:, 3:6]
+                
+                # Create mask of moves that capture the king
+                # We need to match all 3 coordinates
+                # (N, 3) == (3,) broadcasts correctly
+                captures_king = np.all(to_coords == opponent_king_pos, axis=1)
+                
+                if np.any(captures_king):
+                    structured_moves = structured_moves[~captures_king]
+
     # ✅ FILTER SAFE MOVES (Self-Check Prevention)
     if structured_moves.size > 0:
         structured_moves = filter_safe_moves(game_state, structured_moves)
@@ -385,7 +414,21 @@ def legal_moves_for_piece(game_state: 'GameState', coord: np.ndarray) -> np.ndar
 
     if isinstance(raw, np.ndarray):
         # ✅ FILTER SAFE MOVES
-        return filter_safe_moves(game_state, raw)
+        moves = filter_safe_moves(game_state, raw)
+
+        # ✅ FILTER KING CAPTURE: Cannot capture King if opponent has Priests
+        if moves.size > 0:
+            occ_cache = game_state.cache_manager.occupancy_cache
+            opponent_color = game_state.color.opposite()
+            if occ_cache.has_priest(opponent_color):
+                opponent_king_pos = occ_cache.find_king(opponent_color)
+                if opponent_king_pos is not None:
+                    to_coords = moves[:, 3:6]
+                    captures_king = np.all(to_coords == opponent_king_pos, axis=1)
+                    if np.any(captures_king):
+                        moves = moves[~captures_king]
+        
+        return moves
 
     return np.empty(0, dtype=MOVE_DTYPE)
 

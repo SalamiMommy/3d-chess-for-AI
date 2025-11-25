@@ -152,13 +152,39 @@ def _build_piece_counts_from_occupancy(colors: np.ndarray, piece_types: np.ndarr
     return piece_counts
 
 def is_move_rule_draw(game_state) -> bool:
-    """Check move rule draw (75 moves) using centralized constant."""
+    """Check move rule draw (75 moves) using centralized constant.
+    
+    Only activates when both sides have 10 or fewer pieces each.
+    """
     halfmove = getattr(game_state, 'halfmove_clock', 0)
-    result = halfmove >= FIFTY_MOVE_RULE
-
+    
+    # First check if halfmove clock has reached the limit
+    if halfmove < FIFTY_MOVE_RULE:
+        return False
+    
+    # Count pieces for both sides
+    cache_manager = getattr(game_state, 'cache_manager', None)
+    if cache_manager is None:
+        # Fallback to old behavior if no cache manager
+        result = halfmove >= FIFTY_MOVE_RULE
+        if _should_log_debug(game_state):
+            logger.debug(f"Move rule check (no cache): halfmove={halfmove}, result={result}")
+        return result
+    
+    # Get all occupied squares
+    occ_cache = cache_manager.occupancy_cache
+    coords, piece_types, colors = occ_cache.get_all_occupied_vectorized()
+    
+    # Count pieces by color
+    white_count = np.sum(colors == COLOR_WHITE)
+    black_count = np.sum(colors == COLOR_BLACK)
+    
+    # Only activate move rule if both sides have 10 or fewer pieces
+    result = (white_count <= 10 and black_count <= 10)
+    
     if _should_log_debug(game_state):
-        logger.debug(f"Move rule check: halfmove={halfmove}, result={result}")
-
+        logger.debug(f"Move rule check: halfmove={halfmove}, white={white_count}, black={black_count}, result={result}")
+    
     return result
 
 def is_repetition_draw(game_state) -> bool:
