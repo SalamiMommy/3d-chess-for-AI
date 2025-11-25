@@ -1,0 +1,64 @@
+2025-11-25 13:39:51,433 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 13:39:51,436 - __main__ - INFO - Testing move generation...
+2025-11-25 13:39:57,107 - __main__ - INFO - [OK] Generated 3712 moves
+2025-11-25 13:39:57,107 - __main__ - INFO - Testing GameState caching...
+2025-11-25 13:39:57,107 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 13:39:57,107 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 13:39:57,108 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 13:39:57,108 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 13:39:58,572 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_133947/temp_model_for_selfplay.pt
+2025-11-25 13:39:58,572 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 13:39:58,572 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_133947/temp_model_for_selfplay.pt
+2025-11-25 13:39:58,572 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 13:39:58,574 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 13:40:05,307 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 13:40:09,500 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 13:40:09,500 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 13:40:09,811 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139969299088640
+2025-11-25 13:40:25,963 - game3d.game.turnmove - INFO - Move 100: BLACK CONESLIDER from [8 0 7] to [2 3 1] (Capture)
+2025-11-25 13:40:32,067 - game3d.game.turnmove - INFO - Move 200: BLACK REFLECTOR from [8 8 8] to [2 2 2] (Capture)
+2025-11-25 13:40:37,005 - game3d.game.turnmove - INFO - Move 300: BLACK GEOMANCER from [7 0 5] to [8 1 2] (Move)
+2025-11-25 13:40:41,110 - game3d.game.turnmove - INFO - Move 400: BLACK ARMOUR from [7 1 4] to [7 1 5] (Capture)
+2025-11-25 13:40:44,450 - game3d.game.turnmove - INFO - Move 500: BLACK PAWN from [6 1 4] to [7 0 5] (Capture)
+2025-11-25 13:40:47,806 - game3d.game.turnmove - INFO - Move 600: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:40:50,963 - game3d.game.turnmove - INFO - Move 700: BLACK PAWN from [7 1 2] to [6 0 1] (Capture)
+2025-11-25 13:40:54,166 - game3d.game.turnmove - INFO - Move 800: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:40:57,205 - game3d.game.turnmove - INFO - Move 900: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:41:00,240 - game3d.game.turnmove - INFO - Move 1000: BLACK ARMOUR from [4 7 4] to [3 7 4] (Move)
+2025-11-25 13:41:03,220 - game3d.game.turnmove - INFO - Move 1100: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:41:06,269 - game3d.game.turnmove - INFO - Move 1200: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:41:09,285 - game3d.game.turnmove - INFO - Move 1300: BLACK ARCHER from [8 6 2] to [7 5 3] (Move)
+2025-11-25 13:41:12,245 - game3d.game.turnmove - INFO - Move 1400: BLACK SLOWER from [7 6 7] to [6 5 8] (Move)
+2025-11-25 13:41:15,232 - game3d.game.turnmove - INFO - Move 1500: BLACK SLOWER from [7 6 7] to [6 5 8] (Move)
+2025-11-25 13:41:18,203 - game3d.game.turnmove - INFO - Move 1600: BLACK ARCHER from [7 6 8] to [8 5 8] (Move)
+2025-11-25 13:41:21,180 - game3d.game.turnmove - INFO - Move 1700: BLACK ARCHER from [8 5 8] to [7 6 8] (Move)
+2025-11-25 13:41:24,210 - game3d.game.turnmove - INFO - Move 1800: BLACK BLACKHOLE from [3 4 2] to [2 3 1] (Move)
+2025-11-25 13:41:27,161 - game3d.game.turnmove - INFO - Move 1900: BLACK SLOWER from [4 3 8] to [5 2 7] (Move)
+2025-11-25 13:41:30,045 - game3d.game.turnmove - INFO - Move 2000: BLACK SLOWER from [7 6 7] to [8 5 8] (Move)
+2025-11-25 13:41:32,990 - game3d.game.turnmove - INFO - Move 2100: BLACK SLOWER from [8 5 8] to [7 6 7] (Move)
+2025-11-25 13:41:35,946 - game3d.game.turnmove - INFO - Move 2200: BLACK SLOWER from [5 2 7] to [4 3 8] (Move)
+2025-11-25 13:41:38,788 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,788 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,789 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,789 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,789 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,790 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,790 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,802 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,802 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,802 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,803 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,803 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,803 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,803 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,804 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,804 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,804 - worker.0 - INFO - GAME FINISHED: 0 | DRAW (Stalemate) | 2300 moves | 89.0s | Mat: W=11/B=15 | Priests: W=Y B=Y
+2025-11-25 13:41:38,805 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:38,805 - game3d.game.terminal - WARNING - Game over: Stalemate
+2025-11-25 13:41:38,805 - game3d.game.turnmove - WARNING - ⚠️ No legal moves generated - game loop will exit
+2025-11-25 13:41:40,262 - training.parallel_self_play - INFO - Game completed: 2300 examples collected
+2025-11-25 13:41:42,477 - training.parallel_self_play - INFO - Self-play complete: 2300 total examples from 1 games
+2025-11-25 13:43:21,185 - __main__ - INFO - Training interrupted by user
+2025-11-25 13:43:21,186 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-25 13:43:22,978 - __main__ - INFO - Final model saved to model_checkpoints/train_huge_20251125_133947/model_final.pt

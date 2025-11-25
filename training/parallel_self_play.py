@@ -272,13 +272,19 @@ def _game_worker_permodel(args):
         elif game_result == Result.BLACK_WIN: result_str = "BLACK WIN"
         elif game_result == Result.DRAW: result_str = f"DRAW ({get_draw_reason(game.state)})"
             
-        board_arr = game.state.board.array()
-        white_mat = np.sum(board_arr[:N_PIECE_TYPES])
-        black_mat = np.sum(board_arr[N_PIECE_TYPES:])
+        # Get material counts from occupancy cache
+        occ_cache = game.state.cache_manager.occupancy_cache
+        coords, piece_types, colors = occ_cache.get_all_occupied_vectorized()
+        white_mat = np.sum(colors == Color.WHITE)
+        black_mat = np.sum(colors == Color.BLACK)
+        
+        # Check priest status
+        white_priests = "Y" if occ_cache.has_priest(Color.WHITE) else "N"
+        black_priests = "Y" if occ_cache.has_priest(Color.BLACK) else "N"
         
         worker_logger.info(
             f"GAME FINISHED: {game_id} | {result_str} | {move_count} moves | "
-            f"{duration:.1f}s | Mat: {white_mat:.0f}/{black_mat:.0f}"
+            f"{duration:.1f}s | Mat: W={white_mat}/B={black_mat} | Priests: W={white_priests} B={black_priests}"
         )
 
         # Assign outcomes
