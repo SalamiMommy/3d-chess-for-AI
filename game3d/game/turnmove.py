@@ -324,6 +324,18 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
 
     # logger.info(f"Final structured_moves size: {structured_moves.size}")
 
+    # ✅ FILTER FROZEN MOVES: Exclude moves from frozen pieces
+    if structured_moves.size > 0:
+        from_coords = structured_moves[:, :3]
+        # Check if pieces are frozen
+        # We use unique coords to minimize cache lookups if possible, but batch_is_frozen is fast
+        is_frozen = game_state.cache_manager.consolidated_aura_cache.batch_is_frozen(
+            from_coords, game_state.turn_number, game_state.color
+        )
+        
+        if np.any(is_frozen):
+            structured_moves = structured_moves[~is_frozen]
+
     # ✅ FILTER HIVE MOVES: Exclude hives that have already moved this turn
     if structured_moves.size > 0 and len(game_state._moved_hive_positions) > 0:
         # Get piece types for all from coordinates

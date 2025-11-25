@@ -441,15 +441,8 @@ class LegalMoveGenerator:
 
             piece_type = piece_info["piece_type"]
             
-            # Check if piece is frozen
-            # Note: We use the piece's color (state.color) as the victim color
-            is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
-                coord.reshape(1, 3), state.turn_number, state.color
-            )[0]
-            
-            if is_frozen:
-                # Frozen pieces cannot move
-                continue
+            # Frozen check moved to turnmove.py
+
 
             # Check if piece is debuffed
             coord_key = _coord_to_key(coord.reshape(1, -1))[0]

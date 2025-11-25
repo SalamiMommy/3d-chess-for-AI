@@ -1,0 +1,65 @@
+2025-11-25 12:13:51,116 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 12:13:51,118 - __main__ - INFO - Testing move generation...
+2025-11-25 12:13:53,103 - __main__ - INFO - [OK] Generated 3720 moves
+2025-11-25 12:13:53,103 - __main__ - INFO - Testing GameState caching...
+2025-11-25 12:13:53,104 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 12:13:53,104 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 12:13:53,104 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 12:13:53,104 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 12:13:54,612 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_121347/temp_model_for_selfplay.pt
+2025-11-25 12:13:54,612 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 12:13:54,612 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_121347/temp_model_for_selfplay.pt
+2025-11-25 12:13:54,612 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 12:13:54,615 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 12:14:01,308 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 12:14:05,429 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 12:14:05,430 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 12:14:05,729 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140367947120384
+2025-11-25 12:14:31,399 - game3d.game.turnmove - INFO - Move 100: BLACK SPIRAL from [8 7 0] to [7 7 1] (Capture)
+2025-11-25 12:14:33,351 - __main__ - INFO - Training interrupted by user
+2025-11-25 12:14:33,352 - __main__ - INFO - 🧹 Clearing all caches...
+2025-11-25 12:22:01,293 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-11-25 12:22:01,296 - __main__ - INFO - Testing move generation...
+2025-11-25 12:22:07,021 - __main__ - INFO - [OK] Generated 3720 moves
+2025-11-25 12:22:07,021 - __main__ - INFO - Testing GameState caching...
+2025-11-25 12:22:07,021 - __main__ - INFO - [OK] GameState caching works
+2025-11-25 12:22:07,021 - __main__ - INFO - Testing MoveCache persistence...
+2025-11-25 12:22:07,022 - __main__ - INFO - [OK] MoveCache works correctly
+2025-11-25 12:22:07,022 - __main__ - INFO - Final cache stats: {'cache_hits': np.int32(2), 'cache_misses': np.int32(1), 'hit_rate': np.float64(0.6666666666666666), 'total_moves_cached': np.int32(3720), 'white_moves_cached': 3720, 'black_moves_cached': 0, 'reverse_map_size': 505, 'piece_moves_cache_size': 201, 'prune_operations': 0}
+2025-11-25 12:22:08,455 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251125_122157/temp_model_for_selfplay.pt
+2025-11-25 12:22:08,455 - training.parallel_self_play - INFO - Starting parallel self-play: 1 games, 1 workers
+2025-11-25 12:22:08,455 - training.parallel_self_play - INFO - Model checkpoint: model_checkpoints/train_huge_20251125_122157/temp_model_for_selfplay.pt
+2025-11-25 12:22:08,455 - training.parallel_self_play - INFO - Device: cuda, Model size: huge
+2025-11-25 12:22:08,457 - training.parallel_self_play - INFO - Launching 1 game workers...
+2025-11-25 12:22:15,173 - worker.0 - INFO - Worker 0 starting, loading model...
+2025-11-25 12:22:19,293 - worker.0 - INFO - Worker 0 model compiled with torch.compile
+2025-11-25 12:22:19,294 - worker.0 - INFO - Worker 0 model loaded successfully
+2025-11-25 12:22:19,599 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140266539184896
+2025-11-25 12:22:36,556 - game3d.game.turnmove - INFO - Move 100: BLACK XZZIGZAG from [8 7 1] to [2 7 5] (Capture)
+2025-11-25 12:22:42,541 - game3d.game.turnmove - INFO - Move 200: BLACK QUEEN from [3 3 0] to [2 2 0] (Capture)
+2025-11-25 12:22:47,072 - game3d.game.turnmove - INFO - Move 300: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:22:50,391 - game3d.game.turnmove - INFO - Move 400: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:22:53,614 - game3d.game.turnmove - INFO - Move 500: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:22:56,769 - game3d.game.turnmove - INFO - Move 600: BLACK INFILTRATOR from [8 2 3] to [2 4 4] (Move)
+2025-11-25 12:22:59,838 - game3d.game.turnmove - INFO - Move 700: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:23:02,631 - game3d.game.turnmove - INFO - Move 800: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:05,505 - game3d.game.turnmove - INFO - Move 900: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:23:08,285 - game3d.game.turnmove - INFO - Move 1000: BLACK PAWN from [6 1 6] to [6 0 6] (Move)
+2025-11-25 12:23:11,021 - game3d.game.turnmove - INFO - Move 1100: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:13,726 - game3d.game.turnmove - INFO - Move 1200: BLACK PAWN from [3 1 6] to [4 0 7] (Move)
+2025-11-25 12:23:16,437 - game3d.game.turnmove - INFO - Move 1300: BLACK PAWN from [3 1 6] to [4 0 7] (Move)
+2025-11-25 12:23:19,143 - game3d.game.turnmove - INFO - Move 1400: BLACK PAWN from [3 1 6] to [4 0 7] (Move)
+2025-11-25 12:23:21,907 - game3d.game.turnmove - INFO - Move 1500: BLACK PAWN from [3 1 6] to [4 0 7] (Move)
+2025-11-25 12:23:24,697 - game3d.game.turnmove - INFO - Move 1600: BLACK PAWN from [3 1 6] to [4 0 7] (Move)
+2025-11-25 12:23:27,483 - game3d.game.turnmove - INFO - Move 1700: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:30,264 - game3d.game.turnmove - INFO - Move 1800: BLACK ARCHER from [7 6 1] to [8 6 0] (Move)
+2025-11-25 12:23:32,985 - game3d.game.turnmove - INFO - Move 1900: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:35,710 - game3d.game.turnmove - INFO - Move 2000: BLACK ARCHER from [8 6 0] to [7 6 1] (Move)
+2025-11-25 12:23:38,452 - game3d.game.turnmove - INFO - Move 2100: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:41,126 - game3d.game.turnmove - INFO - Move 2200: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:43,852 - game3d.game.turnmove - INFO - Move 2300: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:46,551 - game3d.game.turnmove - INFO - Move 2400: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:23:49,201 - game3d.game.turnmove - INFO - Move 2500: BLACK ARCHER from [8 7 0] to [8 6 0] (Move)
+2025-11-25 12:23:51,981 - game3d.game.turnmove - INFO - Move 2600: BLACK ARCHER from [8 6 0] to [8 7 0] (Move)
+2025-11-25 12:23:58,834 - __main__ - INFO - Training interrupted by user
+2025-11-25 12:23:58,834 - __main__ - INFO - 🧹 Clearing all caches...

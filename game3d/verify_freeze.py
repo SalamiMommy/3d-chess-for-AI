@@ -63,8 +63,8 @@ def test_freeze_logic():
     
     # Verify Black cannot move the frozen pawn
     print("\n--- Generating Moves for Black ---")
-    from game3d.movement.generator import generate_legal_moves
-    moves = generate_legal_moves(new_state)
+    from game3d.game.turnmove import legal_moves
+    moves = legal_moves(new_state)
     
     # Check if any move starts from enemy_pos
     pawn_moves = moves[np.all(moves[:, :3] == enemy_pos, axis=1)]
