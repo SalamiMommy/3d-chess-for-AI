@@ -3,13 +3,84 @@ from numba import njit, prange
 import logging
 from typing import Optional
 
-from game3d.common.shared_types import Color, PieceType, COLOR_EMPTY, COORD_DTYPE, INDEX_DTYPE, FLOAT_DTYPE, HASH_DTYPE, N_PIECE_TYPES
+from game3d.common.shared_types import Color, PieceType, COLOR_EMPTY, COORD_DTYPE, INDEX_DTYPE, FLOAT_DTYPE, HASH_DTYPE, N_PIECE_TYPES, BOOL_DTYPE
 import game3d.cache.caches.zobrist as zobrist_module
 
 # Initialize Zobrist keys if not already done and get the table
 zobrist_module._init_zobrist()
 ZOBRIST_TABLE = zobrist_module._PIECE_KEYS
 from game3d.movement.movepiece import Move
+import game3d.pieces.pieces as all_pieces
+
+# Initialize Attack Tables
+MAX_VECTORS = 512 # Support complex pieces like FaceCone
+ATTACK_VECTORS = np.zeros((2, N_PIECE_TYPES + 1, MAX_VECTORS, 3), dtype=COORD_DTYPE)
+VECTOR_COUNTS = np.zeros((2, N_PIECE_TYPES + 1), dtype=INDEX_DTYPE)
+IS_SLIDER = np.zeros((N_PIECE_TYPES + 1,), dtype=BOOL_DTYPE)
+
+def _init_attack_tables():
+    # Known slider types
+    SLIDER_TYPES = {
+        PieceType.BISHOP, PieceType.ROOK, PieceType.QUEEN,
+        PieceType.TRIGONALBISHOP, PieceType.EDGEROOK,
+        PieceType.XYQUEEN, PieceType.XZQUEEN, PieceType.YZQUEEN,
+        PieceType.VECTORSLIDER, PieceType.CONESLIDER,
+        PieceType.XZZIGZAG, PieceType.YZZIGZAG, PieceType.REFLECTOR,
+        PieceType.TRAILBLAZER, PieceType.SPIRAL
+    }
+
+    # Helper to set vectors
+    def set_vecs(pt_val, vecs, slider=False):
+        if vecs is None or len(vecs) == 0:
+            return
+        n = min(len(vecs), MAX_VECTORS)
+        # Set for both colors
+        for c in range(2):
+            ATTACK_VECTORS[c, pt_val, :n] = vecs[:n]
+            VECTOR_COUNTS[c, pt_val] = n
+        IS_SLIDER[pt_val] = slider
+
+    # Iterate over all piece types
+    for pt in PieceType:
+        pt_val = pt.value
+        if pt_val > N_PIECE_TYPES: continue
+        
+        # Determine vector name
+        # Convention: [NAME]_MOVEMENT_VECTORS
+        # Special cases handled below
+        name = pt.name
+        vec_name = f"{name}_MOVEMENT_VECTORS"
+        
+        # Special cases
+        if pt == PieceType.PAWN:
+            # Pawns have color-specific attack directions
+            if hasattr(all_pieces, "PAWN_ATTACK_DIRECTIONS"):
+                pawn_attacks = getattr(all_pieces, "PAWN_ATTACK_DIRECTIONS")
+                # White (Color=1 -> index 0) - First 4
+                ATTACK_VECTORS[0, pt_val, :4] = pawn_attacks[:4]
+                VECTOR_COUNTS[0, pt_val] = 4
+                # Black (Color=2 -> index 1) - Last 4
+                ATTACK_VECTORS[1, pt_val, :4] = pawn_attacks[4:]
+                VECTOR_COUNTS[1, pt_val] = 4
+            continue
+            
+        elif pt == PieceType.PRIEST:
+            vec_name = "KING_MOVEMENT_VECTORS" # Priest shares King vectors
+        
+        # Try to find vectors in all_pieces
+        if hasattr(all_pieces, vec_name):
+            vecs = getattr(all_pieces, vec_name)
+            is_slider = pt in SLIDER_TYPES
+            set_vecs(pt_val, vecs, slider=is_slider)
+        else:
+            # Fallback: check for [NAME]_ATTACK_VECTORS
+            vec_name_alt = f"{name}_ATTACK_VECTORS"
+            if hasattr(all_pieces, vec_name_alt):
+                vecs = getattr(all_pieces, vec_name_alt)
+                is_slider = pt in SLIDER_TYPES
+                set_vecs(pt_val, vecs, slider=is_slider)
+
+_init_attack_tables()
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +110,7 @@ def _compute_capture_rewards_vectorized(
     captured_types: np.ndarray,
     player_color: int,
     priest_bonus: float,
-    freezer_bonus: float,
-    queen_rook_bonus: float
+    freezer_bonus: float
 ) -> np.ndarray:
     """Vectorized capture reward calculation."""
     n_moves = len(to_coords)
@@ -50,14 +120,12 @@ def _compute_capture_rewards_vectorized(
 
     for i in prange(n_moves):
         if captured_colors[i] == enemy_color:
-            rewards[i] = 0.5  # Base capture reward
+            rewards[i] = 0.1  # Base capture reward
 
             if captured_types[i] == PieceType.PRIEST.value:
                 rewards[i] += priest_bonus
             elif captured_types[i] == PieceType.FREEZER.value:
                 rewards[i] += freezer_bonus
-            elif captured_types[i] in (PieceType.QUEEN.value, PieceType.ROOK.value):
-                rewards[i] += queen_rook_bonus
 
     return rewards
 
@@ -159,9 +227,14 @@ def _compute_check_potential_vectorized(
     to_coords: np.ndarray,
     piece_types: np.ndarray,
     enemy_king_pos: np.ndarray,
-    check_reward: float
+    check_reward: float,
+    occupancy_grid: np.ndarray,
+    attack_vectors: np.ndarray,
+    vector_counts: np.ndarray,
+    is_slider: np.ndarray,
+    attacker_color_idx: int
 ) -> np.ndarray:
-    """Vectorized check potential reward (approximate)."""
+    """Vectorized check potential reward using piece definitions and blocking checks."""
     n_moves = len(to_coords)
     rewards = np.zeros(n_moves, dtype=FLOAT_DTYPE)
     
@@ -171,7 +244,7 @@ def _compute_check_potential_vectorized(
     kx, ky, kz = enemy_king_pos[0], enemy_king_pos[1], enemy_king_pos[2]
 
     for i in prange(n_moves):
-        # Skip if piece is empty (shouldn't happen in valid moves)
+        # Skip if piece is empty
         if piece_types[i] == 0:
             continue
             
@@ -180,54 +253,76 @@ def _compute_check_potential_vectorized(
         
         is_check = False
         
-        # Approximate check detection based on piece type and destination
-        # This does NOT account for blocking pieces (ray casting is expensive here)
-        # But for a reward signal, it's often sufficient
+        # Calculate difference vector
+        dx = kx - tx
+        dy = ky - ty
+        dz = kz - tz
         
-        dx = abs(tx - kx)
-        dy = abs(ty - ky)
-        dz = abs(tz - kz)
-        
-        if pt == PieceType.PAWN.value:
-            # Pawn attacks diagonally forward (simplified for 3D: any diagonal step?)
-            # Actually pawns capture differently. Let's assume standard 3D pawn capture:
-            # Forward diagonal. But direction depends on color. 
-            # Simplified: if dist is small and not same file
-            if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz) >= 2:
-                 is_check = True
-                 
-        elif pt == PieceType.KNIGHT.value:
-            # 1, 2 jump
-            dist_sq = dx*dx + dy*dy + dz*dz
-            if dist_sq == 5: # 1^2 + 2^2 + 0^2
-                is_check = True
+        # Check if piece is slider
+        if is_slider[pt]:
+            # For sliders, we need to check if aligned with any vector
+            # and if path is clear
+            
+            # Iterate through vectors for this piece
+            n_vecs = vector_counts[attacker_color_idx, pt]
+            for v in range(n_vecs):
+                vx = attack_vectors[attacker_color_idx, pt, v, 0]
+                vy = attack_vectors[attacker_color_idx, pt, v, 1]
+                vz = attack_vectors[attacker_color_idx, pt, v, 2]
                 
-        elif pt == PieceType.BISHOP.value:
-            # Diagonal
-            if (dx == dy and dz == 0) or (dx == dz and dy == 0) or (dy == dz and dx == 0):
-                is_check = True
-            elif dx == dy and dy == dz: # Tri-diagonal
-                is_check = True
+                # Check alignment: cross product should be zero, or simpler:
+                # diff must be multiple of vector.
+                # Since vectors are unit-ish (e.g. 1,0,0 or 1,1,0), we can check steps.
                 
-        elif pt == PieceType.ROOK.value:
-            # Orthogonal
-            if (dx == 0 and dy == 0) or (dx == 0 and dz == 0) or (dy == 0 and dz == 0):
-                is_check = True
+                steps = 0
+                if vx != 0:
+                    if dx % vx != 0: continue
+                    steps = dx // vx
+                elif dx != 0: continue
                 
-        elif pt == PieceType.QUEEN.value:
-            # Bishop + Rook
-            if (dx == 0 and dy == 0) or (dx == 0 and dz == 0) or (dy == 0 and dz == 0):
-                is_check = True
-            elif (dx == dy and dz == 0) or (dx == dz and dy == 0) or (dy == dz and dx == 0):
-                is_check = True
-            elif dx == dy and dy == dz:
-                is_check = True
+                if vy != 0:
+                    if dy % vy != 0: continue
+                    s = dy // vy
+                    if steps == 0: steps = s
+                    elif steps != s: continue
+                elif dy != 0: continue
                 
-        elif pt == PieceType.PRIEST.value:
-             # Priest moves like King (1 step) but captures? 
-             # Priest usually doesn't capture or check in some variants, but let's assume it can for now if it moves.
-             if dx <= 1 and dy <= 1 and dz <= 1:
-                 is_check = True
+                if vz != 0:
+                    if dz % vz != 0: continue
+                    s = dz // vz
+                    if steps == 0: steps = s
+                    elif steps != s: continue
+                elif dz != 0: continue
+                
+                if steps <= 0: continue # Wrong direction or same square
+                
+                # Aligned! Now check blocking.
+                blocked = False
+                cx, cy, cz = tx, ty, tz
+                for _ in range(steps - 1):
+                    cx += vx
+                    cy += vy
+                    cz += vz
+                    if occupancy_grid[cx, cy, cz] != 0:
+                        blocked = True
+                        break
+                
+                if not blocked:
+                    is_check = True
+                    break
+                    
+        else:
+            # Leaper (Knight, Pawn, King, Priest)
+            # Check if diff matches any vector exactly
+            n_vecs = vector_counts[attacker_color_idx, pt]
+            for v in range(n_vecs):
+                vx = attack_vectors[attacker_color_idx, pt, v, 0]
+                vy = attack_vectors[attacker_color_idx, pt, v, 1]
+                vz = attack_vectors[attacker_color_idx, pt, v, 2]
+                
+                if dx == vx and dy == vy and dz == vz:
+                    is_check = True
+                    break
 
         if is_check:
             rewards[i] = check_reward
@@ -516,7 +611,7 @@ class AdaptiveOpponent(OpponentBase):
         # 4. Capture rewards (vectorized) with PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # PRIEST & FREEZER BONUSES
+            priest_bonus=15.0, freezer_bonus=8.0  # PRIEST & FREEZER BONUSES
         )
         # Boost capture rewards when clock is dangerously high (PRIORITY 2 boost)
         if halfmove_clock > 70:
@@ -589,7 +684,10 @@ class AdaptiveOpponent(OpponentBase):
                     
                     # CHECK REWARD - PRIORITY 1
                     check_rewards = _compute_check_potential_vectorized(
-                        filtered_to, filtered_types, enemy_king_pos, 12.0  # INCREASED from 4.0
+                        filtered_to, filtered_types, enemy_king_pos, 12.0,
+                        cache_manager.occupancy_cache._occ,
+                        ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                        0 if self.color == Color.WHITE else 1
                     )
                     rewards[relevant_mask] += check_rewards
 
@@ -659,7 +757,7 @@ class CenterControlOpponent(OpponentBase):
         # 4. Capture rewards with bonus for high clock - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -705,7 +803,10 @@ class CenterControlOpponent(OpponentBase):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
+                    to_coords, from_types, enemy_king_pos, 12.0,
+                    cache_manager.occupancy_cache._occ,
+                    ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                    0 if self.color == Color.WHITE else 1
                 )
                  rewards += check_rewards
 
@@ -756,7 +857,7 @@ class PieceCaptureOpponent(OpponentBase):
         # 4. Capture rewards (primary) with high-clock bonus - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -790,7 +891,10 @@ class PieceCaptureOpponent(OpponentBase):
             enemy_king_pos = state.cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
                  check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
+                    to_coords, from_types, enemy_king_pos, 12.0,
+                    state.cache_manager.occupancy_cache._occ,
+                    ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                    0 if self.color == Color.WHITE else 1
                 )
                  rewards += check_rewards
 
@@ -851,7 +955,7 @@ class PriestHunterOpponent(OpponentBase):
                 if captured_types[i] == PieceType.PRIEST.value:
                     rewards[i] += 15.0 * clock_multiplier  # PRIORITY 1 - INCREASED
                 else:
-                    rewards[i] += 0.3 * clock_multiplier  # PRIORITY 4
+                    rewards[i] += 0.1 * clock_multiplier  # PRIORITY 4
 
         # 5. Approach enemy priests - PRIORITY 1
         enemy_priest_positions = self._get_enemy_priest_positions(cache_manager)
@@ -957,7 +1061,7 @@ class GraphAwareOpponent(OpponentBase):
         # 4. Capture rewards with high-clock multiplier - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0, queen_rook_bonus=0.3  # INCREASED
+            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5

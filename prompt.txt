@@ -1,0 +1,1 @@
+Can you refactor _compute_check_potential_vectorized to not define the pieces individually and instead use the information from the occupancycache and movecache and piece definitions in pieces/pieces/ ?
