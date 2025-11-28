@@ -289,9 +289,13 @@ def _game_worker_permodel(args):
         white_priests = "Y" if occ_cache.has_priest(Color.WHITE) else "N"
         black_priests = "Y" if occ_cache.has_priest(Color.BLACK) else "N"
         
+        # Check king status
+        white_king = "Y" if occ_cache.find_king(Color.WHITE) is not None else "N"
+        black_king = "Y" if occ_cache.find_king(Color.BLACK) is not None else "N"
+        
         worker_logger.info(
             f"GAME FINISHED: {game_id} | {result_str} | {move_count} moves | "
-            f"{duration:.1f}s | Mat: W={white_mat}/B={black_mat} | Priests: W={white_priests} B={black_priests}"
+            f"{duration:.1f}s | Mat: W={white_mat}/B={black_mat} | Priests: W={white_priests} B={black_priests} | Kings: W={white_king} B={black_king}"
         )
 
         # Assign outcomes

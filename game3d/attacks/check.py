@@ -245,13 +245,25 @@ def get_check_summary(board, cache=None) -> Dict[str, Any]:
     summary['white_priests_alive'] = white_priests > 0
     summary['black_priests_alive'] = black_priests > 0
 
-    # Get king positions using cache manager exclusively
-    summary['white_king_position'] = _find_king_position(board, Color.WHITE, cache)
-    summary['black_king_position'] = _find_king_position(board, Color.BLACK, cache)
+    # ✅ OPTIMIZATION: If both sides have priests, no check detection is needed
+    if summary['white_priests_alive'] and summary['black_priests_alive']:
+        return summary
 
-    # Get attacked squares
-    summary['attacked_mask_white'] = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
-    summary['attacked_mask_black'] = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
+    # Get king positions using cache manager exclusively - only if needed
+    if not summary['white_priests_alive']:
+        summary['white_king_position'] = _find_king_position(board, Color.WHITE, cache)
+    
+    if not summary['black_priests_alive']:
+        summary['black_king_position'] = _find_king_position(board, Color.BLACK, cache)
+
+    # Get attacked squares - only if needed for check detection
+    # We need black's attacks to check if white king is in check
+    if not summary['white_priests_alive']:
+        summary['attacked_mask_black'] = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
+        
+    # We need white's attacks to check if black king is in check
+    if not summary['black_priests_alive']:
+        summary['attacked_mask_white'] = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
 
     # Determine check status
     wk = summary['white_king_position']

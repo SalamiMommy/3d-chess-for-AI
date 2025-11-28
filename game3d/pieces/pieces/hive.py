@@ -73,27 +73,30 @@ def get_movable_hives(state: 'GameState', color: COLOR_DTYPE, exclude_positions:
     return np.stack(movable_hives, axis=0) if movable_hives else np.empty((0, 3), dtype=COORD_DTYPE)
 
 def apply_multi_hive_move(state: 'GameState', move: Move) -> 'GameState':
-    """Apply hive move without flipping turn - enables multiple hive moves per turn."""
-    # Track this hive as having moved
-    from_pos_tuple = tuple(move.from_coord.tolist())
-    state._moved_hive_positions.add(from_pos_tuple)
-    state._pending_hive_moves.append(move)
+    # Capture current state before move to preserve turn
+    original_color = state.color
     
     # Convert Move object to array format [from_x, from_y, from_z, to_x, to_y, to_z]
     move_array = np.concatenate([move.from_coord, move.to_coord])
+    
+    # Execute the move (this validates the move, so we must NOT have added to _moved_hive_positions yet)
     new_state = state.make_move_vectorized(move_array)
     
+    # Track this hive as having moved AFTER successful execution
+    from_pos_tuple = tuple(move.from_coord.tolist())
+    new_state._moved_hive_positions = state._moved_hive_positions.copy()
+    new_state._moved_hive_positions.add(from_pos_tuple)
+    new_state._pending_hive_moves = state._pending_hive_moves.copy()
+    new_state._pending_hive_moves.append(move)
+    
     # Preserve current player's turn for additional hive moves
-    object.__setattr__(new_state, "color", state.color)
+    # We must explicitly set it back to the original color because make_move flips it
+    object.__setattr__(new_state, "color", original_color)
     
     # ✅ CRITICAL FIX: Reset turn counters to prevent double increment
     # The turn number should only increment when the turn actually switches (in game3d.py)
     object.__setattr__(new_state, "turn_number", state.turn_number)
     object.__setattr__(new_state, "halfmove_clock", state.halfmove_clock)
-    
-    # Carry over the hive tracking to the new state
-    new_state._moved_hive_positions = state._moved_hive_positions.copy()
-    new_state._pending_hive_moves = state._pending_hive_moves.copy()
     
     new_state._clear_caches()
     return new_state

@@ -15,7 +15,7 @@ from game3d.common.shared_types import (
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
     BATCH_COORD_DTYPE, SIZE, VOLUME, N_TOTAL_PLANES, N_PIECE_TYPES, HASH_DTYPE,
     COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
-    MOVE_DTYPE as MOVE_DTYPE, MAX_HISTORY_SIZE
+    MOVE_DTYPE as MOVE_DTYPE, MAX_HISTORY_SIZE, Color
 )
 from game3d.common.coord_utils import CoordinateUtils, in_bounds_vectorized
 from game3d.common.state_utils import create_new_state
@@ -170,7 +170,6 @@ class GameState:
                 self._position_counts = np.delete(self._position_counts, idx)
         else:
             # Insert sorted
-            self._position_keys = np.insert(self._position_keys, idx, zkey)
             self._position_keys = np.insert(self._position_keys, idx, zkey)
             self._position_counts = np.insert(self._position_counts, idx, increment)
 

@@ -187,7 +187,7 @@ class TrainingConfig:
     learning_rate: float = 8e-4  # Scaled down for larger batch size
     weight_decay: float = 1e-4
     batch_size: int = 32
-    epochs: int = 50  # Reduced - larger batches converge faster
+    epochs: int = 20
     warmup_epochs: int = 5  # Reduced proportionally
     
     # Gradient accumulation for larger effective batch size

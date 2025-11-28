@@ -321,25 +321,36 @@ class OccupancyCache:
         # King positions are now found via direct lookup, no cache warming needed
 
     def find_king(self, color: int) -> Optional[np.ndarray]:
-        """Find king position by direct lookup in occupancy arrays.
+        """Find king position using O(1) cache with fallback to linear scan.
         
-        Since OccupancyCache is the single source of truth, we just scan
-        the arrays directly. This is O(n) but n=729 for a 9x9x9 board,
-        which is negligible compared to the complexity of maintaining a cache.
+        Optimized to use _king_positions cache which is maintained by set_position/rebuild.
         """
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ FAST PATH: Check cache first
+        cached_pos = self._king_positions[color_idx]
+        if cached_pos[0] != -1:
+            return cached_pos.astype(COORD_DTYPE)
+            
+        # SLOW PATH: Linear scan (fallback)
+        # This happens if cache was cleared or king was not found during rebuild
         color_code = COLOR_DTYPE(color)
         
         # Vectorized search: find all squares with matching color and piece type
         mask = (self._occ == color_code) & (self._ptype == PieceType.KING.value)
         
         if not np.any(mask):
-            # King not found - this can happen if the King was captured (e.g. no Priests)
-            # This is a valid game state that leads to immediate loss
+            # King not found - valid if captured (e.g. no Priests)
             return None
         
         # Get coordinates (argwhere returns in (x, y, z) format)
         coords = np.argwhere(mask)
-        return coords[0].astype(COORD_DTYPE)  # First (and only) king
+        king_pos = coords[0].astype(COORD_DTYPE)
+        
+        # ✅ UPDATE CACHE: Store found position for next time
+        self._king_positions[color_idx] = king_pos
+        
+        return king_pos
 
 
     @property

@@ -240,6 +240,43 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     # Mark affected pieces for BOTH colors
     cache_manager._invalidate_affected_piece_moves(affected_squares, game_state.color, game_state)
     cache_manager._invalidate_affected_piece_moves(affected_squares, opp_color, game_state)
+    
+    # ✅ INCREMENTAL CLEANUP: Remove cache entries for pieces that moved FROM old positions
+    # These positions are now empty, so their cache entries are stale and should be removed.
+    # This prevents unbounded growth while preserving incremental updates for existing pieces.
+    from_coord_key = int(coords_to_keys(mv[:3].reshape(1, 3))[0])
+    from_color_idx = 0 if from_piece["color"] == Color.WHITE else 1
+    from_piece_id = (from_color_idx, from_coord_key)
+    
+    # Remove the source position's cache entry since piece is no longer there
+    if from_piece_id in cache_manager.move_cache._piece_moves_cache:
+        del cache_manager.move_cache._piece_moves_cache[from_piece_id]
+        
+        # Clean up reverse map entries for the old position
+        if from_piece_id in cache_manager.move_cache._piece_targets:
+            for target_key in cache_manager.move_cache._piece_targets[from_piece_id]:
+                if target_key in cache_manager.move_cache._reverse_map:
+                    cache_manager.move_cache._reverse_map[target_key].discard(from_piece_id)
+                    if not cache_manager.move_cache._reverse_map[target_key]:
+                        del cache_manager.move_cache._reverse_map[target_key]
+            del cache_manager.move_cache._piece_targets[from_piece_id]
+    
+    # Also remove cache entry for destination if there was a capture
+    if captured_piece:
+        to_coord_key = int(coords_to_keys(mv[3:].reshape(1, 3))[0])
+        to_color_idx = 0 if captured_piece["color"] == Color.WHITE else 1
+        to_piece_id = (to_color_idx, to_coord_key)
+        
+        if to_piece_id in cache_manager.move_cache._piece_moves_cache:
+            del cache_manager.move_cache._piece_moves_cache[to_piece_id]
+            
+            if to_piece_id in cache_manager.move_cache._piece_targets:
+                for target_key in cache_manager.move_cache._piece_targets[to_piece_id]:
+                    if target_key in cache_manager.move_cache._reverse_map:
+                        cache_manager.move_cache._reverse_map[target_key].discard(to_piece_id)
+                        if not cache_manager.move_cache._reverse_map[target_key]:
+                            del cache_manager.move_cache._reverse_map[target_key]
+                del cache_manager.move_cache._piece_targets[to_piece_id]
 
     # --- 9. UPDATE GAME STATE ---
     is_capture = captured_piece is not None
@@ -623,6 +660,24 @@ def apply_forced_moves(game_state: 'GameState', forced_moves: np.ndarray) -> Non
     # We need to invalidate for both players as occupancy changed
     cache_manager._invalidate_affected_piece_moves(all_coords, Color.WHITE, game_state)
     cache_manager._invalidate_affected_piece_moves(all_coords, Color.BLACK, game_state)
+    
+    # ✅ INCREMENTAL CLEANUP: Remove cache entries for pieces that moved
+    # For forced moves, we need to remove cache entries for all source positions
+    for i in range(len(from_coords)):
+        from_key = int(coords_to_keys(from_coords[i:i+1])[0])
+        color_idx = 0 if colors[i] == Color.WHITE else 1
+        piece_id = (color_idx, from_key)
+        
+        if piece_id in cache_manager.move_cache._piece_moves_cache:
+            del cache_manager.move_cache._piece_moves_cache[piece_id]
+            
+            if piece_id in cache_manager.move_cache._piece_targets:
+                for target_key in cache_manager.move_cache._piece_targets[piece_id]:
+                    if target_key in cache_manager.move_cache._reverse_map:
+                        cache_manager.move_cache._reverse_map[target_key].discard(piece_id)
+                        if not cache_manager.move_cache._reverse_map[target_key]:
+                            del cache_manager.move_cache._reverse_map[target_key]
+                del cache_manager.move_cache._piece_targets[piece_id]
 
     # 5. Log
     # logger.info(f"Applied {len(forced_moves)} forced moves (Hole effects)")
@@ -747,6 +802,12 @@ def _undo_move_fast(game_state: 'GameState') -> 'GameState':
     prev_state._clear_caches()
 
     cache_manager.move_cache.invalidate()
+    
+    # ✅ For undo, full cache clear is acceptable (undo is rare)
+    # Rebuilding all caches from scratch ensures consistency
+    cache_manager.move_cache._piece_moves_cache.clear()
+    cache_manager.move_cache._reverse_map.clear()
+    cache_manager.move_cache._piece_targets.clear()
 
     return prev_state
 
@@ -782,7 +843,7 @@ def validate_cache_integrity(game_state: 'GameState') -> None:
 def _log_move_if_needed(game_state: 'GameState', from_piece: Any, captured_piece: Any, mv: np.ndarray) -> None:
     """Log periodic move info for debugging."""
     move_number = game_state.turn_number
-    if move_number % 1 == 0:
+    if move_number % 100 == 0:
         try:
             piece_name = PieceType(from_piece["piece_type"]).name
             color_name = Color(from_piece["color"]).name
