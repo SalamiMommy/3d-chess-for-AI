@@ -39,6 +39,7 @@ def generate_swapper_moves(
         pos=pos.astype(COORD_DTYPE),
         directions=_SWAPPER_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.SWAPPER
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)

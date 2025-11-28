@@ -249,6 +249,19 @@ class TrailblazeCache(CacheListener):
                 self._victim_counters[to_idx] = val
                 self._victim_counters[from_idx] = 0
 
+    def batch_get_counters(self, coords: np.ndarray) -> np.ndarray:
+        """Get counter values for multiple coordinates (vectorized).
+        
+        Args:
+            coords: (N, 3) array of coordinates
+            
+        Returns:
+            (N,) array of counter values (0-3)
+        """
+        coords = self._ensure_coords(coords)
+        flat_indices = self._coords_to_flat(coords)
+        return self._victim_counters[flat_indices].copy()
+
     # ========================================================================
     # TRAIL MANAGEMENT
     # ========================================================================

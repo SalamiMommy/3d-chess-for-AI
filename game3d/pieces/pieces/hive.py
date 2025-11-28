@@ -36,7 +36,8 @@ def generate_hive_moves(
         color=color,
         pos=pos.astype(COORD_DTYPE),
         directions=HIVE_DIRECTIONS_3D,
-        allow_capture=True
+        allow_capture=True,
+        piece_type=PieceType.HIVE
     )
 
 @register(PieceType.HIVE)

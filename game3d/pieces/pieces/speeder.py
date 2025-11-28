@@ -33,7 +33,7 @@ def generate_speeder_moves(
 ) -> np.ndarray:
     """Generate king-like moves for the Speeder piece."""
     x, y, z = pos[0], pos[1], pos[2]
-    return generate_king_moves(cache_manager, color, pos)
+    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.SPEEDER)
 
 
 def buffed_squares(

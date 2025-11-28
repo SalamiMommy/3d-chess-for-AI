@@ -40,7 +40,7 @@ def generate_blackhole_moves(
     pos: np.ndarray
 ) -> np.ndarray:
     """Generate blackhole moves (king-like single steps)."""
-    return generate_king_moves(cache_manager, color, pos)
+    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.BLACKHOLE)
 
 def suck_candidates_vectorized(
     cache_manager: 'OptimizedCacheManager',

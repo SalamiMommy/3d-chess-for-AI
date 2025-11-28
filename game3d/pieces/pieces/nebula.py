@@ -46,6 +46,7 @@ def generate_nebula_moves(
         pos=pos.astype(COORD_DTYPE),
         directions=directions,
         allow_capture=True,
+        piece_type=PieceType.NEBULA
     )
 
 @register(PieceType.NEBULA)

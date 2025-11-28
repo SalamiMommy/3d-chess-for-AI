@@ -33,7 +33,8 @@ _KING_3D_DIRS = all_coords[origin_mask].astype(COORD_DTYPE)
 def generate_xy_queen_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
-    pos: np.ndarray
+    pos: np.ndarray,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Slider rays (XY-plane, 8 dirs, 8 steps) + king hop (26 dirs, 1 step)."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -49,6 +50,7 @@ def generate_xy_queen_moves(
         pos=pos_arr,
         directions=_XY_SLIDER_DIRS,
         max_distance=8,
+        ignore_occupancy=ignore_occupancy
     )
     if slider_moves.size > 0:
         move_arrays.append(slider_moves)
@@ -60,6 +62,7 @@ def generate_xy_queen_moves(
         pos=pos_arr,
         directions=_KING_3D_DIRS,
         max_distance=1,
+        ignore_occupancy=ignore_occupancy
     )
     if king_moves.size > 0:
         move_arrays.append(king_moves)
@@ -70,8 +73,8 @@ def generate_xy_queen_moves(
     return np.concatenate(move_arrays)
 
 @register(PieceType.XYQUEEN)
-def xy_queen_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def xy_queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for XY-Queen moves."""
-    return generate_xy_queen_moves(state.cache_manager, state.color, pos)
+    return generate_xy_queen_moves(state.cache_manager, state.color, pos, ignore_occupancy)
 
 __all__ = ['_XY_SLIDER_DIRS', '_KING_3D_DIRS', 'generate_xy_queen_moves']

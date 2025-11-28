@@ -53,6 +53,7 @@ def generate_pawn_moves(
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
+    """Generate pawn moves with optimized fast-path for common cases."""
     start = pos.astype(COORD_DTYPE)
     x, y, z = start[0], start[1], start[2]
     colour = Color(color)
@@ -61,74 +62,85 @@ def generate_pawn_moves(
     if not in_bounds_vectorized(start.reshape(1, 3))[0]:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    jump_engine = get_jump_movement_generator()
     move_arrays = []
-
-    # Select appropriate push direction based on color (0=white, 1=black)
-    color_idx = 0 if colour == Color.WHITE else 1
-    push_dir = PAWN_PUSH_DIRECTIONS[color_idx:color_idx+1]  # Shape (1, 3)
-
-    # Push moves
-    push_moves = jump_engine.generate_jump_moves(
-        cache_manager=cache_manager,
-        color=color,
-        pos=start,
-        directions=push_dir,
-        allow_capture=False,
-    )
     
-    if push_moves.size > 0:
-        move_arrays.append(push_moves)
+    # Select appropriate push direction based on color
+    color_idx = 0 if colour == Color.WHITE else 1
+    dy = 1 if colour == Color.WHITE else -1
+    
+    # ✅ FAST PATH: Batch check both single and double push in one call
+    push_y = y + dy
+    two_step_y = y + 2 * dy
+    
+    # Check if positions are in bounds first
+    single_push_valid = 0 <= push_y < SIZE
+    double_push_possible = _is_on_start_rank(y, colour) and 0 <= two_step_y < SIZE
+    
+    if single_push_valid:
+        if double_push_possible:
+            # Batch check both positions at once
+            check_positions = np.array([[x, push_y, z], [x, two_step_y, z]], dtype=COORD_DTYPE)
+            colors, _ = cache_manager.occupancy_cache.batch_get_attributes(check_positions)
+            
+            if colors[0] == 0:  # push_pos empty
+                # Create single push move
+                single_push = np.array([[x, y, z, x, push_y, z]], dtype=COORD_DTYPE)
+                move_arrays.append(single_push)
+                
+                if colors[1] == 0:  # two_step also empty
+                    two_step_move = np.array([[x, y, z, x, two_step_y, z]], dtype=COORD_DTYPE)
+                    move_arrays.append(two_step_move)
+        else:
+            # Only check single push
+            push_pos = np.array([[x, push_y, z]], dtype=COORD_DTYPE)
+            colors, _ = cache_manager.occupancy_cache.batch_get_attributes(push_pos)
+            
+            if colors[0] == 0:
+                single_push = np.array([[x, y, z, x, push_y, z]], dtype=COORD_DTYPE)
+                move_arrays.append(single_push)
 
-    # Two-step push from start rank
-    if _is_on_start_rank(y, colour):
-        dy = 1 if colour == Color.WHITE else -1
-        two_step_dir = np.array([[0, 2 * dy, 0]], dtype=COORD_DTYPE)
-        two_step_pos = start + two_step_dir[0]
-
-        if (in_bounds_vectorized(two_step_pos.reshape(1, 3))[0] and
-            cache_manager.occupancy_cache.get(two_step_pos) is None):
-            two_step_moves = jump_engine.generate_jump_moves(
-                cache_manager=cache_manager,
-        color=color,
-                pos=start,
-                directions=two_step_dir,
-                allow_capture=False,
-            )
-            if two_step_moves.size > 0:
-                move_arrays.append(two_step_moves)
-
+    # ✅ OPTIMIZED: Batch all capture checks at once
     # Select appropriate attack directions based on color
     if color == COLOR_WHITE:
         attack_dirs = PAWN_ATTACK_DIRECTIONS[:4]  # First 4 are white attacks
     else:
         attack_dirs = PAWN_ATTACK_DIRECTIONS[4:]  # Last 4 are black attacks
-
-    # Capture moves
-    cap_moves = jump_engine.generate_jump_moves(
-        cache_manager=cache_manager,
-        color=color,
-        pos=start,
-        directions=attack_dirs,
-        allow_capture=True,
-    )
-
-    # Filter invalid captures (armoured, etc)
-    if cap_moves.size > 0:
-        # We need to check victims for armour
-        # cap_moves is (N, 6), destination is columns 3:6
-        destinations = cap_moves[:, 3:6]
+    
+    # Calculate all potential capture destinations
+    capture_dests = start + attack_dirs
+    
+    # Filter for in-bounds
+    in_bounds_mask = ((capture_dests[:, 0] >= 0) & (capture_dests[:, 0] < SIZE) &
+                      (capture_dests[:, 1] >= 0) & (capture_dests[:, 1] < SIZE) &
+                      (capture_dests[:, 2] >= 0) & (capture_dests[:, 2] < SIZE))
+    
+    valid_capture_dests = capture_dests[in_bounds_mask]
+    
+    if valid_capture_dests.shape[0] > 0:
+        # ✅ OPTIMIZATION: First check colors only (faster - no type array allocation)
+        dest_colors = cache_manager.occupancy_cache.batch_get_colors_only(valid_capture_dests)
         
-        # Get victims efficiently
-        dest_colors, dest_types = cache_manager.occupancy_cache.batch_get_attributes(destinations)
+        # Valid captures: enemy pieces
+        enemy_mask = (dest_colors != 0) & (dest_colors != color)
         
-        # Check for ARMOUR type (PieceType.ARMOUR = 28)
-        valid_cap_mask = (dest_types != PieceType.ARMOUR)
-        
-        if np.all(valid_cap_mask):
-            move_arrays.append(cap_moves)
-        else:
-            move_arrays.append(cap_moves[valid_cap_mask])
+        if np.any(enemy_mask):
+            # Only fetch types for enemy squares (sparse check for ARMOUR)
+            enemy_dests = valid_capture_dests[enemy_mask]
+            _, dest_types = cache_manager.occupancy_cache.batch_get_attributes(enemy_dests)
+            
+            # Filter out ARMOUR
+            not_armour_mask = (dest_types != PieceType.ARMOUR)
+            
+            if np.any(not_armour_mask):
+                final_dests = enemy_dests[not_armour_mask]
+                n_captures = final_dests.shape[0]
+                
+                # Create capture moves
+                cap_moves = np.empty((n_captures, 6), dtype=COORD_DTYPE)
+                cap_moves[:, :3] = start  # from coords
+                cap_moves[:, 3:] = final_dests  # to coords
+                
+                move_arrays.append(cap_moves)
 
     if not move_arrays:
         return np.empty((0, 6), dtype=COORD_DTYPE)

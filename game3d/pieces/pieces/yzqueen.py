@@ -34,7 +34,8 @@ def generate_yz_queen_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = 8
+    max_steps: int = 8,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Slider rays (YZ-plane, 8 dirs, 8 steps) + king hop (26 dirs, 1 step)."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -50,6 +51,7 @@ def generate_yz_queen_moves(
         pos=pos_arr,
         directions=_YZ_SLIDER_DIRS,
         max_distance=max_steps,
+        ignore_occupancy=ignore_occupancy
     )
     if slider_moves.size > 0:
         move_arrays.append(slider_moves)
@@ -61,6 +63,7 @@ def generate_yz_queen_moves(
         pos=pos_arr,
         directions=_KING_3D_DIRS,
         max_distance=1,
+        ignore_occupancy=ignore_occupancy
     )
     if king_moves.size > 0:
         move_arrays.append(king_moves)
@@ -71,8 +74,8 @@ def generate_yz_queen_moves(
     return np.concatenate(move_arrays)
 
 @register(PieceType.YZQUEEN)
-def yz_queen_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def yz_queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for YZ-Queen moves."""
-    return generate_yz_queen_moves(state.cache_manager, state.color, pos)
+    return generate_yz_queen_moves(state.cache_manager, state.color, pos, ignore_occupancy=ignore_occupancy)
 
 __all__ = ['_YZ_SLIDER_DIRS', '_KING_3D_DIRS', 'generate_yz_queen_moves']

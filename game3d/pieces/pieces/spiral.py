@@ -43,7 +43,8 @@ SPIRAL_MOVEMENT_VECTORS = np.array([
 def generate_spiral_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
-    pos: np.ndarray
+    pos: np.ndarray,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate spiral moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -53,12 +54,13 @@ def generate_spiral_moves(
         color=color,
         pos=pos_arr,
         directions=SPIRAL_MOVEMENT_VECTORS,
-        max_distance=MAX_SPIRAL_DISTANCE
+        max_distance=MAX_SPIRAL_DISTANCE,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.SPIRAL)
-def spiral_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def spiral_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Spiral moves."""
-    return generate_spiral_moves(state.cache_manager, state.color, pos)
+    return generate_spiral_moves(state.cache_manager, state.color, pos, ignore_occupancy)
 
 __all__ = ['SPIRAL_MOVEMENT_VECTORS', 'MAX_SPIRAL_DISTANCE', 'generate_spiral_moves', 'spiral_move_dispatcher']

@@ -5,7 +5,7 @@ Validation happens in generator.py.
 """
 
 import numpy as np
-from numba import njit
+from numba import njit, objmode
 from typing import TYPE_CHECKING
 
 from game3d.common.shared_types import (
@@ -23,7 +23,8 @@ def _generate_all_slider_moves(
     pos: np.ndarray,
     directions: np.ndarray,
     max_distance: int,
-    flattened: np.ndarray
+    flattened: np.ndarray,
+    ignore_occupancy: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba-compiled slider move generation for all directions."""
     n_dirs = len(directions)
@@ -38,7 +39,7 @@ def _generate_all_slider_moves(
     for d in range(n_dirs):
         direction = directions[d]
         
-        # Skip zero vectors - only bomb can move to same position (self-detonation)
+        # Skip zero vectors
         if direction[0] == 0 and direction[1] == 0 and direction[2] == 0:
             continue
 
@@ -47,7 +48,7 @@ def _generate_all_slider_moves(
         current_y = pos[1] + direction[1]
         current_z = pos[2] + direction[2]
 
-        for step in range(1, max_distance + 1):
+        for _ in range(max_distance):
             # Bounds check
             if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
                 break
@@ -65,14 +66,23 @@ def _generate_all_slider_moves(
                 write_idx += 1
             else:
                 # Blocked
-                if occupant != color:
-                    # Capture move
+                if ignore_occupancy:
+                    # Treat as a move (capture logic irrelevant for raw moves, but we mark it)
                     moves[write_idx, 0] = current_x
                     moves[write_idx, 1] = current_y
                     moves[write_idx, 2] = current_z
-                    captures[write_idx] = True
+                    captures[write_idx] = (occupant != color) # Still mark capture if enemy
                     write_idx += 1
-                break  # Stop ray
+                    # CONTINUE RAY
+                else:
+                    if occupant != color:
+                        # Capture move
+                        moves[write_idx, 0] = current_x
+                        moves[write_idx, 1] = current_y
+                        moves[write_idx, 2] = current_z
+                        captures[write_idx] = True
+                        write_idx += 1
+                    break  # Stop ray
 
             # Step forward
             current_x += direction[0]
@@ -99,14 +109,15 @@ class SliderMovementEngine:
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
-        max_distance: int = SIZE_MINUS_1
+        max_distance: int = SIZE_MINUS_1,
+        ignore_occupancy: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         """Generate slider moves using Numba-accelerated kernel."""
         pos_arr = np.asarray(pos, dtype=COORD_DTYPE).reshape(3)
         flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
 
         return _generate_all_slider_moves(
-            color, pos_arr, directions, max_distance, flattened
+            color, pos_arr, directions, max_distance, flattened, ignore_occupancy
         )
 
     def generate_slider_moves(
@@ -115,11 +126,12 @@ class SliderMovementEngine:
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
-        max_distance: int = SIZE_MINUS_1
+        max_distance: int = SIZE_MINUS_1,
+        ignore_occupancy: bool = False
     ) -> list[Move]:
         """Generate slider moves as Move objects (NO validation)."""
         moves, captures = self.generate_slider_moves_vectorized(
-            cache_manager, color, pos, directions, max_distance
+            cache_manager, color, pos, directions, max_distance, ignore_occupancy
         )
 
         # Create Move objects
@@ -131,11 +143,12 @@ class SliderMovementEngine:
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
-        max_distance: int = SIZE_MINUS_1
+        max_distance: int = SIZE_MINUS_1,
+        ignore_occupancy: bool = False
     ) -> np.ndarray:
         """Generate slider moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
         destinations, captures = self.generate_slider_moves_vectorized(
-            cache_manager, color, pos, directions, max_distance
+            cache_manager, color, pos, directions, max_distance, ignore_occupancy
         )
         
         if destinations.size == 0:

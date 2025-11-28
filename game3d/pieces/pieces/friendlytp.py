@@ -50,6 +50,7 @@ def generate_friendlytp_moves(
         pos=start,
         directions=all_dirs,
         allow_capture=True,
+        piece_type=PieceType.FRIENDLYTELEPORTER
     )
 
     # Note: Metadata annotation removed as it was already being lost when
@@ -88,8 +89,11 @@ def _build_network_directions(
     if neighbours.shape[0] == 0:
         return get_empty_coord_batch()
 
-    # ✅ FIXED: Use occupancy_cache.get() instead of get_piece()
-    empty_mask = np.array([cache_manager.occupancy_cache.get(sq) is None for sq in neighbours], dtype=bool)
+    # ✅ OPTIMIZED: Use batch_get_colors_only instead of loop-based get()
+    # Old: [cache_manager.occupancy_cache.get(sq) is None for sq in neighbours]
+    # New: Direct batch array operation
+    colors = cache_manager.occupancy_cache.batch_get_colors_only(neighbours)
+    empty_mask = (colors == 0)
     empty_neighbours = neighbours[empty_mask]
 
     if empty_neighbours.shape[0] == 0:

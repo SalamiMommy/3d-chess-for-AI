@@ -26,7 +26,8 @@ def generate_queen_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = 8
+    max_steps: int = 8,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate queen moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -43,13 +44,14 @@ def generate_queen_moves(
         pos=pos_arr,
         directions=QUEEN_MOVEMENT_VECTORS,
         max_distance=max_steps,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.QUEEN)
-def queen_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for queen moves - receives numpy array position."""
     modifier = get_range_modifier(state, pos)
     max_steps = max(1, 8 + modifier)
-    return generate_queen_moves(state.cache_manager, state.color, pos, max_steps)
+    return generate_queen_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['QUEEN_MOVEMENT_VECTORS', 'generate_queen_moves']

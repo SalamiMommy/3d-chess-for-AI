@@ -23,7 +23,8 @@ def generate_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = MAX_STEPS_SLIDER
+    max_steps: int = MAX_STEPS_SLIDER,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate bishop moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -40,13 +41,14 @@ def generate_bishop_moves(
         pos=pos_arr,
         directions=BISHOP_MOVEMENT_VECTORS,
         max_distance=max_steps,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.BISHOP)
-def bishop_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def bishop_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for bishop moves - receives numpy array position."""
     modifier = get_range_modifier(state, pos)
     max_steps = max(1, MAX_STEPS_SLIDER + modifier)
-    return generate_bishop_moves(state.cache_manager, state.color, pos, max_steps)
+    return generate_bishop_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['BISHOP_MOVEMENT_VECTORS', 'generate_bishop_moves']

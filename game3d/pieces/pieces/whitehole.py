@@ -31,7 +31,7 @@ def generate_whitehole_moves(
     pos: np.ndarray
 ) -> np.ndarray:
     """White-Hole moves exactly like a Speeder (king single steps)."""
-    return generate_king_moves(cache_manager, color, pos)
+    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.WHITEHOLE)
 
 
 def push_candidates_vectorized(

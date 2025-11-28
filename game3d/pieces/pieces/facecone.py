@@ -78,7 +78,8 @@ def generate_face_cone_slider_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = SIZE_MINUS_1
+    max_steps: int = SIZE_MINUS_1,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate face-cone slider moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -91,16 +92,18 @@ def generate_face_cone_slider_moves(
         pos=pos_arr,
         directions=FACE_CONE_MOVEMENT_VECTORS,
         max_distance=max_steps,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.CONESLIDER)
-def face_cone_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def face_cone_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for face-cone slider moves - receives numpy array position."""
     return generate_face_cone_slider_moves(
         cache_manager=state.cache_manager,
         color=state.color,
         pos=pos,
-        max_steps=SIZE_MINUS_1
+        max_steps=SIZE_MINUS_1,
+        ignore_occupancy=ignore_occupancy
     )
 
 __all__ = ['FACE_CONE_MOVEMENT_VECTORS', 'generate_face_cone_slider_moves']

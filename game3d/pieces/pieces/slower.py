@@ -27,7 +27,7 @@ def generate_slower_moves(
     pos: np.ndarray
 ) -> np.ndarray:
     """Generate king-like single-step moves for slower piece."""
-    return generate_king_moves(cache_manager, color, pos)
+    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.SLOWER)
 
 def get_debuffed_squares(
     cache_manager: 'OptimizedCacheManager',

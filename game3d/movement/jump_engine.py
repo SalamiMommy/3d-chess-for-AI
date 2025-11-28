@@ -111,33 +111,29 @@ class JumpMovementEngine:
                 if directions.shape[0] == 0:
                     return np.empty((0, 6), dtype=COORD_DTYPE)
             
-            # Check for Speeder buff
-            # We need to find the ConsolidatedAuraCache to check for buffs
-            # This is done dynamically to avoid circular imports
+            # ✅ OPTIMIZED: Direct buff check using cached array
+            # Old approach took 30+ lines and multiple fallbacks
+            # New approach: single array lookup
             is_buffed = False
-            if hasattr(cache_manager, '_effect_cache_instances'):
-                for cache in cache_manager._effect_cache_instances:
-                    if cache.__class__.__name__ == 'ConsolidatedAuraCache':
-                        # Check if this specific piece is buffed
-                        # batch_is_buffed expects (N, 3)
-                        pos_reshaped = pos.reshape(1, 3)
-                        buff_status = cache.batch_is_buffed(pos_reshaped, color)
-                        if buff_status.size > 0 and buff_status[0]:
-                            is_buffed = True
-                        break
+            aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
+            
+            if aura_cache is not None:
+                # Direct array access - O(1) lookup instead of method call overhead
+                x, y, z = pos[0], pos[1], pos[2]
+                is_buffed = aura_cache._buffed_squares[x, y, z]
             
             targets = None
             
             # Try to use precomputed moves if available and not buffed
-            if not is_buffed and piece_type is not None and piece_type in _PRECOMPUTED_MOVES:
+            if not is_buffed and piece_type is not None and piece_type.value in _PRECOMPUTED_MOVES:
                 # Calculate flat index
                 # pos is (3,) array
                 flat_idx = pos[0] + SIZE * pos[1] + SIZE_SQUARED * pos[2]
                 
                 # Retrieve targets from precomputed array
-                # _PRECOMPUTED_MOVES[piece_type] is an object array of arrays
+                # _PRECOMPUTED_MOVES[piece_type.value] is an object array of arrays
                 try:
-                    targets = _PRECOMPUTED_MOVES[piece_type][flat_idx]
+                    targets = _PRECOMPUTED_MOVES[piece_type.value][flat_idx]
                 except IndexError:
                     # Fallback if index out of bounds (shouldn't happen with valid pos)
                     pass
@@ -186,16 +182,13 @@ class JumpMovementEngine:
             if valid_targets.shape[0] == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)
 
-            # Construct (N, 6) array
+            # ✅ OPTIMIZATION: Construct move array more efficiently
             n_moves = valid_targets.shape[0]
+            # Create array and fill in one operation where possible
             moves = np.empty((n_moves, 6), dtype=COORD_DTYPE)
             
-            # Fill from_coord
-            moves[:, 0] = pos[0]
-            moves[:, 1] = pos[1]
-            moves[:, 2] = pos[2]
-            
-            # Fill to_coord
+            # Broadcasting from position (more efficient than per-element assignment)
+            moves[:, :3] = pos  # Broadcasts pos to all rows
             moves[:, 3:6] = valid_targets
             
             return moves

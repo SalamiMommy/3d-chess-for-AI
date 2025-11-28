@@ -33,7 +33,8 @@ def generate_trailblazer_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_distance: int = MAX_TRAILBLAZER_DISTANCE
+    max_distance: int = MAX_TRAILBLAZER_DISTANCE,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate trailblazer moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -45,6 +46,7 @@ def generate_trailblazer_moves(
         pos=pos_arr,
         directions=ROOK_DIRECTIONS,
         max_distance=max_distance,
+        ignore_occupancy=ignore_occupancy
     )
 
     # Note: Path metadata removed as it was already being lost when
@@ -130,11 +132,11 @@ def _any_priest_alive(board, color: Color) -> bool:
     return False
 
 @register(PieceType.TRAILBLAZER)
-def trailblazer_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def trailblazer_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Trailblazer moves."""
     modifier = get_range_modifier(state, pos)
     max_dist = max(1, MAX_TRAILBLAZER_DISTANCE + modifier)
-    return generate_trailblazer_moves(state.cache_manager, state.color, pos, max_dist)
+    return generate_trailblazer_moves(state.cache_manager, state.color, pos, max_dist, ignore_occupancy)
 
 __all__ = [
     "generate_trailblazer_moves",

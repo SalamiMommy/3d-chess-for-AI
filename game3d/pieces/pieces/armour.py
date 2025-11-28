@@ -49,6 +49,7 @@ def generate_armour_moves(
         pos=pos_arr,
         directions=ARMOUR_MOVEMENT_VECTORS,
         allow_capture=True,
+        piece_type=PieceType.ARMOUR
     )
 
 def is_armour_protected(sq: np.ndarray, cache_manager: 'OptimizedCacheManager') -> bool:

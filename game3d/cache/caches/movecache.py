@@ -1,13 +1,16 @@
 """Move Cache - MULTI-LEVEL CACHING SYSTEM.
 
-This module caches moves at THREE levels:
-1. Piece-level RAW moves (pseudolegal) - individual piece moves before validation
-2. Color-level RAW moves (pseudolegal) - all pieces' moves before filtering  
-3. Color-level LEGAL moves - final moves after all filtering (frozen, hive, king capture, safe)
+This module caches moves at FOUR levels:
+1. Piece-level RAW moves (geometric, ignore occupancy) - individual piece moves
+2. Piece-level PSEUDOLEGAL moves (geometric + occupancy) - individual piece moves
+3. Color-level RAW moves (geometric, ignore occupancy) - all pieces' moves
+4. Color-level PSEUDOLEGAL moves (geometric + occupancy) - all pieces' moves
+5. Color-level LEGAL moves - final moves after all filtering (frozen, hive, king capture, safe)
 
 Caching Strategy:
 - Raw moves cached per piece for incremental updates
-- Raw moves also cached per color for fast regeneration
+- Pseudolegal moves cached per piece for incremental updates
+- Raw/Pseudolegal moves also cached per color for fast regeneration
 - Legal moves cached per color (most commonly accessed)
 """
 
@@ -42,43 +45,42 @@ class MoveCache:
     """
     Multi-level caching layer for moves.
 
-    THREE cache levels:
-    1. Piece-level RAW (pseudolegal) moves - stored in _piece_moves_cache
-    2. Color-level RAW (pseudolegal) moves - stored in _raw_moves_cache
-    3. Color-level LEGAL moves - stored in _legal_moves_cache
+    Cache levels:
+    1. Piece-level moves - stored in _piece_moves_cache
+    2. Color-level RAW moves (ignore occupancy) - stored in _raw_moves_cache
+    3. Color-level PSEUDOLEGAL moves (respect occupancy) - stored in _pseudolegal_moves_cache
+    4. Color-level LEGAL moves - stored in _legal_moves_cache
 
     Responsibilities:
     1. Cache moves at different stages of generation pipeline
     2. Invalidate cache when board state changes
     3. Track cache statistics for each level
-
-    Does NOT:
-    - Generate moves (that's pseudolegal.py and generator.py)
-    - Validate moves (that's generator.py)
-    - Filter moves (that's turnmove.py)
-    - Apply moves (that's gamestate.py)
     """
     def __init__(self, cache_manager, config=None):
         self.cache_manager = cache_manager
         self.config = config or MoveCacheConfig()
         self._lock = threading.RLock()
 
-        # ✅ FIXED: Initialize to current board generation, not -1
+        # Initialize to current board generation
         current_gen = getattr(cache_manager.board, 'generation', 0)
         
-        # THREE separate caches for different move types:
         # 1. LEGAL MOVES (final, after all filtering)
         self._legal_moves_cache = [None, None]  # [White, Black]
         
-        # 2. RAW MOVES (pseudolegal, before filtering)
+        # 2. PSEUDOLEGAL MOVES (respect occupancy, before filtering)
+        self._pseudolegal_moves_cache = [None, None]  # [White, Black]
+
+        # 3. RAW MOVES (ignore occupancy)
         self._raw_moves_cache = [None, None]  # [White, Black]
         
         self._cache_generation = 0
-        self._board_generation = current_gen  # Use current generation
+        self._board_generation = current_gen
 
         stats_dtype = np.dtype([
             ('legal_cache_hits', INDEX_DTYPE),
             ('legal_cache_misses', INDEX_DTYPE),
+            ('pseudolegal_cache_hits', INDEX_DTYPE),
+            ('pseudolegal_cache_misses', INDEX_DTYPE),
             ('raw_cache_hits', INDEX_DTYPE),
             ('raw_cache_misses', INDEX_DTYPE),
             ('piece_cache_hits', INDEX_DTYPE),
@@ -91,23 +93,21 @@ class MoveCache:
         self._board_generation_per_color = [current_gen, current_gen]
 
         # Initialize missing attributes
-        self._affected_coord_keys_list = []  # ✅ Use list for O(1) append
+        self._affected_coord_keys_list = []
         self._affected_color_idx_list = []
         self._affected_coord_keys = np.empty(0, dtype=np.int64)
         self._affected_color_idx = np.empty(0, dtype=np.int8)
         
-        # ✅ OPTIMIZED: Use OrderedDict for LRU cache (piece-level raw moves)
+        # Piece-level cache (stores pseudolegal moves by default)
         self._piece_moves_cache = OrderedDict()
 
         # Reverse Move Map: Square Key -> Set of Piece Keys
-        # Used for incremental updates to find pieces attacking a square
         self._reverse_map: Dict[int, set] = {}
-        # Track which squares a piece targets to allow efficient removal
+        # Track which squares a piece targets
         self._piece_targets: Dict[tuple, set] = {}
 
-        # ✅ NEW: LRU tracking and size limits to prevent memory explosion
         self._max_piece_entries = 1000
-        self._prune_triggered = 0  # Statistics
+        self._prune_triggered = 0
 
     # =========================================================================
     # LEGAL MOVES CACHE (Final moves after ALL filtering)
@@ -138,7 +138,6 @@ class MoveCache:
         with self._lock:
             color_idx = 0 if color == Color.WHITE else 1
 
-            # Validate non-empty unless truly stalemate
             if moves.size == 0:
                 piece_count = len(self.cache_manager.occupancy_cache.get_positions(color))
                 if piece_count > 0:
@@ -164,11 +163,48 @@ class MoveCache:
             self._cache_generation += 1
     
     # =========================================================================
-    # RAW MOVES CACHE (Pseudolegal moves before filtering)
+    # PSEUDOLEGAL MOVES CACHE (Respect occupancy, before filtering)
     # =========================================================================
     
+    def get_pseudolegal_moves(self, color: int) -> Optional[np.ndarray]:
+        """Retrieve cached PSEUDOLEGAL moves (respect occupancy)."""
+        with self._lock:
+            color_idx = 0 if color == Color.WHITE else 1
+
+            if self._pseudolegal_moves_cache[color_idx] is None:
+                self._stats['pseudolegal_cache_misses'] += 1
+                return None
+
+            affected = self.get_affected_pieces(color)
+            if affected.size > 0:
+                self._stats['pseudolegal_cache_misses'] += 1
+                return None
+
+            self._stats['pseudolegal_cache_hits'] += 1
+            return self._pseudolegal_moves_cache[color_idx]
+    
+    def store_pseudolegal_moves(self, color: int, moves: np.ndarray) -> None:
+        """Store PSEUDOLEGAL moves (respect occupancy)."""
+        with self._lock:
+            color_idx = 0 if color == Color.WHITE else 1
+            self._pseudolegal_moves_cache[color_idx] = moves.copy() if moves.size > 0 else moves
+    
+    def invalidate_pseudolegal_moves(self, color: Optional[int] = None) -> None:
+        """Invalidate pseudolegal moves cache."""
+        with self._lock:
+            if color is None:
+                self._pseudolegal_moves_cache[0] = None
+                self._pseudolegal_moves_cache[1] = None
+            else:
+                color_idx = 0 if color == Color.WHITE else 1
+                self._pseudolegal_moves_cache[color_idx] = None
+
+    # =========================================================================
+    # RAW MOVES CACHE (Ignore occupancy)
+    # =========================================================================
+
     def get_raw_moves(self, color: int) -> Optional[np.ndarray]:
-        """Retrieve cached RAW (pseudolegal) moves before filtering."""
+        """Retrieve cached RAW moves (ignore occupancy)."""
         with self._lock:
             color_idx = 0 if color == Color.WHITE else 1
 
@@ -176,25 +212,22 @@ class MoveCache:
                 self._stats['raw_cache_misses'] += 1
                 return None
 
-            # Check if affected pieces need regeneration
             affected = self.get_affected_pieces(color)
-
             if affected.size > 0:
                 self._stats['raw_cache_misses'] += 1
                 return None
 
-            # Cache hit
             self._stats['raw_cache_hits'] += 1
             return self._raw_moves_cache[color_idx]
-    
+
     def store_raw_moves(self, color: int, moves: np.ndarray) -> None:
-        """Store RAW (pseudolegal) moves before filtering."""
+        """Store RAW moves (ignore occupancy)."""
         with self._lock:
             color_idx = 0 if color == Color.WHITE else 1
             self._raw_moves_cache[color_idx] = moves.copy() if moves.size > 0 else moves
-    
+
     def invalidate_raw_moves(self, color: Optional[int] = None) -> None:
-        """Invalidate raw moves cache for one or both colors."""
+        """Invalidate raw moves cache."""
         with self._lock:
             if color is None:
                 self._raw_moves_cache[0] = None
@@ -202,36 +235,25 @@ class MoveCache:
             else:
                 color_idx = 0 if color == Color.WHITE else 1
                 self._raw_moves_cache[color_idx] = None
-    
+
     # =========================================================================
-    # LEGACY get_cached_moves / store_moves (backwards compatibility)
-    # These now map to LEGAL moves cache
+    # LEGACY / COMPATIBILITY
     # =========================================================================
 
     def get_cached_moves(self, color: int) -> Optional[np.ndarray]:
-        """LEGACY: Retrieve cached moves (maps to legal moves).
-        
-        DEPRECATED: Use get_legal_moves() or get_raw_moves() instead.
-        """
+        """LEGACY: Retrieve cached moves (maps to legal moves)."""
         return self.get_legal_moves(color)
 
     def store_moves(self, color: int, moves: np.ndarray) -> None:
-        """LEGACY: Store moves (maps to legal moves).
-        
-        DEPRECATED: Use store_legal_moves() or store_raw_moves() instead.
-        """
+        """LEGACY: Store moves (maps to legal moves)."""
         return self.store_legal_moves(color, moves)
 
     def invalidate(self) -> None:
-        """Invalidate ALL caches (legal, raw, and piece-level)."""
+        """Invalidate ALL caches."""
         with self._lock:
-            # Invalidate legal moves
-            self._legal_moves_cache[0] = None
-            self._legal_moves_cache[1] = None
-            # Invalidate raw moves  
-            self._raw_moves_cache[0] = None
-            self._raw_moves_cache[1] = None
-            # Increment generation
+            self.invalidate_legal_moves()
+            self.invalidate_pseudolegal_moves()
+            self.invalidate_raw_moves()
             self._cache_generation += 1
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -241,6 +263,10 @@ class MoveCache:
             legal_lookups = self._stats['legal_cache_hits'] + self._stats['legal_cache_misses']
             legal_hit_rate = self._stats['legal_cache_hits'] / max(legal_lookups, 1)
             
+            # Pseudolegal cache stats
+            pseudo_lookups = self._stats['pseudolegal_cache_hits'] + self._stats['pseudolegal_cache_misses']
+            pseudo_hit_rate = self._stats['pseudolegal_cache_hits'] / max(pseudo_lookups, 1)
+
             # Raw cache stats
             raw_lookups = self._stats['raw_cache_hits'] + self._stats['raw_cache_misses']
             raw_hit_rate = self._stats['raw_cache_hits'] / max(raw_lookups, 1)
@@ -249,55 +275,24 @@ class MoveCache:
             piece_lookups = self._stats['piece_cache_hits'] + self._stats['piece_cache_misses']
             piece_hit_rate = self._stats['piece_cache_hits'] / max(piece_lookups, 1)
 
-            # Count cached moves
-            white_legal = 0 if self._legal_moves_cache[0] is None else len(self._legal_moves_cache[0])
-            black_legal = 0 if self._legal_moves_cache[1] is None else len(self._legal_moves_cache[1])
-            white_raw = 0 if self._raw_moves_cache[0] is None else len(self._raw_moves_cache[0])
-            black_raw = 0 if self._raw_moves_cache[1] is None else len(self._raw_moves_cache[1])
-
             return {
-                # Legal moves cache
-                'legal_cache_hits': self._stats['legal_cache_hits'],
-                'legal_cache_misses': self._stats['legal_cache_misses'],
                 'legal_hit_rate': legal_hit_rate,
-                'white_legal_moves': white_legal,
-                'black_legal_moves': black_legal,
-                # Raw moves cache
-                'raw_cache_hits': self._stats['raw_cache_hits'],
-                'raw_cache_misses': self._stats['raw_cache_misses'],
+                'pseudolegal_hit_rate': pseudo_hit_rate,
                 'raw_hit_rate': raw_hit_rate,
-                'white_raw_moves': white_raw,
-                'black_raw_moves': black_raw,
-                # Piece cache
-                'piece_cache_hits': self._stats['piece_cache_hits'],
-                'piece_cache_misses': self._stats['piece_cache_misses'],
                 'piece_hit_rate': piece_hit_rate,
-                'piece_moves_cache_size': len(self._piece_moves_cache),
-                # Other
                 'total_moves_cached': self._stats['total_moves_cached'],
-                'reverse_map_size': len(self._reverse_map),
+                'piece_moves_cache_size': len(self._piece_moves_cache),
                 'prune_operations': self._prune_triggered,
-                # BACKWARDS COMPATIBILITY: Legacy keys for old code
-                'cache_hits': self._stats['legal_cache_hits'],  # Map to legal cache
+                # Legacy keys
+                'cache_hits': self._stats['legal_cache_hits'],
                 'cache_misses': self._stats['legal_cache_misses'],
-                'hit_rate': legal_hit_rate,
-                'white_moves_cached': white_legal,
-                'black_moves_cached': black_legal,
             }
 
     def clear(self) -> None:
         """Clear all cached data at all levels."""
         with self._lock:
             self.invalidate()
-            # Clear all stats
-            self._stats['legal_cache_hits'] = 0
-            self._stats['legal_cache_misses'] = 0
-            self._stats['raw_cache_hits'] = 0
-            self._stats['raw_cache_misses'] = 0
-            self._stats['piece_cache_hits'] = 0
-            self._stats['piece_cache_misses'] = 0
-            self._stats['total_moves_cached'] = 0
-            # Clear piece caches
+            self._stats.fill(0)
             self._piece_moves_cache.clear()
             self._reverse_map.clear()
             self._piece_targets.clear()
@@ -306,9 +301,8 @@ class MoveCache:
             self._affected_coord_keys_list = []
             self._affected_color_idx_list = []
 
-
     # =========================================================================
-    # PIECE-LEVEL CACHE (Raw moves per piece for incremental updates)
+    # PIECE-LEVEL CACHE (Pseudolegal moves per piece for incremental updates)
     # =========================================================================
 
     def mark_piece_invalid(self, color: int, coord_key: Union[int, bytes]) -> None:
@@ -321,7 +315,6 @@ class MoveCache:
             int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
 
         with self._lock:
-            # ✅ OPTIMIZED: Use list append instead of np.append
             self._affected_coord_keys_list.append(int_key)
             self._affected_color_idx_list.append(color_idx)
 
@@ -337,7 +330,6 @@ class MoveCache:
         with self._lock:
             piece_id = (color_idx, int_key)
             if piece_id in self._piece_moves_cache:
-                # Move to end to mark as recently used
                 self._piece_moves_cache.move_to_end(piece_id)
                 self._stats['piece_cache_hits'] += 1
                 return True
@@ -357,7 +349,6 @@ class MoveCache:
         
         with self._lock:
             if piece_id in self._piece_moves_cache:
-                # Move to end to mark as recently used
                 self._piece_moves_cache.move_to_end(piece_id)
                 return self._piece_moves_cache[piece_id]
             
@@ -367,7 +358,6 @@ class MoveCache:
         """Cache moves for a specific piece - USE INTEGER KEYS."""
         color_idx = 0 if color == Color.WHITE else 1
 
-        # Handle both int and bytes keys
         if isinstance(coord_key, (int, np.integer)):
             int_key = int(coord_key)
         else:
@@ -376,22 +366,15 @@ class MoveCache:
         piece_id = (color_idx, int_key)
 
         with self._lock:
-            # ✅ NEW: Prune cache if exceeding limit
             if len(self._piece_moves_cache) >= self._max_piece_entries:
                 self._prune_piece_cache()
 
-            # Update Reverse Map
             self._update_reverse_map(piece_id, moves)
-
-            # Update dictionary cache (primary storage)
-            # OrderedDict handles insertion order automatically
             self._piece_moves_cache[piece_id] = moves
-            # Ensure it's marked as most recently used (if it was already there)
             self._piece_moves_cache.move_to_end(piece_id)
 
     def _update_reverse_map(self, piece_id: tuple, moves: np.ndarray) -> None:
         """Update the reverse map for a piece."""
-        # 1. Clear old entries
         if piece_id in self._piece_targets:
             old_targets = self._piece_targets[piece_id]
             for target_key in old_targets:
@@ -400,13 +383,10 @@ class MoveCache:
                     if not self._reverse_map[target_key]:
                         del self._reverse_map[target_key]
 
-        # 2. Add new entries
         if moves.size > 0:
-            # Vectorized key generation for targets (x, y, z) -> columns 3, 4, 5
             to_x = moves[:, 3].astype(np.int64)
             to_y = moves[:, 4].astype(np.int64)
             to_z = moves[:, 5].astype(np.int64)
-            # Simple packing: x | (y << 9) | (z << 18)
             target_keys = to_x | (to_y << 9) | (to_z << 18)
 
             unique_targets = np.unique(target_keys)
@@ -437,12 +417,9 @@ class MoveCache:
         """Get affected pieces as numpy array."""
         color_idx = 0 if color == Color.WHITE else 1
 
-        # ✅ OPTIMIZED: Convert lists to arrays only when reading
         if self._affected_coord_keys_list:
-            # Consolidate lists into arrays once
             self._affected_coord_keys = np.array(self._affected_coord_keys_list, dtype=np.int64)
             self._affected_color_idx = np.array(self._affected_color_idx_list, dtype=np.int8)
-            # Don't clear lists yet - they may be used again soon
 
         mask = self._affected_color_idx == color_idx
         return self._affected_coord_keys[mask]
@@ -453,32 +430,188 @@ class MoveCache:
         self._affected_pieces = {(c_idx, key) for (c_idx, key) in self._affected_pieces
                                 if c_idx != color_idx}
 
-        # ✅ OPTIMIZED: Clear both arrays and lists
         mask = self._affected_color_idx != color_idx
         self._affected_coord_keys = self._affected_coord_keys[mask]
         self._affected_color_idx = self._affected_color_idx[mask]
         
-        # Clear lists for the specified color
         indices_to_keep = [i for i, c_idx in enumerate(self._affected_color_idx_list) if c_idx != color_idx]
         self._affected_coord_keys_list = [self._affected_coord_keys_list[i] for i in indices_to_keep]
         self._affected_color_idx_list = [self._affected_color_idx_list[i] for i in indices_to_keep]
 
-    # ✅ NEW: LRU PRUNING METHOD
+    # =========================================================================
+    # INCREMENTAL DELTA UPDATES (for optimized check detection)
+    # =========================================================================
+
+    @staticmethod
+    def coord_key_to_coord(coord_key: int) -> np.ndarray:
+        """Convert coordinate key back to (x, y, z) coordinate.
+        
+        Reverses the bit-packing done in pseudolegal.coord_to_key:
+        - x in bits 0-8
+        - y in bits 9-17
+        - z in bits 18-26
+        """
+        x = coord_key & 0x1FF  # Extract bits 0-8
+        y = (coord_key >> 9) & 0x1FF  # Extract bits 9-17
+        z = (coord_key >> 18) & 0x1FF  # Extract bits 18-26
+        return np.array([x, y, z], dtype=COORD_DTYPE)
+
+    def get_pieces_affected_by_move(
+        self,
+        from_coord: np.ndarray,
+        to_coord: np.ndarray,
+        color: int
+    ) -> tuple[list[tuple[int, int]], np.ndarray, np.ndarray]:
+        """
+        Identify pieces whose moves are affected by a simulated move.
+        
+        When a piece moves from A → B, the following pieces may be affected:
+        1. Pieces attacking square A (may gain new moves - A is now empty)
+        2. Pieces attacking square B (may lose moves - B is now occupied)
+        3. The moved piece itself (needs regeneration from new position)
+        
+        Args:
+            from_coord: Source coordinate of the move (3,)
+            to_coord: Destination coordinate of the move (3,)
+            color: Color of pieces to check (opponent color typically)
+            
+        Returns:
+            Tuple of:
+            - List of (color_idx, coord_key) for affected pieces
+            - Coordinates array (N, 3) of affected pieces
+            - Coord keys array (N,) for affected pieces
+        """
+        from game3d.movement.pseudolegal import coord_to_key
+        
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # Convert coordinates to keys for reverse map lookup
+        from_key = coord_to_key(from_coord.reshape(1, 3))[0]
+        to_key = coord_to_key(to_coord.reshape(1, 3))[0]
+        
+        affected_piece_ids = set()
+        
+        with self._lock:
+            # 1. Find pieces targeting the source square (A)
+            if int(from_key) in self._reverse_map:
+                for piece_id in self._reverse_map[int(from_key)]:
+                    # Only include pieces of the specified color
+                    if piece_id[0] == color_idx:
+                        affected_piece_ids.add(piece_id)
+            
+            # 2. Find pieces targeting the destination square (B)
+            if int(to_key) in self._reverse_map:
+                for piece_id in self._reverse_map[int(to_key)]:
+                    # Only include pieces of the specified color
+                    if piece_id[0] == color_idx:
+                        affected_piece_ids.add(piece_id)
+        
+        # Convert to lists for return
+        affected_list = list(affected_piece_ids)
+        
+        if not affected_list:
+            return ([], np.empty((0, 3), dtype=COORD_DTYPE), np.empty(0, dtype=np.int64))
+        
+        # Extract coordinates and keys
+        affected_coords = []
+        affected_keys = []
+        
+        for piece_id in affected_list:
+            _, coord_key = piece_id
+            coord = self.coord_key_to_coord(coord_key)
+            affected_coords.append(coord)
+            affected_keys.append(coord_key)
+        
+        coords_array = np.array(affected_coords, dtype=COORD_DTYPE)
+        keys_array = np.array(affected_keys, dtype=np.int64)
+        
+        return (affected_list, coords_array, keys_array)
+
+    def extract_moves_for_pieces(
+        self,
+        all_moves: np.ndarray,
+        piece_coords: np.ndarray
+    ) -> np.ndarray:
+        """
+        Extract moves that originate from specific piece coordinates.
+        
+        Args:
+            all_moves: (N, 6) array of all moves [fx, fy, fz, tx, ty, tz]
+            piece_coords: (M, 3) array of piece coordinates to extract
+            
+        Returns:
+            (K, 6) array of moves from the specified pieces
+        """
+        if all_moves.size == 0 or piece_coords.size == 0:
+            return np.empty((0, 6), dtype=MOVE_DTYPE)
+        
+        # Create mask for moves from any of the specified pieces
+        mask = np.zeros(len(all_moves), dtype=BOOL_DTYPE)
+        
+        for coord in piece_coords:
+            # Find moves where source matches this coordinate
+            coord_mask = (
+                (all_moves[:, 0] == coord[0]) &
+                (all_moves[:, 1] == coord[1]) &
+                (all_moves[:, 2] == coord[2])
+            )
+            mask |= coord_mask
+        
+        return all_moves[mask]
+
+    def remove_moves_from_mask(
+        self,
+        attack_mask: np.ndarray,
+        moves_to_remove: np.ndarray
+    ) -> None:
+        """
+        Remove moves from attack mask (modifies in-place).
+        
+        Args:
+            attack_mask: (SIZE, SIZE, SIZE) boolean array
+            moves_to_remove: (N, 6) array of moves to remove from mask
+        """
+        if moves_to_remove.size == 0:
+            return
+        
+        for move in moves_to_remove:
+            tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                attack_mask[tx, ty, tz] = False
+
+    def add_moves_to_mask(
+        self,
+        attack_mask: np.ndarray,
+        moves_to_add: np.ndarray
+    ) -> None:
+        """
+        Add moves to attack mask (modifies in-place).
+        
+        Args:
+            attack_mask: (SIZE, SIZE, SIZE) boolean array
+            moves_to_add: (N, 6) array of moves to add to mask
+        """
+        if moves_to_add.size == 0:
+            return
+        
+        for move in moves_to_add:
+            tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                attack_mask[tx, ty, tz] = True
+
     def _prune_piece_cache(self) -> None:
         """Prune oldest 20% of entries when cache exceeds limit."""
         if len(self._piece_moves_cache) <= self._max_piece_entries:
             return
 
         prune_start = len(self._piece_moves_cache)
-        prune_target = int(self._max_piece_entries * 0.8)  # Keep 80%
+        prune_target = int(self._max_piece_entries * 0.8)
         num_to_remove = prune_start - prune_target
 
         for _ in range(num_to_remove):
-            # Remove oldest entry (first in OrderedDict)
             try:
                 piece_id, _ = self._piece_moves_cache.popitem(last=False)
                 
-                # Clean up reverse map
                 if piece_id in self._piece_targets:
                     for target_key in self._piece_targets[piece_id]:
                         if target_key in self._reverse_map:
@@ -489,9 +622,7 @@ class MoveCache:
             except KeyError:
                 break
 
-        prune_end = len(self._piece_moves_cache)
         self._prune_triggered += 1
-        logger.debug(f"Pruned piece cache: {prune_start} -> {prune_end} entries")
 
 def create_move_cache(cache_manager, config: Optional[MoveCacheConfig] = None) -> MoveCache:
     """Factory function to create move cache."""

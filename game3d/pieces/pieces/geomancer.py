@@ -79,7 +79,7 @@ def generate_geomancer_moves(
     start = pos.astype(COORD_DTYPE)
 
     # Generate king moves for piece movement within radius 1 (returns np.ndarray)
-    king_moves = generate_king_moves(cache_manager, color, start)
+    king_moves = generate_king_moves(cache_manager, color, start, piece_type=PieceType.GEOMANCER)
     
     move_arrays = []
     if king_moves.size > 0:

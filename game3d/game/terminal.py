@@ -42,6 +42,10 @@ def is_check(game_state) -> bool:
     if cache_manager is None:
         return False
 
+    # ✅ PRIEST CHECK: Skip check detection if player has priests
+    if cache_manager.occupancy_cache.has_priest(game_state.color):
+        return False
+
     # Use direct cache access for performance
     zkey = getattr(game_state, 'zkey', 0)
     board = game_state.board

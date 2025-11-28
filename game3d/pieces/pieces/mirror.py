@@ -48,6 +48,7 @@ def generate_mirror_moves(
         pos=start_coord,
         directions=direction.reshape(1, 3),
         allow_capture=True,
+        piece_type=PieceType.MIRROR
     )
 
 @register(PieceType.MIRROR)

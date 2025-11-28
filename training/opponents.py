@@ -329,6 +329,44 @@ def _compute_check_potential_vectorized(
 
     return rewards
 
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _compute_king_proximity_rewards_vectorized(
+    to_coords: np.ndarray,
+    enemy_king_pos: np.ndarray,
+    proximity_reward: float
+) -> np.ndarray:
+    """Vectorized king proximity rewards - reward for moving within 1 space of enemy king.
+    
+    Args:
+        to_coords: Destination coordinates for moves (n_moves, 3)
+        enemy_king_pos: Enemy king position (3,)
+        proximity_reward: Reward for being adjacent to enemy king
+    
+    Returns:
+        Array of proximity rewards for each move
+    """
+    n_moves = len(to_coords)
+    rewards = np.zeros(n_moves, dtype=FLOAT_DTYPE)
+    
+    if enemy_king_pos is None or enemy_king_pos.size == 0:
+        return rewards
+    
+    kx, ky, kz = enemy_king_pos[0], enemy_king_pos[1], enemy_king_pos[2]
+    
+    for i in prange(n_moves):
+        tx, ty, tz = to_coords[i]
+        
+        # Calculate Manhattan distance to king
+        distance = abs(tx - kx) + abs(ty - ky) + abs(tz - kz)
+        
+        # Reward if within 1 space (but not on the king itself)
+        if distance == 1:
+            rewards[i] = proximity_reward
+    
+    return rewards
+
+
 @njit(cache=True, fastmath=True, parallel=True)
 def _compute_next_state_repetition_penalty(
     from_coords: np.ndarray,
@@ -690,6 +728,12 @@ class AdaptiveOpponent(OpponentBase):
                         0 if self.color == Color.WHITE else 1
                     )
                     rewards[relevant_mask] += check_rewards
+                    
+                    # KING PROXIMITY REWARD - PRIORITY 4 (small bonus for being near king)
+                    proximity_rewards = _compute_king_proximity_rewards_vectorized(
+                        filtered_to, enemy_king_pos, 0.15  # Small reward for being adjacent
+                    )
+                    rewards[relevant_mask] += proximity_rewards
 
         return rewards
 
@@ -701,14 +745,12 @@ class AdaptiveOpponent(OpponentBase):
         if len(all_positions) == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
 
-        # Filter for priests
-        priest_positions = []
-        for coord in all_positions:
-            piece = cache_manager.occupancy_cache.get(coord.reshape(1, 3))
-            if piece and piece['piece_type'] == PieceType.PRIEST.value:
-                priest_positions.append(coord)
-
-        return np.array(priest_positions, dtype=COORD_DTYPE) if priest_positions else np.empty((0, 3), dtype=COORD_DTYPE)
+        # Filter for priests using vectorized batch lookup
+        # This avoids the slow loop with get() calls
+        _, types = cache_manager.occupancy_cache.batch_get_attributes(all_positions)
+        priest_mask = (types == PieceType.PRIEST.value)
+        
+        return all_positions[priest_mask]
 
 
 
@@ -809,6 +851,12 @@ class CenterControlOpponent(OpponentBase):
                     0 if self.color == Color.WHITE else 1
                 )
                  rewards += check_rewards
+                 
+                 # KING PROXIMITY REWARD - PRIORITY 4
+                 proximity_rewards = _compute_king_proximity_rewards_vectorized(
+                     to_coords, enemy_king_pos, 0.15
+                 )
+                 rewards += proximity_rewards
 
         return rewards
 
@@ -897,6 +945,12 @@ class PieceCaptureOpponent(OpponentBase):
                     0 if self.color == Color.WHITE else 1
                 )
                  rewards += check_rewards
+                  
+                 # KING PROXIMITY REWARD - PRIORITY 4
+                 proximity_rewards = _compute_king_proximity_rewards_vectorized(
+                     to_coords, enemy_king_pos, 0.15
+                 )
+                 rewards += proximity_rewards
 
         return rewards
 
@@ -986,18 +1040,50 @@ class PriestHunterOpponent(OpponentBase):
 
         # ===== PRIORITY 1: CHECK REWARD =====
         
-        # 8. Conditional Check Reward (when no priests left)
+        # 8. King approach and CHECK (only if no enemy priests)
+        enemy_priest_count = 0
         enemy_color = self.color.opposite()
-        if not cache_manager.occupancy_cache.has_priest(enemy_color):
+        if cache_manager.occupancy_cache.has_priest(enemy_color):
+            # PRIORITY 1: Hunt priests if they exist
+            enemy_priest_positions = self._get_enemy_priest_positions(cache_manager)
+            if len(enemy_priest_positions) > 0:
+                approach_rewards = _compute_distance_rewards_vectorized(
+                    from_coords, to_coords, enemy_priest_positions,
+                    from_types, 0.5  # INCREASED from 0.1 - PRIORITY 1
+                )
+                rewards += approach_rewards
+        else:
+            # No priests - focus on checking king (PRIORITY 1)
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
-                check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 12.0,  # INCREASED
-                    cache_manager.occupancy_cache._occ,
-                    ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
-                    0 if self.color == Color.WHITE else 1
-                )
-                rewards += check_rewards
+                # Filter relevant pieces
+                relevant_mask = (from_types != PieceType.KING.value)
+                if np.any(relevant_mask):
+                    filtered_from = from_coords[relevant_mask]
+                    filtered_to = to_coords[relevant_mask]
+                    filtered_types = from_types[relevant_mask]
+
+                    king_targets = np.array([enemy_king_pos], dtype=COORD_DTYPE)
+                    distance_rewards = _compute_distance_rewards_vectorized(
+                        filtered_from, filtered_to, king_targets,
+                        filtered_types, 0.05  # Keep low for king approach
+                    )
+                    rewards[relevant_mask] += distance_rewards
+
+                    # CHECK REWARD - PRIORITY 1
+                    check_rewards = _compute_check_potential_vectorized(
+                        filtered_to, filtered_types, enemy_king_pos, 12.0,
+                        cache_manager.occupancy_cache._occ,
+                        ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                        0 if self.color == Color.WHITE else 1
+                    )
+                    rewards[relevant_mask] += check_rewards
+
+                    # KING PROXIMITY REWARD - PRIORITY 4 (small bonus for being near king)
+                    proximity_rewards = _compute_king_proximity_rewards_vectorized(
+                        filtered_to, enemy_king_pos, 0.15  # Small reward for being adjacent
+                    )
+                    rewards[relevant_mask] += proximity_rewards
 
         return rewards
 

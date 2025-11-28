@@ -47,6 +47,7 @@ def generate_archer_moves(
         pos=start,
         directions=_KING_DIRECTIONS,
         allow_capture=True,
+        piece_type=PieceType.ARCHER
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)

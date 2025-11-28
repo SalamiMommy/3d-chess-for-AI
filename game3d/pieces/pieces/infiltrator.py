@@ -51,6 +51,7 @@ def generate_infiltrator_moves(
         pos=start,
         directions=all_dirs,
         allow_capture=True,
+        piece_type=PieceType.INFILTRATOR
     )
 
     return moves

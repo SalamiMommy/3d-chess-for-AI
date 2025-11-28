@@ -63,7 +63,8 @@ VECTOR_DIRECTIONS = _vector_dirs_numpy()
 def generate_vector_slider_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
-    pos: np.ndarray
+    pos: np.ndarray,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate vector slider moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -75,12 +76,13 @@ def generate_vector_slider_moves(
         color=color,
         pos=pos_arr,
         directions=VECTOR_DIRECTIONS,
-        max_distance=8
+        max_distance=8,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.VECTORSLIDER)
-def vectorslider_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def vectorslider_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Vector Slider moves."""
-    return generate_vector_slider_moves(state.cache_manager, state.color, pos)
+    return generate_vector_slider_moves(state.cache_manager, state.color, pos, ignore_occupancy)
 
 __all__ = ['VECTOR_DIRECTIONS', 'generate_vector_slider_moves', 'vectorslider_move_dispatcher']

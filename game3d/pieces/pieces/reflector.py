@@ -26,6 +26,7 @@ def _trace_reflector_ray(
     direction: np.ndarray,
     max_bounces: int,
     color_code: int,
+    ignore_occupancy: bool = False
 ) -> tuple:
     """
     Trace a single reflecting ray and return target coordinates with capture flags.
@@ -75,13 +76,21 @@ def _trace_reflector_ray(
             captures[count] = False
             count += 1
         else:
-            # Occupied square - capture if enemy piece
-            if occupant != color_code:
+            # Occupied square
+            if ignore_occupancy:
+                # Treat as a move (capture logic irrelevant for raw moves, but we mark it)
                 coords[count] = next_pos
-                captures[count] = True
+                captures[count] = (occupant != color_code)
                 count += 1
-            # Stop ray after encountering any piece
-            break
+                # CONTINUE RAY
+            else:
+                # Capture if enemy piece
+                if occupant != color_code:
+                    coords[count] = next_pos
+                    captures[count] = True
+                    count += 1
+                # Stop ray after encountering any piece
+                break
 
         pos = next_pos
 
@@ -91,7 +100,8 @@ def generate_reflecting_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_bounces: int = 3
+    max_bounces: int = 3,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """
     Generate all legal moves for a reflecting bishop piece.
@@ -118,6 +128,7 @@ def generate_reflecting_bishop_moves(
             direction=direction,
             max_bounces=max_bounces,
             color_code=friendly_code,
+            ignore_occupancy=ignore_occupancy
         )
 
         if len(coords) > 0:
@@ -139,7 +150,7 @@ def generate_reflecting_bishop_moves(
     return move_array
 
 @register(PieceType.REFLECTOR)
-def reflector_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def reflector_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """
     Registered dispatcher for REFLECTOR piece type.
     Delegates to numpy-native move generation.
@@ -149,6 +160,7 @@ def reflector_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray
         color=state.color,
         pos=pos,
         max_bounces=3,
+        ignore_occupancy=ignore_occupancy
     )
 
 __all__ = ["generate_reflecting_bishop_moves"]

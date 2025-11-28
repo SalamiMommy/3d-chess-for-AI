@@ -149,6 +149,16 @@ class CoordinateUtils:
     @staticmethod
     def in_bounds(coords: np.ndarray) -> np.ndarray:  # Change return type to np.ndarray only
         """Bounds checking for coordinates - fully vectorized."""
+        # ✅ OPTIMIZATION: Skip conversions if already correct format
+        # This is the common case - avoid asarray/atleast_2d overhead
+        if coords.ndim == 2 and coords.dtype in (COORD_DTYPE, BATCH_COORD_DTYPE):
+            # Already in correct format
+            if coords.shape[0] > VECTORIZATION_THRESHOLD:
+                return CoordinateUtils._bounds_check_batch_numba(coords)
+            result = ((coords >= 0).all(axis=1)) & ((coords <= SIZE_MINUS_1).all(axis=1))
+            return result
+        
+        # Fallback: normalize input
         coords = np.asarray(coords, dtype=BATCH_COORD_DTYPE)
         coords = np.atleast_2d(coords)
 
@@ -171,6 +181,18 @@ class CoordinateUtils:
             result[i] = (0 <= x <= SIZE_MINUS_1 and 0 <= y <= SIZE_MINUS_1 and 0 <= z <= SIZE_MINUS_1)
         
         return result
+
+    @staticmethod
+    def in_bounds_scalar(x: int, y: int, z: int) -> bool:
+        """Scalar bounds check - optimized for single coordinate."""
+        return 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE
+
+    @staticmethod
+    def in_bounds_fast(coords: np.ndarray) -> bool:
+        """Fast path bounds check for single coordinate array (3,)."""
+        return (0 <= coords[0] < SIZE and 
+                0 <= coords[1] < SIZE and 
+                0 <= coords[2] < SIZE)
 
 # =============================================================================
 # PUBLIC API FUNCTIONS - SINGLE IMPLEMENTATIONS

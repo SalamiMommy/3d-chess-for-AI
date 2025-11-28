@@ -23,7 +23,8 @@ def generate_trigonal_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = SIZE_MINUS_1
+    max_steps: int = SIZE_MINUS_1,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate trigonal bishop moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -40,13 +41,14 @@ def generate_trigonal_bishop_moves(
         pos=pos_arr,
         directions=TRIGONAL_BISHOP_VECTORS,
         max_distance=max_steps,
+        ignore_occupancy=ignore_occupancy
     )
 
     return moves
 
 @register(PieceType.TRIGONALBISHOP)
-def trigonal_bishop_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def trigonal_bishop_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Trigonal Bishop moves."""
-    return generate_trigonal_bishop_moves(state.cache_manager, state.color, pos)
+    return generate_trigonal_bishop_moves(state.cache_manager, state.color, pos, ignore_occupancy=ignore_occupancy)
 
 __all__ = ['TRIGONAL_BISHOP_VECTORS', 'generate_trigonal_bishop_moves', 'trigonal_bishop_move_dispatcher']

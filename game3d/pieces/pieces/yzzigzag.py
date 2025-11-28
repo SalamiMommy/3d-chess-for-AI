@@ -41,7 +41,8 @@ YZ_ZIGZAG_DIRECTIONS = _build_yz_zigzag_vectors()
 def generate_yz_zigzag_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
-    pos: np.ndarray
+    pos: np.ndarray,
+    ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate YZ-zigzag slider moves."""
     pos_arr = pos.astype(COORD_DTYPE)
@@ -53,11 +54,12 @@ def generate_yz_zigzag_moves(
         pos=pos_arr,
         directions=YZ_ZIGZAG_DIRECTIONS,
         max_distance=16,
+        ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.YZZIGZAG)
-def yz_zigzag_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
+def yz_zigzag_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for YZ-ZigZag moves."""
-    return generate_yz_zigzag_moves(state.cache_manager, state.color, pos)
+    return generate_yz_zigzag_moves(state.cache_manager, state.color, pos, ignore_occupancy)
 
 __all__ = ['YZ_ZIGZAG_DIRECTIONS', 'generate_yz_zigzag_moves']
