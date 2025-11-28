@@ -83,28 +83,6 @@ def _parallel_count_priests(occ: np.ndarray, ptype: np.ndarray, n_chunks: int = 
 
     return np.array([white_priests, black_priests], dtype=INDEX_DTYPE)
 
-
-@njit(cache=True, nogil=True, parallel=True)
-def _parallel_find_king(occ: np.ndarray, ptype: np.ndarray, color_code: COLOR_DTYPE) -> np.ndarray:
-    """Fallback: Optimized king finding using parallel search (only used on cache miss)."""
-    result = np.array([-1, -1, -1], dtype=COORD_DTYPE)
-    found = False
-
-    for x in prange(SIZE):  # Iterate x first for (x, y, z) order
-        if found:
-            continue
-        for y in range(SIZE):
-            if found:
-                continue
-            for z in range(SIZE):
-                if occ[x, y, z] == color_code and ptype[x, y, z] == PieceType.KING.value:
-                    result = np.array([x, y, z], dtype=COORD_DTYPE)
-                    found = True
-                    break
-
-    return result
-
-
 @njit(cache=True, nogil=True)
 def _vectorized_batch_update(occ: np.ndarray, ptype: np.ndarray,
                             coords: np.ndarray, pieces: np.ndarray) -> None:
@@ -257,6 +235,25 @@ class OccupancyCache:
         self._occ[x, y, z] = pieces[:, 1]  # colors
         self._ptype[x, y, z] = pieces[:, 0]  # piece types
 
+        # Note: King tracking is now done via direct lookup in find_king()
+        # No need to maintain a separate king position cache
+
+
+        # ✅ CRITICAL FIX: Update priest count for removed/added priests
+        # Decrement count for old priests being removed/replaced
+        old_priest_mask = (old_types == PieceType.PRIEST.value)
+        if np.any(old_priest_mask):
+            for i in np.where(old_priest_mask)[0]:
+                color_idx = 0 if old_colors[i] == Color.WHITE else 1
+                self._priest_count[color_idx] -= 1
+        
+        # Increment count for new priests being added
+        new_priest_mask = (pieces[:, 0] == PieceType.PRIEST.value)
+        if np.any(new_priest_mask):
+            for i in np.where(new_priest_mask)[0]:
+                color_idx = 0 if pieces[i, 1] == Color.WHITE else 1
+                self._priest_count[color_idx] += 1
+
         # Invalidate cached views
         self._flat_occ_view = None
 
@@ -276,6 +273,8 @@ class OccupancyCache:
             # Keep remaining items
             self._flat_indices_cache = dict(items_iter)
 
+
+
     def get_positions(self, color: int) -> np.ndarray:
         """Get all positions of color using vectorized operations."""
         mask = (self._occ == color)
@@ -287,19 +286,19 @@ class OccupancyCache:
         # No reordering needed - argwhere returns (x, y, z) from array indexed as [x, y, z]
         return coords.astype(self._coord_dtype)
 
-    def rebuild(self, coords: np.ndarray, colors: np.ndarray, types: np.ndarray) -> None:
+    def rebuild(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray) -> None:
         """Rebuild cache from coordinate arrays using vectorized operations."""
         self._occ.fill(0)
         self._ptype.fill(0)
-        self._king_positions.fill(-1)  # ✅ Reset king cache
+        self._king_positions.fill(-1)  # Reset king cache
 
         if len(coords) == 0:
             self._priest_count.fill(0)
             return
 
         coords = self._normalize_coords(coords)
-        colors = np.asarray(colors, dtype=COLOR_DTYPE)
         types = np.asarray(types, dtype=PIECE_TYPE_DTYPE)
+        colors = np.asarray(colors, dtype=COLOR_DTYPE)
 
         x = coords[:, 0].astype(INDEX_DTYPE)
         y = coords[:, 1].astype(INDEX_DTYPE)
@@ -319,6 +318,30 @@ class OccupancyCache:
 
         self._priest_count = _parallel_count_priests(self._occ, self._ptype, PARALLEL_CHUNKS)
 
+        # King positions are now found via direct lookup, no cache warming needed
+
+    def find_king(self, color: int) -> Optional[np.ndarray]:
+        """Find king position by direct lookup in occupancy arrays.
+        
+        Since OccupancyCache is the single source of truth, we just scan
+        the arrays directly. This is O(n) but n=729 for a 9x9x9 board,
+        which is negligible compared to the complexity of maintaining a cache.
+        """
+        color_code = COLOR_DTYPE(color)
+        
+        # Vectorized search: find all squares with matching color and piece type
+        mask = (self._occ == color_code) & (self._ptype == PieceType.KING.value)
+        
+        if not np.any(mask):
+            # King not found - this can happen if the King was captured (e.g. no Priests)
+            # This is a valid game state that leads to immediate loss
+            return None
+        
+        # Get coordinates (argwhere returns in (x, y, z) format)
+        coords = np.argwhere(mask)
+        return coords[0].astype(COORD_DTYPE)  # First (and only) king
+
+
     @property
     def count(self) -> int:
         """Total number of pieces on board."""
@@ -328,51 +351,6 @@ class OccupancyCache:
         """Check if color has any priests."""
         color_idx = 0 if color == Color.WHITE else 1
         return int(self._priest_count[color_idx]) > 0
-
-    def find_king(self, color: int) -> Optional[np.ndarray]:
-        """O(1) king position lookup with optimized fallback.
-        
-        WARNING: Do not mutate the returned array. Returns a view for performance.
-        """
-        color_idx = 0 if color == Color.WHITE else 1
-        pos = self._king_positions[color_idx]
-
-        if pos[0] == -1:  # Cache miss - should be rare
-            self._king_cache_misses += 1
-            # ✅ OPTIMIZATION: Try fast scan before full search
-            pos = self._find_king_fast_scan(color)
-            if pos is not None:
-                self._king_positions[color_idx] = pos
-                return pos
-            
-            # Full fallback if fast scan fails
-            logger.warning(f"King cache miss #{self._king_cache_misses} for color {color} - full search")
-            return self._find_king_slow(color)
-
-        return pos  # Return view for performance - do not mutate
-    
-    def _find_king_fast_scan(self, color: int) -> Optional[np.ndarray]:
-        """Fast king scan checking likely areas first."""
-        color_code = COLOR_DTYPE(color)
-        mid = SIZE // 2
-        
-        # Check center region first (3x3x3 cube around center)
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    x, y, z = mid + dx, mid + dy, mid + dz
-                    if (0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE):
-                        if (self._occ[x, y, z] == color_code and 
-                            self._ptype[x, y, z] == PieceType.KING.value):
-                            return np.array([x, y, z], dtype=self._coord_dtype)
-        
-        return None  # Not found in fast scan
-
-    def _find_king_slow(self, color: int) -> Optional[np.ndarray]:
-        """Fallback: Parallel search if king not in cache."""
-        color_code = COLOR_DTYPE(color)
-        king_pos = _parallel_find_king(self._occ, self._ptype, color_code)
-        return None if king_pos[0] == -1 else king_pos.astype(self._coord_dtype)
 
     def get_piece_counts_by_type(self, color: int) -> np.ndarray:
         """Get counts of each piece type for color using parallel counting."""
@@ -473,6 +451,12 @@ class OccupancyCache:
         old_color = self._occ[x, y, z]
         old_type = self._ptype[x, y, z]
 
+        # ✅ CRITICAL FIX: Update king cache when king is removed
+        if old_type == PieceType.KING.value:
+            color_idx = 0 if old_color == Color.WHITE else 1
+            # Mark king position as invalid (will force re-search)
+            self._king_positions[color_idx] = np.array([-1, -1, -1], dtype=COORD_DTYPE)
+
         if piece is None:
             self._occ[x, y, z] = 0
             self._ptype[x, y, z] = 0
@@ -488,6 +472,11 @@ class OccupancyCache:
             if piece[0] == PieceType.PRIEST.value:
                 color_idx = 0 if piece[1] == Color.WHITE else 1
                 self._priest_count[color_idx] += 1
+            
+            # ✅ CRITICAL FIX: Update king cache when king is placed
+            if piece[0] == PieceType.KING.value:
+                color_idx = 0 if piece[1] == Color.WHITE else 1
+                self._king_positions[color_idx] = coord[0].copy()
 
         self._flat_occ_view = None
         self._flat_indices_cache.clear()
@@ -503,8 +492,8 @@ class OccupancyCache:
         0 = empty, Color.WHITE.value = white, Color.BLACK.value = black
         This is O(1) and extremely cheap.
         """
-        # ravel('C') matches exactly the indexing used everywhere: x + SIZE*y + SIZE*SIZE*z
-        return self._occ.ravel(order='C')
+        # ravel('F') matches the indexing used in compute_board_index: x + SIZE*y + SIZE*SIZE*z
+        return self._occ.ravel(order='F')
 
     def get_cached_flattened(self) -> np.ndarray:
         """Return cached flattened occupancy (0 = empty, 1 = white, 2 = black).
@@ -516,7 +505,7 @@ class OccupancyCache:
             with self._flat_view_lock:
                 # Double-check pattern: another thread might have created it
                 if self._flat_occ_view is None:
-                    self._flat_occ_view = self._occ.ravel(order='C')
+                    self._flat_occ_view = self._occ.ravel(order='F')
         return self._flat_occ_view
 
     def get_flat_indices(self, coords: np.ndarray) -> np.ndarray:
@@ -556,5 +545,25 @@ class OccupancyCache:
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         piece_types = self._ptype[x, y, z].astype(PIECE_TYPE_DTYPE)
         colors = self._occ[x, y, z].astype(COLOR_DTYPE)
-
+        
         return coords_xyz, piece_types, colors
+
+    def export_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Export current state for cloning/persistence.
+        
+        Returns:
+            tuple: (coords, piece_types, colors)
+        """
+        return self.get_all_occupied_vectorized()
+
+    def import_state(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray) -> None:
+        """
+        Import state from exported data.
+        
+        Args:
+            coords: (N, 3) array of coordinates
+            types: (N,) array of piece types
+            colors: (N,) array of colors
+        """
+        self.rebuild(coords, types, colors)

@@ -173,21 +173,21 @@ class ZobristHash:
         if from_piece is None:
             raise ValueError(f"from_piece cannot be None for move from {from_coord} to {to_coord}")
 
-        # ✅ FIX: Convert from 1-based to 0-based indexing
+        # ✅ FIX: Use Color.WHITE (integer 1) not COLOR_WHITE (numpy array)
         from_piece_type = int(from_piece["piece_type"])
-        from_piece_color_idx = int(from_piece["color"]) - COLOR_WHITE  # 1→0, 2→1
+        from_piece_color_idx = int(from_piece["color"]) - Color.WHITE  # 1→0, 2→1
 
         new_hash = current_hash
 
         # XOR out piece at source
         new_hash ^= self._piece_keys[
-            from_piece_type - 1, from_piece_color_idx,  # ✅ Apply 0-based conversion
+            from_piece_type - 1, from_piece_color_idx,
             from_coord[0], from_coord[1], from_coord[2]
         ]
 
         if captured_piece:
             cap_piece_type = int(captured_piece["piece_type"])
-            cap_piece_color_idx = int(captured_piece["color"]) - COLOR_WHITE
+            cap_piece_color_idx = int(captured_piece["color"]) - Color.WHITE
             # XOR out captured piece at destination
             new_hash ^= self._piece_keys[
                 cap_piece_type - 1, cap_piece_color_idx,
@@ -218,9 +218,9 @@ class ZobristHash:
         if moved_piece is None:
             raise ValueError(f"moved_piece cannot be None for undo from {to_coord} to {from_coord}")
 
-        # Convert to 0-based indexing
+        # Convert to 0-based indexing - use Color.WHITE not COLOR_WHITE
         piece_type = int(moved_piece["piece_type"])
-        piece_color_idx = int(moved_piece["color"]) - COLOR_WHITE
+        piece_color_idx = int(moved_piece["color"]) - Color.WHITE
         
         new_hash = current_hash
 
@@ -234,7 +234,7 @@ class ZobristHash:
         # Undo: Restore captured piece if any
         if captured_piece:
             cap_piece_type = int(captured_piece["piece_type"])
-            cap_piece_color_idx = int(captured_piece["color"]) - COLOR_WHITE
+            cap_piece_color_idx = int(captured_piece["color"]) - Color.WHITE
             new_hash ^= self._piece_keys[
                 cap_piece_type - 1, cap_piece_color_idx,
                 to_coord[0], to_coord[1], to_coord[2]
@@ -266,18 +266,18 @@ class ZobristHash:
         new_hash = current_hash
 
         if old_piece is not None:
-            # ✅ FIX: Convert to 0-based indices
+            # ✅ FIX: Use Color.WHITE not COLOR_WHITE
             old_piece_type = int(old_piece["piece_type"]) - 1
-            old_piece_color_idx = int(old_piece["color"]) - COLOR_WHITE
+            old_piece_color_idx = int(old_piece["color"]) - Color.WHITE
             new_hash ^= self._piece_keys[
                 old_piece_type, old_piece_color_idx,
                 coord_array[0], coord_array[1], coord_array[2]
             ]
 
         if new_piece is not None:
-            # ✅ FIX: Convert to 0-based indices
+            # ✅ FIX: Use Color.WHITE not COLOR_WHITE
             new_piece_type = int(new_piece["piece_type"]) - 1
-            new_piece_color_idx = int(new_piece["color"]) - COLOR_WHITE
+            new_piece_color_idx = int(new_piece["color"]) - Color.WHITE
             new_hash ^= self._piece_keys[
                 new_piece_type, new_piece_color_idx,
                 coord_array[0], coord_array[1], coord_array[2]
@@ -345,7 +345,7 @@ class ZobristHash:
                     old_types[non_none_mask] = (
                         np.array([p["piece_type"] for p in old_pieces[non_none_mask]], dtype=PIECE_TYPE_DTYPE) - 1
                     )
-                old_colors = np.array([p["color"] - COLOR_WHITE if p is not None else 0 for p in old_pieces[valid_old_mask]], dtype=COLOR_DTYPE)
+                old_colors = np.array([p["color"] - Color.WHITE if p is not None else 0 for p in old_pieces[valid_old_mask]], dtype=COLOR_DTYPE)
 
                 result_hashes[valid_indices] ^= self._piece_keys[
                     old_types, old_colors,
@@ -361,7 +361,7 @@ class ZobristHash:
                 valid_coords = coords_array[valid_indices]
 
                 new_types = np.array([p["piece_type"] - 1 if p is not None else 0 for p in new_pieces[valid_new_mask]], dtype=PIECE_TYPE_DTYPE)
-                new_colors = np.array([p["color"] - COLOR_WHITE if p is not None else 0 for p in new_pieces[valid_new_mask]], dtype=COLOR_DTYPE)
+                new_colors = np.array([p["color"] - Color.WHITE if p is not None else 0 for p in new_pieces[valid_new_mask]], dtype=COLOR_DTYPE)
 
                 result_hashes[valid_indices] ^= self._piece_keys[
                     new_types, new_colors,

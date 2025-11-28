@@ -90,11 +90,12 @@ class SliderMovementEngine:
     Generator will validate them.
     """
 
-    def __init__(self, cache_manager: 'UnifiedCacheManager'):
-        self.cache_manager = cache_manager
+    def __init__(self):
+        pass  # No longer storing cache manager
 
     def generate_slider_moves_vectorized(
         self,
+        cache_manager: 'UnifiedCacheManager',
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
@@ -102,7 +103,7 @@ class SliderMovementEngine:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Generate slider moves using Numba-accelerated kernel."""
         pos_arr = np.asarray(pos, dtype=COORD_DTYPE).reshape(3)
-        flattened = self.cache_manager.occupancy_cache.get_flattened_occupancy()
+        flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
 
         return _generate_all_slider_moves(
             color, pos_arr, directions, max_distance, flattened
@@ -110,6 +111,7 @@ class SliderMovementEngine:
 
     def generate_slider_moves(
         self,
+        cache_manager: 'UnifiedCacheManager',
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
@@ -117,7 +119,7 @@ class SliderMovementEngine:
     ) -> list[Move]:
         """Generate slider moves as Move objects (NO validation)."""
         moves, captures = self.generate_slider_moves_vectorized(
-            color, pos, directions, max_distance
+            cache_manager, color, pos, directions, max_distance
         )
 
         # Create Move objects
@@ -125,6 +127,7 @@ class SliderMovementEngine:
 
     def generate_slider_moves_array(
         self,
+        cache_manager: 'UnifiedCacheManager',
         color: int,
         pos: np.ndarray,
         directions: np.ndarray,
@@ -132,7 +135,7 @@ class SliderMovementEngine:
     ) -> np.ndarray:
         """Generate slider moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
         destinations, captures = self.generate_slider_moves_vectorized(
-            color, pos, directions, max_distance
+            cache_manager, color, pos, directions, max_distance
         )
         
         if destinations.size == 0:
@@ -152,9 +155,9 @@ class SliderMovementEngine:
         return moves
 
 
-def get_slider_movement_generator(cache_manager: 'UnifiedCacheManager') -> SliderMovementEngine:
+def get_slider_movement_generator() -> SliderMovementEngine:
     """Factory function to create a SliderMovementEngine instance."""
-    return SliderMovementEngine(cache_manager)
+    return SliderMovementEngine()
 
 
 __all__ = ['SliderMovementEngine', 'get_slider_movement_generator']

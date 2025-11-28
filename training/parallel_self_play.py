@@ -28,7 +28,7 @@ def _game_worker_permodel(args):
     from training.training_types import TrainingExample
     from game3d.common.coord_utils import coord_to_idx
     from game3d.common.shared_types import (
-        POLICY_DIM, N_PIECE_TYPES, Color, Result
+        POLICY_DIM, N_PIECE_TYPES, Color, Result, COORD_DTYPE
     )
     from game3d.movement.movepiece import Move
     from game3d.game.factory import start_game_state
@@ -173,9 +173,10 @@ def _game_worker_permodel(args):
             to_probs = torch.softmax(to_logits, dim=-1).cpu().numpy()[0]
             value_pred_scalar = float(value_pred.cpu().numpy()[0, 0])
 
-            # Process moves
-            from_coords = legal_moves[:, :3]
-            to_coords = legal_moves[:, 3:6]
+            # Process moves - extract coordinates from array
+            # legal_moves is (N, 6) array: [from_x, from_y, from_z, to_x, to_y, to_z]
+            from_coords = legal_moves[:, :3].astype(COORD_DTYPE)  # Columns 0,1,2
+            to_coords = legal_moves[:, 3:6].astype(COORD_DTYPE)   # Columns 3,4,5
 
             # Get occupancy data
             occ_cache = game.state.cache_manager.occupancy_cache
@@ -191,8 +192,11 @@ def _game_worker_permodel(args):
             n_valid = len(valid_moves)
 
             # Create policy targets
-            from_indices = coord_to_idx(valid_moves[:, :3])
-            to_indices = coord_to_idx(valid_moves[:, 3:6])
+            # Extract coordinates from array columns
+            valid_from_coords = valid_moves[:, :3]   # Columns 0,1,2
+            valid_to_coords = valid_moves[:, 3:6]    # Columns 3,4,5
+            from_indices = coord_to_idx(valid_from_coords)
+            to_indices = coord_to_idx(valid_to_coords)
 
             from_target = np.zeros(POLICY_DIM, dtype=np.float32)
             to_target = np.zeros(POLICY_DIM, dtype=np.float32)
@@ -236,7 +240,10 @@ def _game_worker_permodel(args):
 
             # Execute move
             chosen_move = valid_moves[chosen_idx]
-            submit_move = Move(chosen_move[:3], chosen_move[3:6])
+            # Extract coordinates from array columns
+            from_coord_chosen = chosen_move[:3].astype(COORD_DTYPE)  # Columns 0,1,2
+            to_coord_chosen = chosen_move[3:6].astype(COORD_DTYPE)   # Columns 3,4,5
+            submit_move = Move(from_coord_chosen, to_coord_chosen)
             receipt = game.submit_move(submit_move)
 
             if not receipt.is_legal:

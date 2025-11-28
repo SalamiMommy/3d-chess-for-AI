@@ -37,8 +37,9 @@ def generate_bomb_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # 1. King-like movement using jump generator
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     moves = jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=BOMB_MOVEMENT_VECTORS,

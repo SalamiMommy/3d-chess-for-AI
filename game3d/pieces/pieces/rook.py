@@ -34,7 +34,8 @@ def generate_rook_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use centralized slider generator with piece-specific vectors
-    moves = get_slider_movement_generator(cache_manager).generate_slider_moves_array(
+    moves = get_slider_movement_generator().generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=ROOK_MOVEMENT_VECTORS,

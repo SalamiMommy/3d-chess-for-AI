@@ -38,8 +38,9 @@ def generate_trailblazer_moves(
     """Generate trailblazer moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
 
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
     moves = slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=ROOK_DIRECTIONS,

@@ -28,6 +28,65 @@ class KingInCheckInfo(NamedTuple):
     king_coord: np.ndarray
     color: int
 
+def move_would_leave_king_in_check(game_state: 'GameState', move: np.ndarray, cache=None) -> bool:
+    """
+    Centralized function to check if a move would leave the player's king in check.
+
+    This is the SINGLE SOURCE OF TRUTH for move safety checking. It:
+    1. Checks if player has priests (all moves are safe if true)
+    2. Simulates the move on a temporary board state
+    3. Checks if the king is in check after the move
+    4. Reverts the simulation
+
+    Args:
+        game_state: Current game state
+        move: Move array [from_x, from_y, from_z, to_x, to_y, to_z]
+        cache: Optional cache manager
+
+    Returns:
+        True if move would leave king in check, False otherwise
+    """
+    cache = cache or getattr(game_state, 'cache_manager', None)
+    if cache is None:
+        raise RuntimeError("Cache manager required for move safety check")
+
+    occ_cache = cache.occupancy_cache
+    player_color = game_state.color
+
+    # ✅ CENTRALIZED PRIEST CHECK: All moves are safe if player has priests
+    if occ_cache.has_priest(player_color):
+        return False
+
+    # Get move data
+    from_coord, to_coord = move[:3], move[3:]
+    piece_data = occ_cache.get(from_coord)
+    if piece_data is None:
+        return False  # Invalid move (no piece at source)
+
+    captured_data = occ_cache.get(to_coord)
+
+    # Simulate move
+    occ_cache.set_position(from_coord, None)
+    occ_cache.set_position(to_coord, np.array([piece_data['piece_type'], piece_data['color']]))
+
+    try:
+        # Check if king is in check using cached opponent moves
+        is_check = king_in_check(
+            game_state.board,
+            player_color,
+            player_color,
+            cache
+        )
+    finally:
+        # Always revert move (even if exception occurs)
+        occ_cache.set_position(from_coord, np.array([piece_data['piece_type'], piece_data['color']]))
+        if captured_data:
+            occ_cache.set_position(to_coord, np.array([captured_data['piece_type'], captured_data['color']]))
+        else:
+            occ_cache.set_position(to_coord, None)
+
+    return is_check
+
 def _get_priest_count(board, king_color: Optional[Color] = None, cache: Any = None) -> int:
     """Get count of priests for the given king color."""
     cache = cache or getattr(board, 'cache_manager', None)
@@ -64,12 +123,19 @@ def _find_king_position(board, king_color: int, cache=None) -> Optional[np.ndarr
 
 
 def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None) -> np.ndarray:
-    """Get attacked squares using move cache - calculates from cached moves."""
+    """Get attacked squares using move cache - calculates from RAW/pseudolegal moves.
+    
+    Uses raw moves instead of legal moves because:
+    - For check detection, we need ALL squares an enemy can attack
+    - Legal moves are filtered for king safety, which would miss attacking squares
+    - A piece can attack a square even if moving there would leave its own king in check
+    """
     mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
 
     # Use move cache for optimal attack calculation
     if cache and hasattr(cache, 'move_cache'):
-        cached_moves = cache.move_cache.get_cached_moves(attacker_color)
+        # ✅ UPDATED: Use get_raw_moves() to get pseudolegal moves (all enemy attacks)
+        cached_moves = cache.move_cache.get_raw_moves(attacker_color)
         if cached_moves is None or len(cached_moves) == 0:
             return mask
 
@@ -85,31 +151,6 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
 
     return mask
 
-
-def _generate_piece_moves(board, coord: np.ndarray, piece: np.ndarray, cache=None) -> np.ndarray:
-    """Generate moves for a piece using cache manager.
-
-    This function leverages the move cache for optimal performance.
-    Returns numpy array of moves in MOVE_DTYPE format.
-    """
-    cache = cache or getattr(board, 'cache_manager', None)
-
-    if cache is None or not hasattr(cache, 'move_cache'):
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Get cached moves from move cache
-    cached_moves = cache.move_cache.get_cached_moves(piece["color"])
-    if cached_moves is None or len(cached_moves) == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Filter moves for this specific piece (moves are numpy arrays: [from_x, from_y, from_z, to_x, to_y, to_z])
-    piece_moves = []
-    for move in cached_moves:
-        # Compare from coordinates (columns 0, 1, 2)
-        if np.array_equal(move[:3], coord):
-            piece_moves.append(move)
-
-    return np.array(piece_moves) if piece_moves else np.empty((0, 6), dtype=COORD_DTYPE)
 
 def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None) -> bool:
     """Check if a square is attacked by a specific color."""
@@ -132,7 +173,8 @@ def king_in_check(board, current_player: Color, king_color: int, cache=None) -> 
 
     king_pos = _find_king_position(board, king_color, cache)
     if king_pos is None:
-        return False
+        # King is missing and no priests -> Treated as Check (Checkmate)
+        return True
     return square_attacked_by(board, current_player, king_pos, 1 - king_color, cache)
 
 def get_check_status(board, current_player: Color, king_color: int, cache=None) -> CheckStatus:

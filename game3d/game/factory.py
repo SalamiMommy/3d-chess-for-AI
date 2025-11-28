@@ -6,7 +6,8 @@ from typing import Optional, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import (
-    FLOAT_DTYPE, BOARD_SHAPE_4D, Color, MOVE_DTYPE
+    FLOAT_DTYPE, BOARD_SHAPE_4D, Color, MOVE_DTYPE,
+    COORD_DTYPE, PIECE_TYPE_DTYPE, COLOR_DTYPE
 )
 from game3d.common.validation import validate_array
 from game3d.common.state_utils import create_new_state
@@ -27,17 +28,24 @@ def start_game_state(
     from game3d.board.board import Board
 
     board = Board.empty()
-    if ensure_start_pos:
-        board.init_startpos()
+    
+    # Prepare initial data for cache manager
+    initial_data = None
+    if not ensure_start_pos:
+        # Empty setup
+        initial_data = (
+            np.empty((0, 3), dtype=COORD_DTYPE),
+            np.empty(0, dtype=PIECE_TYPE_DTYPE),
+            np.empty(0, dtype=COLOR_DTYPE)
+        )
 
     # Use centralized cache manager
-    cm = cache_manager or get_cache_manager(board, Color.WHITE)
+    # If initial_data is None, manager will use board.get_initial_setup()
+    cm = cache_manager or get_cache_manager(board, Color.WHITE, initial_data=initial_data)
     board._cache_manager = cm
 
-    # ✅ CRITICAL FIX: Rebuild occupancy cache from board data
-    cm._rebuild_occupancy_from_board()
-
-    return GameState(
+    # ✅ NEW: Create initial GameState to enable legal move generation
+    initial_state = GameState(
         board=board,
         color=Color.WHITE,
         cache_manager=cm,
@@ -46,6 +54,16 @@ def start_game_state(
         turn_number=1,
     )
 
+    # ✅ NEW: Generate initial legal moves to populate move cache
+    from game3d.movement.generator import generate_legal_moves
+    initial_moves = generate_legal_moves(initial_state)
+    
+    # Store in move cache for immediate availability
+    cm.move_cache.store_legal_moves(Color.WHITE, initial_moves)
+
+    return initial_state
+
+
 
 def create_game_state_from_tensor(
     tensor: np.ndarray,
@@ -53,32 +71,16 @@ def create_game_state_from_tensor(
     cache_manager: Optional[OptimizedCacheManager] = None,
     validate_input: bool = False
 ) -> GameState:
-    """Create game state from tensor using centralized utilities."""
-    from game3d.board import Board
-    from game3d.game.gamestate import GameState
-
-    # Validate using common validation module
-    if validate_input:
-        tensor = validate_array(
-            tensor, name="tensor", dtype=FLOAT_DTYPE,
-            shape=BOARD_SHAPE_4D, strict_bounds=False
-        )
-
-    # Normalize color
-    if isinstance(color, int):
-        color = Color(color) if 0 <= color <= 2 else Color.EMPTY
-
-    board = Board(tensor)
-    cm = cache_manager or get_cache_manager(board, color)
-    board._cache_manager = cm
-
-    return GameState(
-        board=board,
-        color=color,
-        cache_manager=cm,
-        history=np.empty(0, dtype=MOVE_DTYPE),
-        halfmove_clock=0,
-        turn_number=1,
+    """
+    DEPRECATED: Board no longer accepts tensor parameter.
+    
+    This function is kept for backward compatibility but will raise NotImplementedError.
+    Use start_game_state() instead and modify the cache directly if needed.
+    """
+    raise NotImplementedError(
+        "create_game_state_from_tensor is deprecated. "
+        "Board is now constructor-only and doesn't accept tensor parameters. "
+        "Use start_game_state() and modify the cache_manager.occupancy_cache directly."
     )
 
 
@@ -88,15 +90,9 @@ def clone_game_state_for_search(
     optimize_memory: bool = True
 ) -> GameState:
     """Clone game state for search using state_utils."""
+    # Note: optimize_memory parameter is kept for backward compatibility but ignored
+    # Board is now stateless, so there's no _array to optimize
     cloned_state = original.clone(deep_cache=deep_cache)
-
-    # Optimize arrays using validation module
-    if optimize_memory and hasattr(cloned_state.board, '_array'):
-        cloned_state.board._array = validate_array(
-            cloned_state.board._array, name="board_array",
-            dtype=FLOAT_DTYPE, contiguous=True
-        )
-
     return cloned_state
 
 
@@ -148,12 +144,12 @@ def validate_batch_states(states: list, min_size: int = 1) -> list:
 
 
 def optimize_game_state_arrays(state: GameState, force_contiguous: bool = True) -> GameState:
-    """Optimize game state arrays using validation module."""
-    if hasattr(state.board, '_array'):
-        state.board._array = validate_array(
-            state.board._array, name="board_array", dtype=FLOAT_DTYPE,
-            contiguous=force_contiguous
-        )
+    """Optimize game state arrays using validation module.
+    
+    Note: This function is kept for backward compatibility but is now a no-op.
+    Board is stateless and has no _array attribute to optimize.
+    """
+    # Board no longer has _array attribute - it's stateless
     return state
 
 
@@ -170,10 +166,10 @@ def new_board_with_manager(
         color = Color(color) if 0 <= color <= 2 else Color.WHITE
 
     board = Board.empty()
-    board.init_startpos()
-
+    
     # Setup cache manager
     if cache_manager is None:
+        # Defaults to startpos initialization via get_initial_setup()
         cm = get_cache_manager(board, color)
     else:
         cm = cache_manager
@@ -182,8 +178,8 @@ def new_board_with_manager(
 
     # Get start tensor from cache manager utilities
     if return_start_tensor:
-        from game3d.cache.manager import get_start_tensor
-        return board, get_start_tensor(cm)
+        # Use board's native array export which uses the cache manager
+        return board, board.get_board_array()
 
     return board
 
@@ -213,9 +209,15 @@ def create_start_tensor(cache_manager: Optional[OptimizedCacheManager] = None) -
     from game3d.board import Board
 
     board = Board.empty()
-    board.init_startpos()
+    
+    # Create cache manager if not provided (will init with startpos)
+    if cache_manager is None:
+        cm = get_cache_manager(board, Color.WHITE)
+        board._cache_manager = cm
+    else:
+        board._cache_manager = cache_manager
 
-    # Use board's native array export
+    # Use board's native array export (reconstructs from cache)
     tensor = board.get_board_array()
 
     # Cache in manager if available

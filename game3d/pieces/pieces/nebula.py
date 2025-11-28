@@ -22,7 +22,7 @@ def generate_nebula_moves(
     """Generate teleport moves within radius-3 sphere."""
 
     # Get jump movement generator from cache
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
 
     # All positions at Manhattan distance 3 (simplified from original)
     directions = np.array([
@@ -41,6 +41,7 @@ def generate_nebula_moves(
     ], dtype=COORD_DTYPE)
 
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos.astype(COORD_DTYPE),
         directions=directions,

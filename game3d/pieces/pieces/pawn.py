@@ -61,7 +61,7 @@ def generate_pawn_moves(
     if not in_bounds_vectorized(start.reshape(1, 3))[0]:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     move_arrays = []
 
     # Select appropriate push direction based on color (0=white, 1=black)
@@ -70,6 +70,7 @@ def generate_pawn_moves(
 
     # Push moves
     push_moves = jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=start,
         directions=push_dir,
@@ -88,7 +89,8 @@ def generate_pawn_moves(
         if (in_bounds_vectorized(two_step_pos.reshape(1, 3))[0] and
             cache_manager.occupancy_cache.get(two_step_pos) is None):
             two_step_moves = jump_engine.generate_jump_moves(
-                color=color,
+                cache_manager=cache_manager,
+        color=color,
                 pos=start,
                 directions=two_step_dir,
                 allow_capture=False,
@@ -104,6 +106,7 @@ def generate_pawn_moves(
 
     # Capture moves
     cap_moves = jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=start,
         directions=attack_dirs,

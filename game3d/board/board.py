@@ -51,16 +51,21 @@ def _batch_set_pieces_at_coords(board: np.ndarray, coords: np.ndarray,
 # OPTIMIZED BOARD CLASS
 # =============================================================================
 class Board:
-    """Pure numpy board storage - no logic."""
-    __slots__ = ('_array', '_cache_manager', 'generation')
+    """
+    Stateless board configuration factory.
+    
+    This class NO LONGER holds the game state. It serves only to:
+    1. Define the initial starting position (coordinates, types, colors).
+    2. Provide static configuration constants if needed.
+    
+    The actual game state lives exclusively in the OccupancyCache.
+    """
+    __slots__ = ('_cache_manager', 'generation')
 
-    def __init__(self, array=None):
-        if array is None:
-            self._array = np.zeros((N_TOTAL_PLANES, SIZE, SIZE, SIZE), dtype=FLOAT_DTYPE)
-        else:
-            self._array = array.astype(FLOAT_DTYPE, copy=False)
+    def __init__(self):
+        """Initialize board configuration."""
         self._cache_manager = None
-        self.generation = 0  # Track board modifications for cache invalidation
+        self.generation = 0  # Kept for compatibility, but should not be relied upon for state
 
     @property
     def cache_manager(self):
@@ -72,34 +77,63 @@ class Board:
         """Set the cache manager for this board."""
         self._cache_manager = value
 
-    # CRITICAL: This method is required by many modules
     def array(self) -> np.ndarray:
-        """Get underlying board array."""
-        return self._array
+        """
+        DEPRECATED: Get underlying board array.
+        
+        WARNING: This method now returns a reconstructed array from the cache if available,
+        or throws an error if no cache manager is attached.
+        """
+        if self._cache_manager:
+            # Reconstruct array from cache for backward compatibility
+            # This is expensive and should be avoided in hot paths
+            return self._reconstruct_array_from_cache()
+        
+        # Fallback for initialization before cache is attached (should be empty)
+        return np.zeros((N_TOTAL_PLANES, SIZE, SIZE, SIZE), dtype=FLOAT_DTYPE)
 
     def get_board_array(self) -> np.ndarray:
         """Get board array (alias for array())."""
-        return self._array
+        return self.array()
+
+    def _reconstruct_array_from_cache(self) -> np.ndarray:
+        """Reconstruct the full 4D board array from the OccupancyCache."""
+        arr = np.zeros((N_TOTAL_PLANES, SIZE, SIZE, SIZE), dtype=FLOAT_DTYPE)
+        
+        coords, types, colors = self._cache_manager.occupancy_cache.get_all_occupied_vectorized()
+        
+        if coords.shape[0] == 0:
+            return arr
+            
+        # Vectorized reconstruction
+        color_offsets = (colors - Color.WHITE).astype(INDEX_DTYPE)
+        plane_indices = (types - 1) + (color_offsets * N_PIECE_TYPES)
+        
+        x = coords[:, 0].astype(INDEX_DTYPE)
+        y = coords[:, 1].astype(INDEX_DTYPE)
+        z = coords[:, 2].astype(INDEX_DTYPE)
+        
+        arr[plane_indices, x, y, z] = 1.0
+        return arr
 
     @staticmethod
     def empty() -> 'Board':
-        """Create empty board."""
+        """Create empty board configuration."""
         return Board()
 
     @classmethod
     def startpos(cls) -> 'Board':
-        """Create board with starting position."""
-        b = cls.empty()
-        b.init_startpos()
-        return b
+        """Create board configuration for starting position."""
+        return cls()
 
-    def init_startpos(self) -> None:
-        """Initialize 3-rank starting position with vectorized operations."""
-        self._array[:] = 0.0
-
+    def get_initial_setup(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Get the initial starting position configuration.
+        
+        Returns:
+            Tuple containing (coords, types, colors) for the starting position.
+        """
         # Define layouts as direct integer arrays (PieceType enum values)
-        # This eliminates string parsing entirely
-
         # Rank 1 layout (back rank) - 9x9 grid of piece types
         rank1_layout = np.array([
             [35, 21, 16, 14, 12, 14, 16, 21, 35],  # Top row: reflector, coneslider, etc.
@@ -134,12 +168,10 @@ class Board:
         idx = 0
 
         # Process Rank 1 (z=0 for white, z=8 for black)
-        self._vectorized_place_rank(coords, types, colors, rank1_layout, 0, idx)
-        idx += rank1_layout.size * 2  # *2 for both colors
+        idx = self._place_rank(coords, types, colors, rank1_layout, 0, idx)
 
         # Process Rank 2 (z=1 for white, z=7 for black)
-        self._vectorized_place_rank(coords, types, colors, rank2_layout, 1, idx)
-        idx += rank2_layout.size * 2
+        idx = self._place_rank(coords, types, colors, rank2_layout, 1, idx)
 
         # Process Rank 3 - ALL PAWNS (z=2 for white, z=6 for black)
         pawn_type = int(PieceType.PAWN)
@@ -160,171 +192,52 @@ class Board:
         idx += n_pawns
 
         # Trim arrays to actual size
-        coords = coords[:idx]
-        types = types[:idx]
-        colors = colors[:idx]
+        return coords[:idx], types[:idx], colors[:idx]
 
-        # Batch place all pieces
-        if len(coords) > 0:
-            self._place_pieces_vectorized(coords, types, colors)
-            self.generation += 1
-
-    def _vectorized_place_rank(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray,
-                               layout: np.ndarray, z: int, start_idx: int) -> None:
-        """Vectorized placement of a single rank."""
+    def _place_rank(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray,
+                               layout: np.ndarray, z: int, start_idx: int) -> int:
+        """Helper to place a single rank."""
         n_squares = layout.size
         y_coords, x_coords = np.divmod(np.arange(n_squares, dtype=INDEX_DTYPE), 9)
 
+        # Filter for non-empty pieces
+        mask = layout.flat != 0
+        valid_types = layout.flat[mask]
+        valid_x = x_coords[mask]
+        valid_y = y_coords[mask]
+        count = valid_types.size
+
         # Place white pieces
-        end_idx = start_idx + n_squares
-        coords[start_idx:end_idx, 0] = x_coords
-        coords[start_idx:end_idx, 1] = y_coords
+        end_idx = start_idx + count
+        coords[start_idx:end_idx, 0] = valid_x
+        coords[start_idx:end_idx, 1] = valid_y
         coords[start_idx:end_idx, 2] = z
-        types[start_idx:end_idx] = layout.flat
+        types[start_idx:end_idx] = valid_types
         colors[start_idx:end_idx] = Color.WHITE
 
         # Place black pieces
         start_idx = end_idx
-        end_idx = start_idx + n_squares
-        coords[start_idx:end_idx, 0] = x_coords
-        coords[start_idx:end_idx, 1] = y_coords
+        end_idx = start_idx + count
+        coords[start_idx:end_idx, 0] = valid_x
+        coords[start_idx:end_idx, 1] = valid_y
         coords[start_idx:end_idx, 2] = 8 - z
-        types[start_idx:end_idx] = layout.flat
+        types[start_idx:end_idx] = valid_types
         colors[start_idx:end_idx] = Color.BLACK
-
-    def _place_pieces_vectorized(self, coords: np.ndarray, piece_types: np.ndarray, colors: np.ndarray) -> None:
-        """Place pieces at coordinates - fully vectorized."""
-        if coords.shape[0] == 0:
-            return
-
-        # Convert color values to plane offsets (0 for white, 1 for black)
-        color_offsets = (colors - Color.WHITE).astype(INDEX_DTYPE)
-        plane_indices = (piece_types - 1) + (color_offsets * N_PIECE_TYPES)
-
-        # Ensure correct dtypes for indexing
-        plane_indices = plane_indices.astype(INDEX_DTYPE)
-        x = coords[:, 0].astype(INDEX_DTYPE)
-        y = coords[:, 1].astype(INDEX_DTYPE)
-        z = coords[:, 2].astype(INDEX_DTYPE)
-
-        # Vectorized assignment
-        self._array[plane_indices, x, y, z] = 1.0
-
-    def get_piece_at(self, coord) -> tuple:
-        """Vectorized piece lookup. Returns (piece_type, color) or (None, None)"""
-        coord_arr = np.asarray(coord, dtype=COORD_DTYPE).reshape(3)
-        x, y, z = coord_arr
-
-        if in_bounds_vectorized(coord_arr.reshape(1, 3))[0]:
-            planes = self._array[:, x, y, z]
-            plane_idx = np.argmax(planes)
-            if planes[plane_idx] > 0:
-                color = COLOR_WHITE if plane_idx < N_PIECE_TYPES else COLOR_BLACK
-                piece_type = (plane_idx % N_PIECE_TYPES) + 1
-                return piece_type, color
-        return None, None
-
-    def get_pieces_at_vectorized(self, coords: np.ndarray) -> np.ndarray:
-        """Public interface with LOUD error detection."""
-        coords_arr = validate_coords(coords)
-
-        if coords_arr.shape[0] > VECTORIZATION_THRESHOLD:
-            results = self._batch_get_pieces_optimized(self._array, coords_arr)
-        else:
-            results = self._batch_get_pieces_fallback(coords_arr)
-
-        # LOUD FAILURE: Check for sentinel values
-        if np.any(results == -1.0):
-            invalid_indices = np.where(results == -1.0)[0]
-            logger.critical(f"🚨 NUMBA PROCESSED INVALID COORDINATES: {coords_arr[invalid_indices]}")
-            raise ValueError(f"Numba bounds error at indices: {invalid_indices}")
-
-        return results
-
-    @staticmethod
-    @njit(cache=True, fastmath=True, parallel=True)
-    def _batch_get_pieces_optimized(board: np.ndarray, coords: np.ndarray) -> np.ndarray:
-        """Optimized batch retrieval with bounds checking."""
-        assert board.ndim == 4, f"Board must be 4D, got {board.ndim}"
-        assert board.shape[0] == N_TOTAL_PLANES, f"Board planes mismatch: {board.shape[0]} != {N_TOTAL_PLANES}"
-        assert coords.ndim == 2, f"Coords must be 2D, got {coords.ndim}"
-        assert coords.shape[1] == 3, f"Coords must be (N,3), got {coords.shape}"
-
-        n_coords = coords.shape[0]
-        results = np.empty(n_coords, dtype=FLOAT_DTYPE)
-
-        for i in prange(n_coords):
-            x, y, z = coords[i]
-            if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
-                results[i] = board[:, x, y, z].max()
-            else:
-                results[i] = -1.0  # Sentinel for invalid
-
-        return results
-
-    def _batch_get_pieces_fallback(self, coords: np.ndarray) -> np.ndarray:
-        """Fallback for small batches."""
-        results = np.empty(coords.shape[0], dtype=FLOAT_DTYPE)
-        for i, (x, y, z) in enumerate(coords):
-            if 0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE:
-                results[i] = self._array[:, x, y, z].max()
-            else:
-                results[i] = -1.0
-        return results
-
-    def set_piece_at(self, coord, piece_type: int, color: int) -> None:
-        """Vectorized piece placement with generation tracking."""
-        coord_arr = np.asarray(coord, dtype=COORD_DTYPE).reshape(3)
-        x, y, z = coord_arr
-
-        if in_bounds_vectorized(coord_arr.reshape(1, 3))[0]:
-            self._array[:, x, y, z] = 0.0
-            if piece_type > 0:
-                # Calculate plane index
-                color_offset = 0 if color == Color.WHITE else N_PIECE_TYPES
-                plane_idx = (piece_type - 1) + color_offset
-                if 0 <= plane_idx < N_TOTAL_PLANES:
-                    self._array[plane_idx, x, y, z] = 1.0
-            self.generation += 1  # CRITICAL: Track board modifications
-
-    def batch_set_pieces_at(self, coords: np.ndarray, piece_types: np.ndarray, colors: np.ndarray) -> None:
-        """Set multiple pieces at once - increments generation only once."""
-        if coords.shape[0] == 0:
-            return
-
-        # Validate all coordinates
-        valid_mask = in_bounds_vectorized(coords)
-        valid_coords = coords[valid_mask]
-        valid_types = piece_types[valid_mask]
-        valid_colors = colors[valid_mask]
-
-        if len(valid_coords) == 0:
-            return
-
-        # Clear all target squares first
-        for i in range(len(valid_coords)):
-            x, y, z = valid_coords[i]
-            self._array[:, x, y, z] = 0.0
-
-        # Set new pieces
-        color_offsets = (valid_colors - Color.WHITE).astype(INDEX_DTYPE)
-        plane_indices = (valid_types - 1) + (color_offsets * N_PIECE_TYPES)
-
-        plane_indices = plane_indices.astype(INDEX_DTYPE)
-        x = valid_coords[:, 0].astype(INDEX_DTYPE)
-        y = valid_coords[:, 1].astype(INDEX_DTYPE)
-        z = valid_coords[:, 2].astype(INDEX_DTYPE)
-
-        self._array[plane_indices, x, y, z] = 1.0
-        self.generation += 1
+        
+        return end_idx
 
     def copy(self) -> 'Board':
-        """Create a copy of the board."""
-        new_board = Board(self._array.copy())
+        """Create a copy of the board configuration."""
+        new_board = Board()
         new_board.generation = self.generation
         return new_board
 
     def byte_hash(self) -> int:
-        """Get a hash of the board state for repetition detection."""
-        # Use a fast hash that can handle numpy arrays
-        return hash(self._array.tobytes())
+        """
+        Get a hash of the board state.
+        DELEGATES to cache manager if available, otherwise returns 0.
+        """
+        if self._cache_manager:
+            return self._cache_manager.zobrist_cache.current_hash
+        return 0
+

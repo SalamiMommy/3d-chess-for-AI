@@ -597,6 +597,55 @@ def validate_array(
             array = array.astype(dtype)
     return array
 
+def validate_move_bounds_with_error(from_coord: np.ndarray, to_coord: np.ndarray) -> Optional[str]:
+    """Validate move coordinates are within bounds and return error message."""
+    from_coords = from_coord.reshape(1, 3)
+    to_coords = to_coord.reshape(1, 3)
+
+    try:
+        from_valid = in_bounds_vectorized(from_coords)[0]
+        to_valid = in_bounds_vectorized(to_coords)[0]
+    except Exception as e:
+        logger.critical(f"Coordinate validation crashed: {e}", exc_info=True)
+        return f"Coordinate validation error: {e}"
+
+    if not from_valid and not to_valid:
+        return f"Both source {from_coord} and target {to_coord} coordinates are out of bounds"
+    elif not from_valid:
+        return f"Source coordinate {from_coord} is out of bounds"
+    elif not to_valid:
+        return f"Target coordinate {to_coord} is out of bounds"
+
+    return None
+
+
+def validate_move_ownership_with_error(game_state: Any, from_coord: np.ndarray, expected_color: int) -> Optional[str]:
+    """Validate piece exists and belongs to correct player, returning error message."""
+    try:
+        from_coord_batch = from_coord.reshape(1, 3)
+        colors, types = game_state.cache_manager.occupancy_cache.batch_get_attributes(from_coord_batch)
+
+        if types[0] == 0:  # COLOR_EMPTY
+            return f"No piece at source coordinate {from_coord}"
+
+        if colors[0] != expected_color:
+            return f"Piece at {from_coord} belongs to opponent"
+
+    except Exception as e:
+        logger.critical(f"Occupancy cache lookup failed: {e}", exc_info=True)
+        return "Cache system failure during piece lookup"
+
+    return None
+
+
+def validate_hive_move_allowed(game_state: Any, from_coord: np.ndarray, piece_type: int) -> Optional[str]:
+    """Validate hive hasn't already moved this turn."""
+    from game3d.common.shared_types import PieceType
+
+    if piece_type == PieceType.HIVE and game_state.has_hive_moved(from_coord):
+        return f"Hive at {from_coord} has already moved this turn"
+    return None
+
 # ==============================================================================
 # MODULE EXPORTS
 # ==============================================================================

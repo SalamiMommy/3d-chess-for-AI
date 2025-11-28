@@ -40,8 +40,9 @@ def generate_archer_moves(
     moves_list = []
 
     # 1. King walks using jump movement (already vectorized)
-    jump_gen = get_jump_movement_generator(cache_manager)
+    jump_gen = get_jump_movement_generator()
     king_moves = jump_gen.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=start,
         directions=_KING_DIRECTIONS,

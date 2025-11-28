@@ -83,16 +83,17 @@ class JumpMovementEngine:
     Generator will validate them.
     """
 
-    def __init__(self, cache_manager: 'UnifiedCacheManager'):
-        self.cache_manager = cache_manager
-        
+    def __init__(self):
         # Ensure precomputed moves are loaded
+        global _PRECOMPUTED_LOADED
         if not _PRECOMPUTED_LOADED:
             _load_precomputed_moves()
+            _PRECOMPUTED_LOADED = True
 
 
     def generate_jump_moves(
             self,
+            cache_manager: 'UnifiedCacheManager',
             color: COLOR_DTYPE,
             pos: np.ndarray,
             directions: np.ndarray,          # (N,3) jump offsets
@@ -114,8 +115,8 @@ class JumpMovementEngine:
             # We need to find the ConsolidatedAuraCache to check for buffs
             # This is done dynamically to avoid circular imports
             is_buffed = False
-            if hasattr(self.cache_manager, '_effect_cache_instances'):
-                for cache in self.cache_manager._effect_cache_instances:
+            if hasattr(cache_manager, '_effect_cache_instances'):
+                for cache in cache_manager._effect_cache_instances:
                     if cache.__class__.__name__ == 'ConsolidatedAuraCache':
                         # Check if this specific piece is buffed
                         # batch_is_buffed expects (N, 3)
@@ -168,7 +169,7 @@ class JumpMovementEngine:
             if targets.shape[0] == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)
 
-            flattened = self.cache_manager.occupancy_cache.get_flattened_occupancy()
+            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
             idxs = targets[:, 0] + SIZE * targets[:, 1] + SIZE * SIZE * targets[:, 2]
             occs = flattened[idxs]
 
@@ -201,9 +202,9 @@ class JumpMovementEngine:
 
 
 
-def get_jump_movement_generator(cache_manager: 'UnifiedCacheManager') -> JumpMovementEngine:
+def get_jump_movement_generator() -> JumpMovementEngine:
     """Backwards compatibility alias for JumpMovementEngine constructor."""
-    return JumpMovementEngine(cache_manager)
+    return JumpMovementEngine()
 
 # Update the __all__ export list
 __all__ = ['JumpMovementEngine', 'get_jump_movement_generator']

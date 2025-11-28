@@ -30,7 +30,8 @@ def generate_orbital_moves(
     pos: np.ndarray  # ✅ Changed: accept numpy array directly
 ) -> np.ndarray:
     """Generate all valid Orbiter moves - jumps to positions exactly 4 Manhattan away."""
-    return get_jump_movement_generator(cache_manager).generate_jump_moves(
+    return get_jump_movement_generator().generate_jump_moves(
+        cache_manager=cache_manager,
         color=color, pos=pos, directions=_ORBITAL_DIRS, piece_type=PieceType.ORBITER
     )
 

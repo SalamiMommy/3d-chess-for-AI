@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+origin_mask = np.any(all_coords != 0, axis=1)
 KING_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 
 def generate_king_moves(
@@ -36,8 +36,9 @@ def generate_king_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump generator with piece-specific vectors
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=KING_MOVEMENT_VECTORS,

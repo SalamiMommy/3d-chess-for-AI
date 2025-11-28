@@ -437,4 +437,15 @@ def get_path_between(start: np.ndarray, end: np.ndarray) -> np.ndarray:
     end = np.asarray(end, dtype=COORD_DTYPE)
     return _get_path_between_numba(start, end)
 
+def coords_to_keys(coords: np.ndarray) -> np.ndarray:
+    """Convert coordinates to cache keys using bit packing: x | (y << 9) | (z << 18)."""
+    return coords[:, 0] | (coords[:, 1] << 9) | (coords[:, 2] << 18)
+
+def get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
+    """Get the 6 direct (orthogonal) neighbors of a single coordinate."""
+    # Ensure coord is 2D for get_neighbors_vectorized, which is optimized for batch input
+    coord_batch = np.atleast_2d(coord)
+    # get_neighbors_vectorized uses ROOK_MOVEMENT_VECTORS for 6-connected neighbors (orthogonal)
+    return get_neighbors_vectorized(coord_batch)
+
 __all__.append('get_path_between')

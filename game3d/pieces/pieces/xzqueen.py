@@ -39,11 +39,12 @@ def generate_xz_queen_moves(
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Get slider engine instance
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
     move_arrays = []
 
     # Generate slider moves in XZ-plane
     slider_moves = slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=_XZ_SLIDER_DIRS,
@@ -54,6 +55,7 @@ def generate_xz_queen_moves(
 
     # Generate king hop moves (3D)
     king_moves = slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=_KING_3D_DIRS,

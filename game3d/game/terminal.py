@@ -4,7 +4,7 @@
 from __future__ import annotations
 from typing import Optional, List, Any
 import numpy as np
-from numba import njit
+from numba import njit, prange
 import logging
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ def _check_insufficient_material_vectorized(piece_counts: np.ndarray) -> bool:
 @njit(cache=True, parallel=True)
 def _build_piece_counts_from_occupancy(colors: np.ndarray, piece_types: np.ndarray) -> np.ndarray:
     """Build (2, N_PIECE_TYPES) piece counts array from occupancy cache data."""
-    from numba import prange
+    """Build (2, N_PIECE_TYPES) piece counts array from occupancy cache data."""
     piece_counts = np.zeros((2, N_PIECE_TYPES), dtype=INDEX_DTYPE)
 
     for i in prange(len(colors)):

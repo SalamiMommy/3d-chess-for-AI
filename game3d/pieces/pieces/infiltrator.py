@@ -44,8 +44,9 @@ def generate_infiltrator_moves(
         all_dirs = _KING_DIRECTIONS
 
     # Generate all moves using jump movement
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     moves = jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=start,
         directions=all_dirs,

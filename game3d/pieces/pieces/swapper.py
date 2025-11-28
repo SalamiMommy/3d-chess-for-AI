@@ -29,11 +29,12 @@ def generate_swapper_moves(
     color: int,
     pos: np.ndarray
 ) -> List[Move]:
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     moves_list = []
 
     # 1. King walks
     king_moves = jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos.astype(COORD_DTYPE),
         directions=_SWAPPER_MOVEMENT_VECTORS,
@@ -46,7 +47,8 @@ def generate_swapper_moves(
     swap_dirs = _get_friendly_swap_directions(cache_manager, color, pos)
     if swap_dirs.shape[0] > 0:
         swap_moves = jump_engine.generate_jump_moves(
-            color=color,
+            cache_manager=cache_manager,
+        color=color,
             pos=pos.astype(COORD_DTYPE),
             directions=swap_dirs,
             allow_capture=False,  # Swaps don't capture

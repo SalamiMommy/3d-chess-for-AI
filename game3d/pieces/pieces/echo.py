@@ -54,8 +54,9 @@ def generate_echo_moves(
     start = pos.astype(COORD_DTYPE).ravel()
 
     # Generate jump movements through cache manager
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=start,
         directions=_ECHO_DIRECTIONS,

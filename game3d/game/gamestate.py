@@ -40,28 +40,28 @@ class GameState:
 
     def __init__(self, board, color: int = COLOR_BLACK, cache_manager: Optional[OptimizedCacheManager] = None,
                 history: Union[deque, np.ndarray, list] = None, halfmove_clock: int = 0, turn_number: int = 1):
-        """Initialize with numpy-native structures."""
+        """Initialize with proper cache handling."""
         if board is None:
             raise ValueError("Board cannot be None")
 
         self.board = board
         self.color = color
 
-        # ✅ CRITICAL: Synchronize cache manager with current board state
-        # This prevents generation mismatches when reusing managers across search branches
+        # --- CRITICAL: Set up cache manager WITHOUT triggering rebuild ---
         if cache_manager is None:
-            # Create new manager - board reference is already correct
+            # Create new manager (will rebuild during __init__)
             self.cache_manager = OptimizedCacheManager(board, color)
         else:
-            # Reuse existing manager - MUST update stale board reference
+            # Reuse existing manager - DO NOT modify it
+            # The cache should already be in sync with the board
             self.cache_manager = cache_manager
-            self.cache_manager.board = self.board  # ← FORCE coherence with current board
-            self.cache_manager._current = color     # ← Sync active color
 
-        # Ensure board knows its manager (bidirectional link)
-        self.board._cache_manager = self.cache_manager
+        # Ensure bidirectional link
+        if self.board._cache_manager is not self.cache_manager:
+            logger.warning("Board cache_manager mismatch - syncing")
+            self.board._cache_manager = self.cache_manager
 
-        # ✅ Retrieve pre-computed Zobrist from manager (avoid recomputation)
+        # Retrieve pre-computed Zobrist (no recomputation)
         self._zkey = self.cache_manager._zkey
 
         # Initialize game state arrays
@@ -70,32 +70,76 @@ class GameState:
         elif isinstance(history, deque):
             self.history = history
         else:
-            # Convert existing array/list to deque
             self.history = deque(history, maxlen=MAX_HISTORY_SIZE)
+
         self.halfmove_clock = halfmove_clock
         self.turn_number = turn_number
 
-        # Move cache (invalidated on demand)
+        # Move cache
         self._legal_moves_cache = None
         self._legal_moves_cache_key = 0
 
-        # Position repetition tracking (THREE-FOLD)
+        # Position repetition tracking
         self._position_keys = np.array([self._zkey], dtype=HASH_DTYPE)
         self._position_counts = np.array([1], dtype=INDEX_DTYPE)
 
         # Performance metrics
         self._metrics = PerformanceMetrics()
 
-        # O(1) cache key generation multipliers (prime numbers)
+        # Cache key generation
         PRIME1, PRIME2, PRIME3 = 1000003, 1000033, 1000037
         self._cache_key_multipliers = np.array([PRIME1, PRIME2, PRIME3], dtype=np.uint64)
 
-        # Undo information stack (for fast takeback)
+        # Undo stack
         self._undo_info = []
-        
+
         # Multi-hive move tracking
-        self._pending_hive_moves = []  # List of Move objects for hive moves this turn
-        self._moved_hive_positions = set()  # Set of tuples (x, y, z) for hives that have moved
+        self._pending_hive_moves = []
+        self._moved_hive_positions = set()
+
+    @classmethod
+    def from_startpos(cls) -> 'GameState':
+        """Factory method to create game state from standard starting position."""
+        from game3d.board.board import Board
+        board = Board.startpos()
+        color = COLOR_WHITE
+        cache_manager = OptimizedCacheManager(board, color)
+        return cls(board=board, color=color, cache_manager=cache_manager)
+
+    def reset(self, start_state: Optional['GameState'] = None) -> None:
+        """Reset game state to initial or specified state."""
+        if start_state:
+            # Copy from provided state
+            self.board = start_state.board.copy()
+            self.color = start_state.color
+            self.cache_manager = start_state.cache_manager
+            self.history = deque(list(start_state.history), maxlen=MAX_HISTORY_SIZE)
+            self.halfmove_clock = start_state.halfmove_clock
+            self.turn_number = start_state.turn_number
+            self._zkey = start_state._zkey
+            self._position_keys = start_state._position_keys.copy()
+            self._position_counts = start_state._position_counts.copy()
+            self._undo_info = start_state._undo_info.copy()
+            self._pending_hive_moves = start_state._pending_hive_moves.copy()
+            self._moved_hive_positions = start_state._moved_hive_positions.copy()
+        else:
+            # Reset to start position
+            from game3d.board.board import Board
+            board = Board.startpos()
+            self.board = board
+            self.color = COLOR_WHITE
+            self.cache_manager = OptimizedCacheManager(board, COLOR_WHITE)
+            self.history = deque(maxlen=MAX_HISTORY_SIZE)
+            self.halfmove_clock = 0
+            self.turn_number = 1
+            self._zkey = self.cache_manager._zkey
+            self._position_keys = np.array([self._zkey], dtype=HASH_DTYPE)
+            self._position_counts = np.array([1], dtype=INDEX_DTYPE)
+            self._undo_info = []
+            self._pending_hive_moves = []
+            self._moved_hive_positions = set()
+
+        self._clear_caches()
 
     @property
     def zkey(self) -> int:
@@ -134,7 +178,7 @@ class GameState:
         """Clear local state caches."""
         self._legal_moves_cache = None
         self._legal_moves_cache_key = 0
-    
+
     # =============================================================================
     # MULTI-HIVE MOVE TRACKING
     # =============================================================================
@@ -142,26 +186,26 @@ class GameState:
     def is_in_hive_multi_move_state(self) -> bool:
         """Check if currently in multi-hive move mode (first hive moved but turn not ended)."""
         return len(self._pending_hive_moves) > 0
-    
+
     def has_hive_moved(self, pos: np.ndarray) -> bool:
         """Check if a hive at the given position has already moved this turn."""
         pos_tuple = tuple(pos.flatten().tolist())
         return pos_tuple in self._moved_hive_positions
-    
+
     def get_unmoved_hives(self) -> List[np.ndarray]:
         """Get list of hive positions that haven't moved yet this turn."""
         from game3d.common.shared_types import PieceType
-        
+
         unmoved_hives = []
-        
+
         # Get all pieces of current color
         coords = self.cache_manager.occupancy_cache.get_positions(self.color)
         if coords.size == 0:
             return unmoved_hives
-        
-        # Get their attributes  
+
+        # Get their attributes
         colors, piece_types = self.cache_manager.occupancy_cache.batch_get_attributes(coords)
-        
+
         # Filter for HIVE pieces that haven't moved
         for i, coord in enumerate(coords):
             if piece_types[i] == PieceType.HIVE:
@@ -169,7 +213,7 @@ class GameState:
                 if pos_tuple not in self._moved_hive_positions:
                     unmoved_hives.append(coord)
         return unmoved_hives
-    
+
     def clear_hive_move_tracking(self) -> None:
         """Clear hive move tracking (called when turn ends)."""
         self._pending_hive_moves.clear()
@@ -190,11 +234,11 @@ class GameState:
     def make_move_vectorized(self, move: np.ndarray) -> Optional['GameState']:
         """Make a single move - DELEGATES to turnmove.make_move()."""
         from game3d.game import turnmove
-        
+
         # Ensure move is in correct format (flatten if needed)
         if move.ndim == 2:
             move = move.flatten()
-        
+
         return turnmove.make_move(self, move)
 
     def make_multiple_moves_vectorized(self, moves: np.ndarray) -> Optional['GameState']:
@@ -203,155 +247,37 @@ class GameState:
             return self
 
         from game3d.game import turnmove
-        
+
         # Chain moves through turnmove.make_move()
         current_state = self
         for move in moves:
             current_state = turnmove.make_move(current_state, move)
             if current_state is None:
                 raise RuntimeError(f"Move execution failed in sequence")
-        
+
         return current_state
 
-    def apply_forced_moves(self, moves: np.ndarray) -> 'GameState':
-        """Apply multiple forced moves (effects) to the state simultaneously without strict ownership validation."""
-        if moves.size == 0:
-            return self
-
-        # 1. Create new board copy
-        new_board = self.board.copy()
-        board_arr = new_board.array()
-        
-        # 2. Get pieces at 'from' coordinates
-        from_coords = moves[:, :3]
-        to_coords = moves[:, 3:]
-        
-        # Get pieces from cache (vectorized)
-        colors, types = self.cache_manager.occupancy_cache.batch_get_attributes(from_coords)
-        
-        # Filter out empty squares
-        valid_mask = types != 0
-        if not np.any(valid_mask):
-            return self
-            
-        valid_moves = moves[valid_mask]
-        valid_from = from_coords[valid_mask]
-        valid_to = to_coords[valid_mask]
-        valid_types = types[valid_mask]
-        valid_colors = colors[valid_mask]
-        
-        # 3. Apply to new_board (simultaneous update)
-        # Clear all source positions
-        for i in range(len(valid_from)):
-            fx, fy, fz = valid_from[i]
-            board_arr[:, fx, fy, fz] = 0.0
-            
-        # Set all destination positions
-        for i in range(len(valid_to)):
-            tx, ty, tz = valid_to[i]
-            pt = valid_types[i]
-            pc = valid_colors[i]
-            
-            # Calculate plane index (COLOR_WHITE is 1, COLOR_BLACK is 2)
-            color_offset = 0 if pc == 1 else N_PIECE_TYPES
-            plane_idx = (pt - 1) + color_offset
-            
-            # Clear destination first (in case it was occupied)
-            board_arr[:, tx, ty, tz] = 0.0
-            board_arr[plane_idx, tx, ty, tz] = 1.0
-            
-        new_board.generation += 1
-        
-        # 4. Create new state
-        new_state = create_new_state(
-            original_state=self,
-            new_board=new_board,
-            new_color=self.color, # Effects don't change turn
-            move=None, 
-            increment_turn=False, 
-            reuse_cache=True
-        )
-        
-        # 5. Update occupancy cache manually since we did manual board update
-        # Clear sources
-        for i in range(len(valid_from)):
-            new_state.cache_manager.occupancy_cache.set_position(valid_from[i], None)
-        
-        # Set destinations
-        for i in range(len(valid_to)):
-             piece_arr = np.array([valid_types[i], valid_colors[i]], dtype=np.int32)
-             new_state.cache_manager.occupancy_cache.set_position(valid_to[i], piece_arr)
-             
-        # 6. Update Zobrist (approximate or full rebuild if needed)
-        # For now, we let the cache manager handle it lazily or we should update it.
-        # Ideally we update it properly.
-        # But since this is "forced moves", we might just want to ensure the state is valid.
-        # Let's rely on the fact that create_new_state reuses cache manager, 
-        # and we just updated occupancy cache.
-        # Zobrist might be stale if we don't update it.
-        # Let's try to update it if possible, but it's complex with simultaneous moves.
-        # We'll leave it for now as effects are often transient or end of turn.
-        
-        # CRITICAL FIX: Pre-generate and cache moves for BOTH colors after effect application
-        from game3d.movement.generator import generate_legal_moves
-        
-        # Generate and cache moves for the current player (same color since effects don't switch turn)
-        current_player_moves = generate_legal_moves(new_state)
-        
-        # Generate and cache moves for the opponent
-        opponent_color = 3 - new_state.color
-        original_color = new_state.color
-        new_state.color = opponent_color
-        opponent_moves = generate_legal_moves(new_state)
-        new_state.color = original_color
-             
-        return new_state
 
     def _switch_turn(self) -> 'GameState':
-        """Switch turn between players and return new state."""
+        """
+        Switch turn between players.
+
+        Board is already updated, just need to flip color and increment turn.
+        """
         from game3d.common.state_utils import create_new_state
-        
+
         return create_new_state(
             original_state=self,
-            new_board=self.board,  # Board is already updated
-            new_color=self.color.opposite(),
+            new_board=self.board,  # Board already updated
+            new_color=Color(self.color).opposite(),
             move=None,
             increment_turn=True,
-            reuse_cache=True
+            reuse_cache=True  # Reuse cache, don't rebuild
         )
 
     # =============================================================================
     # GAME ANALYSIS OPERATIONS - REFACTORED TO USE COMMON MODULES
     # =============================================================================
-
-        board_array = self.board.array()  # Standardized to array()
-
-        # Use numpy operations for metrics
-        total_pieces = np.sum(board_array > 0)
-        white_pieces = np.sum(board_array[:N_PIECE_TYPES] > 0)
-        black_pieces = np.sum(board_array[N_PIECE_TYPES:] > 0)
-
-        # Calculate center control using piece utilities
-        center_start = SIZE // 3
-        center_end = 2 * SIZE // 3
-
-        white_center = np.sum(board_array[:N_PIECE_TYPES, center_start:center_end, center_start:center_end, center_start:center_end])
-        black_center = np.sum(board_array[N_PIECE_TYPES:, center_start:center_end, center_start:center_end, center_start:center_end])
-
-        metrics = {
-            'total_pieces': total_pieces,
-            'white_pieces': white_pieces,
-            'black_pieces': black_pieces,
-            'piece_density': total_pieces / VOLUME,
-            'board_value_white': np.sum(board_array[:N_PIECE_TYPES]),
-            'board_value_black': np.sum(board_array[N_PIECE_TYPES:]),
-            'center_control_white': white_center,
-            'center_control_black': black_center
-        }
-
-        cm._batch_effect_cache[cache_key] = metrics
-        return metrics
-
     def get_performance_metrics(self) -> Dict[str, float]:
         """Get performance metrics."""
         moves = self.legal_moves  # Use property
@@ -364,7 +290,6 @@ class GameState:
             'memory_usage': self.board.array().nbytes / (1024 * 1024)  # MB
         }
 
-    # In gamestate.py (around line 400)
     def is_game_over(self) -> bool:
         """Check if game is over (delegated to terminal module)."""
         from game3d.game.terminal import is_game_over as terminal_is_game_over
@@ -378,16 +303,46 @@ class GameState:
     # =============================================================================
     # CLONE AND SERIALIZATION
     # =============================================================================
-    def clone(self) -> 'GameState':
-        """Create optimized clone using state utilities."""
-        return create_new_state(
-            original_state=self,
-            new_board=self.board.copy(),
-            new_color=self.color,
-            move=None,
-            increment_turn=False,
-            reuse_cache=True
+    def clone(self, deep_cache: bool = False) -> 'GameState':
+        """
+        Create a deep copy with properly synchronized cache.
+
+        CRITICAL: Rebuild cache from current occupancy data to ensure consistency.
+        """
+        # 1. Create a fresh board configuration (stateless)
+        new_board = self.board.copy()
+
+        # 2. Export current state from OccupancyCache (Single Source of Truth)
+        current_state_data = self.cache_manager.occupancy_cache.export_state()
+
+        # 3. Create fresh cache manager initialized with current state data
+        new_cache = OptimizedCacheManager(
+            board=new_board, 
+            color=self.color,
+            initial_data=current_state_data
         )
+
+        # 4. Create new game state
+        new_state = GameState(
+            board=new_board,
+            color=self.color,
+            cache_manager=new_cache,
+            history=list(self.history),  # Copy history
+            halfmove_clock=self.halfmove_clock,
+            turn_number=self.turn_number
+        )
+
+        # 5. Copy move history
+        new_state._move_history = getattr(self, '_move_history', np.array([], dtype=MOVE_DTYPE)).copy()
+
+        # 6. CRITICAL: Zobrist was recomputed during cache rebuild
+        new_state._zkey = new_cache._zkey
+
+        # 7. Copy hive tracking state
+        new_state._pending_hive_moves = self._pending_hive_moves.copy()
+        new_state._moved_hive_positions = self._moved_hive_positions.copy()
+
+        return new_state
 
     def get_state_vector(self) -> np.ndarray:
         """Get flattened state vector for neural networks."""
@@ -424,4 +379,4 @@ class PerformanceMetrics:
         return f"PerformanceMetrics(calls={self.legal_moves_calls + self.make_move_calls})"
 
 # Module exports
-__all__ = ['GameState']
+__all__ = ['GameState', 'PerformanceMetrics']

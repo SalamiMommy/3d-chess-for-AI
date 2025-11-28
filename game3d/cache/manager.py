@@ -16,7 +16,7 @@ from game3d.common.shared_types import (
     MAX_COORD_VALUE, MIN_COORD_VALUE, VECTORIZATION_THRESHOLD, TRAILBLAZER,
     PIECE_SLICE
 )
-from game3d.common.coord_utils import coord_to_idx, idx_to_coord, ensure_coords, in_bounds_vectorized
+from game3d.common.coord_utils import coord_to_idx, idx_to_coord, ensure_coords, in_bounds_vectorized, get_neighbors_vectorized
 from game3d.cache.managerconfig import ManagerConfig
 from game3d.cache.caches.occupancycache import OccupancyCache
 from game3d.cache.caches.zobrist import ZobristHash
@@ -54,7 +54,7 @@ def _find_manager_idx(registry: np.ndarray, board_id: int, color: int) -> int:
             return i
     return -1
 
-def get_cache_manager(board, color: int = 0) -> "OptimizedCacheManager":
+def get_cache_manager(board, color: int = 0, initial_data: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None) -> "OptimizedCacheManager":
     """Thread-safe manager retrieval/caching using numpy registry."""
     global _ACTIVE_CACHE_MANAGERS, _REGISTRY_COUNT
 
@@ -65,14 +65,14 @@ def get_cache_manager(board, color: int = 0) -> "OptimizedCacheManager":
 
         if idx >= 0:
             # Manager exists - would use weakref in production
-            return OptimizedCacheManager(board, color)
+            return OptimizedCacheManager(board, color, initial_data)
 
         # Create new manager
         if _REGISTRY_COUNT[0] >= _MAX_MANAGERS:
             logger.error(f"Registry full ({_MAX_MANAGERS} managers)")
             raise RuntimeError("Cache manager registry overflow")
 
-        manager = OptimizedCacheManager(board, color)
+        manager = OptimizedCacheManager(board, color, initial_data)
 
         _ACTIVE_CACHE_MANAGERS[_REGISTRY_COUNT[0]] = (
             board_id, color, id(manager), True
@@ -82,6 +82,10 @@ def get_cache_manager(board, color: int = 0) -> "OptimizedCacheManager":
         logger.debug(f"Created cache manager #{_REGISTRY_COUNT[0]} for board {board_id}")
         return manager
 
+def _get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
+    """Return adjacent coordinates for capture effect processing."""
+    coord_batch = coord.reshape(1, 3)
+    return get_neighbors_vectorized(coord_batch)
 # =============================================================================
 # NUMPY-NATIVE STATISTICS TRACKER
 # =============================================================================
@@ -164,7 +168,7 @@ class OptimizedCacheManager:
     """Pure numpy-native cache manager - zero Python loops in hot paths."""
 
     __slots__ = (
-        "board", "_current", "_move_counter",
+        "_board", "_board_generation", "_current", "_move_counter",
         "config", "_stats_tracker", "_move_stats",
         "occupancy_cache", "zobrist_cache", "_zkey",
         "transposition_table", "symmetry_manager", "move_cache",
@@ -173,105 +177,98 @@ class OptimizedCacheManager:
         "_start_tensor_cache", "_lock", "__weakref__"
     )
 
-    def __init__(self, board, color: int = 0):
-        self.board = board
+    def __init__(self, board, color: int = 0, initial_data: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None):
+        self._board = board
+        self._board_generation = getattr(board, 'generation', 0)
         self._current = color
-        self._move_counter = 0  # Python int is faster than array[0]
+        self._move_counter = 0
 
         # Config and stats
         self.config = ManagerConfig()
         self._stats_tracker = NumpyStatsTracker()
         self._move_stats = NumpyStatsTracker()
-
-        # Thread safety for complex operations
         self._lock = threading.RLock()
 
         # Initialize caches
         self._initialize_caches()
 
-        # Rebuild from board
-        self._rebuild_occupancy_from_board()
+        # CRITICAL: Initialize occupancy from provided data or board setup
+        if initial_data is not None:
+            self._initialize_from_data(initial_data)
+        else:
+            self._initialize_from_setup(board.get_initial_setup())
 
         # Compute initial Zobrist
         self._zkey = self._compute_initial_zobrist(color)
 
-        # Link board
-        self.board._cache_manager = self
+        # Link board (bidirectional)
+        self._board._cache_manager = self
 
         # Sync generation
-        initial_gen = getattr(self.board, 'generation', 0)
-        self.move_cache._board_generation = initial_gen
+        self.move_cache._board_generation = self._board_generation
 
         # Diagnostics
         from game3d.common.diagnostics import record_cache_creation
         record_cache_creation(self, board)
 
+    @property
+    def board(self):
+        """Get the board (read-only access preferred)."""
+        return self._board
+
+
+    @board.setter
+    def board(self, new_board):
+        """
+        Set board - ONLY for clone/reset operations.
+
+        During normal gameplay, DON'T use this setter.
+        """
+        new_generation = getattr(new_board, 'generation', 0)
+        self._board = new_board
+        self._board_generation = new_generation
+
     def _initialize_caches(self) -> None:
-        """Initialize all caches - all numpy-native."""
+        """Initialize all cache subsystems."""
         # Core caches
         self.occupancy_cache = OccupancyCache()
         self.zobrist_cache = ZobristHash()
-
-        # Symmetry
+        
+        # Symmetry and Transposition
         self.symmetry_manager = SymmetryManager(self)
-        self.transposition_table = SymmetryAwareTranspositionTable(
-            self.symmetry_manager,
-            size_mb=self.config.main_tt_size_mb
-        )
-
-        # Move cache
+        self.transposition_table = SymmetryAwareTranspositionTable(self.symmetry_manager)
+        
+        # Move Cache (requires self for callback/access)
         self.move_cache = create_move_cache(self)
-
-        # Effect caches registry (list for iteration, not dict)
+        
+        # Dependency Graph
+        self.dependency_graph = NumpyDependencyGraph(self)
+        
+        # Effect Caches
+        self._effect_caches = {}
+        
+        aura_cache = ConsolidatedAuraCache(self._board, self)
+        geomancy_cache = GeomancyCache(self)
+        trailblaze_cache = TrailblazeCache(self)
+        
         self._effect_cache_instances = [
-            ConsolidatedAuraCache(self.board, self),
-            GeomancyCache(self),
-            TrailblazeCache(self)
+            aura_cache,
+            geomancy_cache,
+            trailblaze_cache
         ]
 
-        # Batch effect cache
-        self._batch_effect_cache = np.empty(VOLUME, dtype=FLOAT_DTYPE)
+    def _initialize_from_setup(self, setup: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> None:
+        """Initialize occupancy from board setup (coords, types, colors)."""
+        coords, types, colors = setup
+        self.occupancy_cache.rebuild(coords, types, colors)
+        logger.info(f"Initialized occupancy cache from board setup: {len(coords)} pieces")
 
-        # Dependency tracking
-        self.dependency_graph = NumpyDependencyGraph(self)
+    def _initialize_from_data(self, data: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> None:
+        """Initialize occupancy from existing data (cloning)."""
+        coords, types, colors = data
+        self.occupancy_cache.import_state(coords, types, colors)
+        logger.info(f"Initialized occupancy cache from data: {len(coords)} pieces")
 
-        # Memory pool
-        from game3d.cache.unified_memory_pool import get_memory_pool
-        self._memory_pool = get_memory_pool()
-
-    def _rebuild_occupancy_from_board(self) -> None:
-        """Vectorized rebuild from board array."""
-        if not hasattr(self.board, '_array'):
-            logger.critical("Board missing _array!")
-            raise RuntimeError("Board has no _array attribute")
-
-        board_array = self.board._array
-
-        # Find occupied positions
-        # Find occupied positions (only check piece planes)
-        occupied_mask = board_array[PIECE_SLICE] > 0
-        occupied_indices = np.where(occupied_mask.any(axis=0))
-
-        if len(occupied_indices[0]) == 0:
-            self.occupancy_cache.clear()
-            return
-
-        # Convert to coordinates (z,y,x) -> (x,y,z)
-        coords_zyx = np.stack(occupied_indices, axis=1).astype(INDEX_DTYPE)
-        coords_xyz = coords_zyx[:, [2, 1, 0]].astype(COORD_DTYPE)
-
-        # Extract piece types and colors
-        occupied_values = board_array[:, occupied_indices[0], occupied_indices[1], occupied_indices[2]]
-        piece_planes = np.argmax(occupied_values, axis=0)
-
-        white_mask = piece_planes < N_PIECE_TYPES
-        colors = np.where(white_mask, Color.WHITE, Color.BLACK).astype(COLOR_DTYPE)
-        types = np.where(white_mask,
-                        piece_planes + 1,
-                        piece_planes - N_PIECE_TYPES + 1).astype(PIECE_TYPE_DTYPE)
-
-        # Rebuild occupancy cache
-        self.occupancy_cache.rebuild(coords_xyz, colors, types)
 
     def _compute_initial_zobrist(self, color: int) -> HASH_DTYPE:
         """Vectorized Zobrist computation."""
@@ -335,13 +332,22 @@ class OptimizedCacheManager:
             return True
 
     def undo_move(self, last_mv: np.ndarray, color: int) -> None:
-        """Undo move - recompute from scratch."""
+        """
+        Undo move - requires full rebuild.
+
+        This is acceptable because undo is rare (only for search/debug).
+        """
         with self._lock:
             self._move_counter -= 1
-            # _compute_initial_zobrist now returns Python int
+
+            # Recompute Zobrist from scratch
             self._zkey = self._compute_initial_zobrist(color)
+
+            # Invalidate all caches
             self.dependency_graph.notify_update('move_undone')
             self.move_cache.invalidate()
+
+            logger.debug(f"Undo completed: Rebuilt caches")
 
     def get_cache_statistics(self) -> Dict[str, Any]:
         """Aggregate statistics from all caches - numpy native."""
@@ -370,9 +376,10 @@ class OptimizedCacheManager:
         return generate_legal_moves(state)
 
     def get_move_cache_key(self, color: int) -> int:
-        """Generate cache key from generation and Zobrist."""
-        board_gen = getattr(self.board, 'generation', 0)
-        return (board_gen << 16) | ((self._zkey & 0xFFFF) << 1) | (color & 1)
+        """Generate cache key from Zobrist."""
+        # Board generation is no longer used as Board is stateless
+        # Zobrist key is sufficient for position uniqueness
+        return ((self._zkey & 0xFFFF) << 1) | (color & 1)
 
     def update_zobrist_after_move(self, current_hash: HASH_DTYPE, move: np.ndarray,
                                  from_piece: object, captured_piece: object | None) -> HASH_DTYPE:
@@ -424,33 +431,35 @@ class OptimizedCacheManager:
             cache.on_batch_occupancy_changed(changed_coords, pieces)
 
     def _invalidate_affected_piece_moves(self, affected_coords: np.ndarray, color: int, game_state) -> None:
-        """Vectorized invalidation of moved pieces and dependencies."""
+        """
+        Vectorized invalidation of moved pieces and dependencies.
+
+        This marks pieces for regeneration but does NOT regenerate immediately.
+        Regeneration happens lazily when moves are requested.
+        """
         if affected_coords.size == 0:
             return
 
         with self._lock:
             opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
 
-            # 1. Mark direct pieces (at the affected squares)
+            # --- STEP 1: Mark direct pieces (at affected squares) ---
             if affected_coords.size > 0:
                 keys = _coords_to_keys(affected_coords)
                 for key in keys:
-                    # Invalidate for both colors as occupancy changed
+                    # Invalidate for both colors
                     self.move_cache.mark_piece_invalid(color, key)
                     self.move_cache.mark_piece_invalid(opp_color, key)
-                
-                # 2. Mark pieces targeting these squares (Reverse Move Map)
+
+                # --- STEP 2: Mark pieces targeting these squares (Reverse Map) ---
                 targeting_pieces = self.move_cache.get_pieces_targeting(keys)
                 for (c_idx, p_key) in targeting_pieces:
                     p_color = Color.WHITE if c_idx == 0 else Color.BLACK
                     self.move_cache.mark_piece_invalid(p_color, p_key)
 
-            # 3. Get dependency-affected pieces (e.g. sliders blocked by something else)
-            # Note: If ReverseMoveMap is perfect, we might not need this for sliders,
-            # but we keep it for safety and for pieces that didn't have moves to the square.
+            # --- STEP 3: Get dependency-affected pieces ---
             dep_coords = self.dependency_graph.get_affected_pieces_vectorized(game_state, color)
 
-            # Batch mark invalid
             if dep_coords.size > 0:
                 dep_keys = _coords_to_keys(dep_coords)
                 for key in dep_keys:
@@ -488,6 +497,61 @@ class OptimizedCacheManager:
                 if can_attack:
                     self.move_cache.mark_piece_invalid(opp_color, coord_key)
 
+
+    def apply_move_incremental(self, mv: np.ndarray, from_piece: dict,
+                            captured_piece: Optional[dict], game_state: 'GameState') -> None:
+        """
+        Incrementally update ALL caches after a move.
+
+        CRITICAL PRECONDITION: Board has already been updated by turnmove.make_move()
+        We're syncing the caches to match the board state.
+
+        UPDATE ORDER:
+        1. Occupancy cache (from board changes)
+        2. Zobrist hash (from occupancy changes)
+        3. Effect caches (from occupancy changes)
+        4. Move cache invalidation (from effect changes)
+        """
+        with self._lock:
+            # --- STEP 1: SYNC OCCUPANCY CACHE (board already updated) ---
+            # This batch_set_positions will update king cache and priest counts
+            changed_coords = np.array([mv[:3], mv[3:]], dtype=COORD_DTYPE)
+            pieces_data = np.array([
+                [0, 0],  # Source square empty
+                [from_piece["piece_type"], from_piece["color"]]  # Dest square occupied
+            ], dtype=PIECE_TYPE_DTYPE)
+
+            self.occupancy_cache.batch_set_positions(changed_coords, pieces_data)
+
+            # --- STEP 2: UPDATE ZOBRIST HASH ---
+            self._zkey = int(self.zobrist_cache.update_hash_move(
+                self._zkey, mv, from_piece, captured_piece
+            ))
+
+            # --- STEP 3: SYMMETRY TT (age out old entries) ---
+            self.transposition_table.age_counter += 1
+
+            # --- STEP 4: NOTIFY EFFECT CACHES ---
+            self._notify_all_effect_caches(changed_coords, pieces_data)
+
+            # --- STEP 5: FREEZE EFFECT (temporal) ---
+            self.consolidated_aura_cache.trigger_freeze(game_state.color, game_state.turn_number)
+
+            # --- STEP 6: INVALIDATE MOVE CACHE ---
+            self.dependency_graph.notify_update('move_applied')
+
+            # Calculate affected squares
+            affected_squares = changed_coords.copy()
+            if captured_piece:
+                affected_squares = np.vstack([
+                    affected_squares,
+                    _get_adjacent_squares(mv[3:])
+                ])
+
+            # Mark affected pieces for BOTH colors
+            opp_color = Color.WHITE if game_state.color == Color.BLACK else Color.BLACK
+            self._invalidate_affected_piece_moves(affected_squares, game_state.color, game_state)
+            self._invalidate_affected_piece_moves(affected_squares, opp_color, game_state)
 # =============================================================================
 # NUMPY-NATIVE DEPENDENCY GRAPH
 # =============================================================================

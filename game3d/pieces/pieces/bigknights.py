@@ -48,8 +48,9 @@ def generate_knight31_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump engine with piece-specific vectors
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=KNIGHT31_MOVEMENT_VECTORS,
@@ -69,8 +70,9 @@ def generate_knight32_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump engine with piece-specific vectors
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=KNIGHT32_MOVEMENT_VECTORS,

@@ -33,8 +33,9 @@ def generate_trigonal_bishop_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use slider engine for movement generation
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
     moves = slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=TRIGONAL_BISHOP_VECTORS,

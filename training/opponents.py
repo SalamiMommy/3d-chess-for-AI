@@ -991,10 +991,13 @@ class PriestHunterOpponent(OpponentBase):
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
-                 check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
+                check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 12.0,  # INCREASED
+                    cache_manager.occupancy_cache._occ,
+                    ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                    0 if self.color == Color.WHITE else 1
                 )
-                 rewards += check_rewards
+                rewards += check_rewards
 
         return rewards
 
@@ -1114,10 +1117,13 @@ class GraphAwareOpponent(OpponentBase):
         if not cache_manager.occupancy_cache.has_priest(enemy_color):
             enemy_king_pos = cache_manager.occupancy_cache.find_king(enemy_color)
             if enemy_king_pos is not None:
-                 check_rewards = _compute_check_potential_vectorized(
-                    to_coords, from_types, enemy_king_pos, 12.0  # INCREASED
+                check_rewards = _compute_check_potential_vectorized(
+                    to_coords, from_types, enemy_king_pos, 12.0,  # INCREASED
+                    cache_manager.occupancy_cache._occ,
+                    ATTACK_VECTORS, VECTOR_COUNTS, IS_SLIDER,
+                    0 if self.color == Color.WHITE else 1
                 )
-                 rewards += check_rewards
+                rewards += check_rewards
 
         return rewards
 

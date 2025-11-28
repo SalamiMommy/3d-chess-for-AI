@@ -121,8 +121,9 @@ def generate_wall_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use wall-specific movement vectors
-    jump_engine = get_jump_movement_generator(cache_manager)
+    jump_engine = get_jump_movement_generator()
     return jump_engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=anchor,
         directions=WALL_MOVEMENT_VECTORS,

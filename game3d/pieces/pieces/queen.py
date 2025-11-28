@@ -36,8 +36,9 @@ def generate_queen_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use integrated slider generator with queen-specific vectors
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
     return slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=QUEEN_MOVEMENT_VECTORS,

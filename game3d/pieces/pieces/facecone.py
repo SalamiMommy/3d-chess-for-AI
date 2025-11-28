@@ -84,8 +84,9 @@ def generate_face_cone_slider_moves(
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Use integrated slider generator with cone-specific vectors
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
     return slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=FACE_CONE_MOVEMENT_VECTORS,

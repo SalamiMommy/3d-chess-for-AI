@@ -45,9 +45,10 @@ def generate_xz_zigzag_moves(
 ) -> np.ndarray:
     """Generate XZ-zigzag slider moves."""
     pos_arr = pos.astype(COORD_DTYPE)
-    slider_engine = get_slider_movement_generator(cache_manager)
+    slider_engine = get_slider_movement_generator()
 
     return slider_engine.generate_slider_moves_array(
+        cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
         directions=XZ_ZIGZAG_DIRECTIONS,

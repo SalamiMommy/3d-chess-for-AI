@@ -30,8 +30,9 @@ def generate_hive_moves(
     color: COLOR_DTYPE,
     pos: np.ndarray,
 ) -> np.ndarray:
-    engine = get_jump_movement_generator(cache_manager)
+    engine = get_jump_movement_generator()
     return engine.generate_jump_moves(
+        cache_manager=cache_manager,
         color=color,
         pos=pos.astype(COORD_DTYPE),
         directions=HIVE_DIRECTIONS_3D,
