@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 from game3d.common.shared_types import (
     PieceType, Color, SIZE, COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
-    COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, MAX_COORD_VALUE, MIN_COORD_VALUE
+    COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, MAX_COORD_VALUE, MIN_COORD_VALUE,
+    MOVE_DTYPE
 )
 from game3d.common.coord_utils import in_bounds_vectorized, CoordinateUtils
 
@@ -163,13 +164,15 @@ def _find_king_position(board, king_color: int, cache=None) -> Optional[np.ndarr
     return None
 
 
-def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None) -> np.ndarray:
+def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None) -> Optional[np.ndarray]:
     """Get attacked squares using move cache - calculates from RAW/pseudolegal moves.
     
     Uses raw moves instead of legal moves because:
     - For check detection, we need ALL squares an enemy can attack
     - Legal moves are filtered for king safety, which would miss attacking squares
     - A piece can attack a square even if moving there would leave its own king in check
+    
+    Returns None if cache miss (caller should fallback to slow check).
     """
     mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
 
@@ -177,7 +180,10 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
     if cache and hasattr(cache, 'move_cache'):
         # ✅ UPDATED: Use get_pseudolegal_moves() to get occupancy-aware attacks
         cached_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
-        if cached_moves is None or len(cached_moves) == 0:
+        if cached_moves is None:
+            return None # Cache miss
+
+        if len(cached_moves) == 0:
             return mask
 
         # Extract destination coordinates from cached moves (MOVE_DTYPE: [from_x, from_y, from_z, to_x, to_y, to_z])
@@ -190,14 +196,13 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
 
         return mask
 
-    return mask
+    return None # No cache available
 
 
 def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None, use_move_cache=True) -> bool:
     """Check if a square is attacked by a specific color."""
     square = square.astype(COORD_DTYPE)
 
-    # Vectorized bounds checking
     # Vectorized bounds checking
     # ✅ OPTIMIZATION: Use scalar check for single coordinate
     if hasattr(CoordinateUtils, 'in_bounds_scalar'):
@@ -209,8 +214,9 @@ def square_attacked_by(board, current_player: Color, square: np.ndarray, attacke
     # Use move cache if allowed and available
     if use_move_cache and cache and hasattr(cache, 'move_cache'):
         attacked_mask = _get_attacked_squares_from_move_cache(board, attacker_color, cache)
-        x, y, z = square[0], square[1], square[2]
-        return bool(attacked_mask[x, y, z])
+        if attacked_mask is not None:
+            x, y, z = square[0], square[1], square[2]
+            return bool(attacked_mask[x, y, z])
     
     # Fallback: Slow dynamic check
     return _square_attacked_by_slow(board, square, attacker_color, cache)
@@ -224,19 +230,22 @@ def square_attacked_by_incremental(
     to_coord: np.ndarray
 ) -> bool:
     """
-    Check if square is attacked using incremental delta updates.
+    Check if square is attacked using incremental delta updates with lazy regeneration.
     
-    This is ~10-20x faster than _square_attacked_by_slow because it only
-    regenerates moves for pieces affected by the simulated move (typically 1-5 pieces)
-    instead of all opponent pieces (16+ pieces).
+    ✅ OPTIMIZATION: Uses piece cache for O(1) move lookups instead of regenerating.
+    Only regenerates moves for pieces that are actually affected (typically 1-5 pieces).
+    
+    This is ~10-20x faster than _square_attacked_by_slow because:
+    1. Uses cached moves for unaffected pieces (O(1) lookup)
+    2. Only regenerates for affected pieces (typically 1-5 vs 16+)
+    3. Uses lazy attack mask computation (only if needed)
     
     Algorithm:
-    1. Get base pseudolegal moves from cache
-    2. Identify pieces affected by the move (from/to squares)
-    3. Extract old moves for affected pieces
-    4. Regenerate moves ONLY for affected pieces with current occupancy
-    5. Create attack mask with delta applied
-    6. Check if target square is in mask
+    1. Identify pieces affected by the move (from/to squares)
+    2. Get OLD moves for affected pieces from piece cache (O(1))
+    3. Regenerate moves ONLY for affected pieces with current occupancy
+    4. Create attack mask with delta applied
+    5. Check if target square is in mask
     
     Args:
         board: Game board
@@ -253,32 +262,26 @@ def square_attacked_by_incremental(
         # Fallback if cache not available
         return _square_attacked_by_slow(board, square, attacker_color, cache)
     
-    # Get base pseudolegal moves from cache (before the simulated move)
-    base_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
-    
-    if base_moves is None or base_moves.size == 0:
-        # No cached moves, use slow path
-        return _square_attacked_by_slow(board, square, attacker_color, cache)
-    
     # Identify pieces affected by the move
     affected_ids, affected_coords, affected_keys = cache.move_cache.get_pieces_affected_by_move(
         from_coord, to_coord, attacker_color
     )
     
-    # If no pieces affected, just use the cached attack mask directly
-    if len(affected_ids) == 0:
-        # Create attack mask from base moves
-        attack_mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-        for move in base_moves:
-            tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
-            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-                attack_mask[tx, ty, tz] = True
-        
-        x, y, z = square[0], square[1], square[2]
-        return bool(attack_mask[x, y, z])
+    # ✅ OPTIMIZATION: Use piece cache directly for OLD moves (O(1) per piece)
+    # No need to extract from base_moves array
+    old_affected_moves_list = []
     
-    # Extract old moves for affected pieces (to be removed from mask)
-    old_affected_moves = cache.move_cache.extract_moves_for_pieces(base_moves, affected_coords)
+    if len(affected_ids) > 0:
+        color_idx = 0 if attacker_color == Color.WHITE else 1
+        
+        with cache.move_cache._lock:
+            for piece_id in affected_ids:
+                if piece_id in cache.move_cache._piece_moves_cache:
+                    old_moves = cache.move_cache._piece_moves_cache[piece_id]
+                    if old_moves.size > 0:
+                        old_affected_moves_list.append(old_moves)
+    
+    old_affected_moves = np.concatenate(old_affected_moves_list, axis=0) if old_affected_moves_list else np.empty((0, 6), dtype=MOVE_DTYPE)
     
     # Regenerate moves for affected pieces with current occupancy
     # NOTE: The occupancy cache has already been updated by the caller
@@ -289,14 +292,36 @@ def square_attacked_by_incremental(
     temp_state = GameState(board, attacker_color, cache)
     
     # Generate new moves for affected pieces
-    new_affected_moves = generate_pseudolegal_moves_batch(temp_state, affected_coords)
+    new_affected_moves = generate_pseudolegal_moves_batch(
+        temp_state, affected_coords, np.empty((0, 3), dtype=COORD_DTYPE), ignore_occupancy=False
+    ) if affected_coords.size > 0 else np.empty((0, 6), dtype=MOVE_DTYPE)
+    
+    # ✅ LAZY ATTACK MASK: Only create if there are delta changes OR no cached base moves
+    # Get base moves from cache
+    base_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
+    
+    if base_moves is None:
+        # No cached moves, use slow path
+        return _square_attacked_by_slow(board, square, attacker_color, cache)
+    
+    # If no affected pieces, just use the cached attack mask directly
+    if len(affected_ids) == 0:
+        # Create attack mask from base moves (fast path - no regeneration needed)
+        attack_mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+        if base_moves.size > 0:
+            tx, ty, tz = base_moves[:, 3], base_moves[:, 4], base_moves[:, 5]
+            valid = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
+            attack_mask[tx[valid], ty[valid], tz[valid]] = True
+        
+        x, y, z = square[0], square[1], square[2]
+        return bool(attack_mask[x, y, z])
     
     # Create attack mask from base moves
     attack_mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-    for move in base_moves:
-        tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
-        if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-            attack_mask[tx, ty, tz] = True
+    if base_moves.size > 0:
+        tx, ty, tz = base_moves[:, 3], base_moves[:, 4], base_moves[:, 5]
+        valid = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
+        attack_mask[tx[valid], ty[valid], tz[valid]] = True
     
     # Apply delta: remove old affected moves and add new ones
     cache.move_cache.remove_moves_from_mask(attack_mask, old_affected_moves)
@@ -322,18 +347,8 @@ def _square_attacked_by_slow(board, square: np.ndarray, attacker_color: int, cac
     # Import here to avoid circular imports
     from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
     
-    # We need a temporary GameState-like object or just pass what's needed.
-    # generate_pseudolegal_moves_batch takes (board, color, cache_manager).
-    # It returns a dict of moves? No, it returns a numpy array of moves?
-    # Let's check pseudolegal.py signature.
-    # It returns tuple(moves, captures) or similar?
-    # Actually, let's use piece dispatchers directly if possible, or just the batch generator.
-    
-    # generate_pseudolegal_moves_batch(gamestate) -> np.ndarray
     # We need a GameState.
     from game3d.game.gamestate import GameState
-    # Create a lightweight wrapper if needed, or just use the board/cache.
-    # But generate_pseudolegal_moves_batch expects a GameState.
     
     # Hack: Create a dummy GameState
     dummy_state = GameState(board, attacker_color, cache)
@@ -344,6 +359,9 @@ def _square_attacked_by_slow(board, square: np.ndarray, attacker_color: int, cac
     
     # Check if any move targets the square
     # moves is (N, 6) array: [fx, fy, fz, tx, ty, tz]
+    if moves.size == 0:
+        return False
+
     target_x, target_y, target_z = square[0], square[1], square[2]
     
     hits = (moves[:, 3] == target_x) & (moves[:, 4] == target_y) & (moves[:, 5] == target_z)
@@ -443,11 +461,22 @@ def get_check_summary(board, cache=None) -> Dict[str, Any]:
     # Get attacked squares - only if needed for check detection
     # We need black's attacks to check if white king is in check
     if not summary['white_priests_alive']:
-        summary['attacked_mask_black'] = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
+        mask = _get_attacked_squares_from_move_cache(board, Color.BLACK, cache)
+        if mask is not None:
+            summary['attacked_mask_black'] = mask
+        else:
+            # Fallback to slow check for King only?
+            # For summary, we might want the full mask, but generating it slowly is expensive.
+            # We'll just leave it empty and rely on king_in_check for the boolean status.
+            pass
         
     # We need white's attacks to check if black king is in check
     if not summary['black_priests_alive']:
-        summary['attacked_mask_white'] = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
+        mask = _get_attacked_squares_from_move_cache(board, Color.WHITE, cache)
+        if mask is not None:
+            summary['attacked_mask_white'] = mask
+        else:
+            pass
 
     # Determine check status
     wk = summary['white_king_position']
@@ -457,13 +486,21 @@ def get_check_summary(board, cache=None) -> Dict[str, Any]:
     if wk is not None and white_priests == 0:
         wk_coords = wk.astype(COORD_DTYPE)
         # Use (x, y, z) indexing as per occupancycache.py architecture
-        summary['white_check'] = bool(summary['attacked_mask_black'][wk_coords[0], wk_coords[1], wk_coords[2]])
+        # If mask is available, use it
+        if np.any(summary['attacked_mask_black']):
+             summary['white_check'] = bool(summary['attacked_mask_black'][wk_coords[0], wk_coords[1], wk_coords[2]])
+        else:
+             # Fallback to precise check
+             summary['white_check'] = square_attacked_by(board, Color.WHITE, wk, Color.BLACK.value, cache)
 
     # Check black king safety (only when no priests)
     if bk is not None and black_priests == 0:
         bk_coords = bk.astype(COORD_DTYPE)
         # Use (x, y, z) indexing as per occupancycache.py architecture
-        summary['black_check'] = bool(summary['attacked_mask_white'][bk_coords[0], bk_coords[1], bk_coords[2]])
+        if np.any(summary['attacked_mask_white']):
+            summary['black_check'] = bool(summary['attacked_mask_white'][bk_coords[0], bk_coords[1], bk_coords[2]])
+        else:
+            summary['black_check'] = square_attacked_by(board, Color.BLACK, bk, Color.WHITE.value, cache)
 
     return summary
 

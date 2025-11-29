@@ -48,7 +48,8 @@ def push_candidates_vectorized(
         return np.empty((0, 6), dtype=COORD_DTYPE)
     
     # Filter for whiteholes
-    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(all_coords)
+    # ✅ OPTIMIZATION: Use unsafe access (coords from get_positions are valid)
+    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(all_coords)
     whitehole_mask = piece_types == PieceType.WHITEHOLE
     
     if not np.any(whitehole_mask):
@@ -92,10 +93,19 @@ def push_candidates_vectorized(
     # Vectorized bounds and occupancy checking
     valid_bounds = in_bounds_vectorized(push_positions)
 
-    # Batch occupancy check for all push positions
-    valid_occupancy = np.array([
-        cache_manager.occupancy_cache.get(pos) is None for pos in push_positions
-    ])
+    # ✅ OPTIMIZATION: Vectorized occupancy check using unsafe access
+    # We only check occupancy for positions that are in bounds
+    # Initialize valid_occupancy as False
+    valid_occupancy = np.zeros(push_positions.shape[0], dtype=bool)
+    
+    if np.any(valid_bounds):
+        # Only check in-bounds positions
+        bounds_indices = np.where(valid_bounds)[0]
+        check_pos = push_positions[bounds_indices]
+        
+        colors, _ = cache_manager.occupancy_cache.batch_get_attributes_unsafe(check_pos)
+        # Valid if empty (color == 0)
+        valid_occupancy[bounds_indices] = (colors == 0)
 
     # Filter valid pushes using vectorized operations
     valid_pushes_mask = valid_bounds & valid_occupancy & np.any(in_range, axis=1)

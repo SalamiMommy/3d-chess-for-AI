@@ -37,11 +37,24 @@ PARALLEL_CHUNKS = min(NUM_CORES, SIZE if SIZE > 0 else 4)
 
 @njit(cache=True, nogil=True, parallel=True)
 def _vectorized_batch_occupied(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
-    """Optimized batch occupancy checking."""
+    """Optimized batch occupancy checking - PARALLEL version for large batches."""
     n = coords.shape[0]
     out = np.zeros(n, dtype=np.bool_)
 
     for i in prange(n):
+        x, y, z = coords[i]
+        if (0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE):
+            out[i] = occ[x, y, z] != 0
+
+    return out
+
+@njit(cache=True, nogil=True)
+def _vectorized_batch_occupied_serial(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
+    """Optimized batch occupancy checking - SERIAL version for medium batches."""
+    n = coords.shape[0]
+    out = np.zeros(n, dtype=np.bool_)
+
+    for i in range(n):
         x, y, z = coords[i]
         if (0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE):
             out[i] = occ[x, y, z] != 0
@@ -71,9 +84,9 @@ def _vectorized_batch_attributes(occ: np.ndarray, ptype: np.ndarray, coords: np.
 
     return colors, types
 
-@njit(cache=True, nogil=True, parallel=True)
+@njit(cache=True, nogil=True)
 def _vectorized_batch_attributes_unsafe(occ: np.ndarray, ptype: np.ndarray, coords: np.ndarray) -> tuple:
-    """UNSAFE: Batch attribute lookup with NO bounds checking.
+    """UNSAFE: Batch attribute lookup with NO bounds checking - SERIAL version.
     
     CRITICAL: This assumes all coordinates are pre-validated and within bounds.
     Use ONLY when coordinates come from trusted sources like:
@@ -82,11 +95,35 @@ def _vectorized_batch_attributes_unsafe(occ: np.ndarray, ptype: np.ndarray, coor
     - From move generation (which validates in generator.py)
     
     Eliminates ~36% overhead from bounds checking.
+    
+    OPTIMIZATION: Serial loop for medium-sized batches (10-100).
+    Thread overhead dominates for small/medium batches.
     """
     n = coords.shape[0]
     colors = np.empty(n, dtype=COLOR_DTYPE)
     types = np.empty(n, dtype=PIECE_TYPE_DTYPE)
 
+    # Serial loop - faster for medium batches
+    for i in range(n):
+        x, y, z = coords[i]
+        colors[i] = occ[x, y, z]
+        types[i] = ptype[x, y, z]
+
+    return colors, types
+
+
+@njit(cache=True, nogil=True, parallel=True)
+def _vectorized_batch_attributes_unsafe_parallel(occ: np.ndarray, ptype: np.ndarray, coords: np.ndarray) -> tuple:
+    """UNSAFE: Batch attribute lookup with parallel processing for LARGE batches.
+    
+    OPTIMIZATION: Parallel loop for large batches (100+).
+    Parallelization overhead is amortized over many coordinates.
+    """
+    n = coords.shape[0]
+    colors = np.empty(n, dtype=COLOR_DTYPE)
+    types = np.empty(n, dtype=PIECE_TYPE_DTYPE)
+
+    # Parallel loop - better for large batches
     for i in prange(n):
         x, y, z = coords[i]
         colors[i] = occ[x, y, z]
@@ -193,6 +230,34 @@ class OccupancyCache:
         result[:] = _vectorized_batch_occupied(self._occ, coords)
         return result
 
+    def batch_is_occupied_unsafe(self, coords: np.ndarray) -> np.ndarray:
+        """UNSAFE: Batch occupancy check with NO normalization or bounds checking.
+        
+        CRITICAL: Assumes coords is already:
+        - Shape (N, 3) with dtype=COORD_DTYPE
+        - All coordinates within bounds [0, SIZE)
+        
+        Use ONLY for pre-validated coordinates from trusted sources.
+        """
+        # ✅ OPTIMIZATION: Adaptive execution strategy based on batch size
+        n = coords.shape[0]
+        
+        # Tiny batches (< 10): Pure numpy (no JIT overhead)
+        if n < 10:
+            if n == 0:
+                return np.empty(0, dtype=BOOL_DTYPE)
+            
+            # Direct indexing is faster for tiny batches
+            x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+            return self._occ[x, y, z] != 0
+            
+        # Medium batches (10-100): Serial numba (no parallel overhead)
+        if n < 100:
+            return _vectorized_batch_occupied_serial(self._occ, coords)
+            
+        # Large batches (100+): Parallel numba
+        return _vectorized_batch_occupied(self._occ, coords)
+
     def batch_get_attributes(self, coords: np.ndarray) -> tuple:
         """Batch get colors and types at coordinates.
         
@@ -219,7 +284,50 @@ class OccupancyCache:
         Use ONLY for pre-validated coordinates from trusted sources.
         Eliminates ~36% overhead from normalization + bounds checking.
         """
-        return _vectorized_batch_attributes_unsafe(self._occ, self._ptype, coords)
+        # ✅ OPTIMIZATION: Adaptive execution strategy based on batch size
+        # Tiny batches (< 10): Pure numpy (no JIT overhead)
+        # Medium batches (10-99): Serial numba (no parallel overhead)
+        # Large batches (100+): Parallel numba (amortize parallel overhead)
+        n = coords.shape[0]
+        if n < 10:
+            # Tiny batch optimization: avoid advanced indexing overhead
+            if n == 1:
+                x, y, z = coords[0]
+                # Return arrays of shape (1,)
+                return (np.array([self._occ[x, y, z]], dtype=COLOR_DTYPE),
+                        np.array([self._ptype[x, y, z]], dtype=PIECE_TYPE_DTYPE))
+            elif n == 2:
+                x0, y0, z0 = coords[0]
+                x1, y1, z1 = coords[1]
+                return (np.array([self._occ[x0, y0, z0], self._occ[x1, y1, z1]], dtype=COLOR_DTYPE),
+                        np.array([self._ptype[x0, y0, z0], self._ptype[x1, y1, z1]], dtype=PIECE_TYPE_DTYPE))
+            elif n == 3:
+                x0, y0, z0 = coords[0]
+                x1, y1, z1 = coords[1]
+                x2, y2, z2 = coords[2]
+                
+                # Pre-allocate result arrays (faster than np.array creation)
+                out_colors = np.empty(3, dtype=COLOR_DTYPE)
+                out_types = np.empty(3, dtype=PIECE_TYPE_DTYPE)
+                
+                out_colors[0] = self._occ[x0, y0, z0]
+                out_colors[1] = self._occ[x1, y1, z1]
+                out_colors[2] = self._occ[x2, y2, z2]
+                
+                out_types[0] = self._ptype[x0, y0, z0]
+                out_types[1] = self._ptype[x1, y1, z1]
+                out_types[2] = self._ptype[x2, y2, z2]
+                
+                return out_colors, out_types
+            
+            colors = self._occ[coords[:, 0], coords[:, 1], coords[:, 2]]
+            types = self._ptype[coords[:, 0], coords[:, 1], coords[:, 2]]
+            return colors, types
+        
+        if n < 100:
+            return _vectorized_batch_attributes_unsafe(self._occ, self._ptype, coords)
+        
+        return _vectorized_batch_attributes_unsafe_parallel(self._occ, self._ptype, coords)
 
     def batch_get_colors_only(self, coords: np.ndarray) -> np.ndarray:
         """Fast path: return only colors at coordinates.
@@ -236,6 +344,40 @@ class OccupancyCache:
         coords = self._normalize_coords(coords)
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         return self._occ[x, y, z]
+    
+    def batch_get_types_only(self, coords: np.ndarray) -> np.ndarray:
+        """Fast path: return only piece types at coordinates.
+        
+        Optimized for callers that don't need colors.
+        Avoids tuple unpacking and color array allocation.
+        """
+        # ✅ OPTIMIZATION: Skip normalization if already correct format
+        if coords.ndim == 2 and coords.shape[1] == 3 and coords.dtype == COORD_DTYPE:
+            x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+            return self._ptype[x, y, z]
+        
+        # Fallback to normalization for other cases
+        coords = self._normalize_coords(coords)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        return self._ptype[x, y, z]
+
+    def get_type_at(self, x: int, y: int, z: int) -> int:
+        """Scalar accessor for piece type - avoids array creation."""
+        if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:
+            return self._ptype[x, y, z]
+        return 0
+
+    def get_color_at(self, x: int, y: int, z: int) -> int:
+        """Scalar accessor for piece color - avoids array creation."""
+        if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:
+            return self._occ[x, y, z]
+        return 0
+
+    def is_occupied_at(self, x: int, y: int, z: int) -> bool:
+        """Scalar accessor for occupancy - avoids array creation."""
+        if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:
+            return self._occ[x, y, z] != 0
+        return False
 
     def get(self, coord: np.ndarray) -> Optional[Dict[str, int]]:
         """Get piece data at a single coordinate.
@@ -260,7 +402,8 @@ class OccupancyCache:
 
         # Check bounds (updated for x, y, z indexing)
         # Using direct attribute access for speed
-        if not (0 <= x < self._occ.shape[0] and 0 <= y < self._occ.shape[1] and 0 <= z < self._occ.shape[2]):
+        # ✅ OPTIMIZATION: Inline bounds check for speed
+        if not (0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE):
             return None
 
         color = self._occ[x, y, z]
@@ -303,7 +446,52 @@ class OccupancyCache:
                 f"coords={coords.shape[0]}, pieces={pieces.shape[0]}"
             )
 
-        # Extract old data for incremental updates
+        # ✅ CRITICAL FIX: Deduplicate coordinates to prevent double-counting
+        # If the same coordinate appears multiple times, we only want the LAST update to apply.
+        # This prevents decrementing/incrementing priest counts multiple times for the same square.
+        
+        # Combine coords and pieces for unique processing
+        # We need to find unique coordinates, keeping the LAST occurrence
+        
+        # Convert coords to keys for uniqueness check (much faster than row-wise unique)
+        # Use simple integer packing: x | (y << 9) | (z << 18)
+        keys = coords[:, 0] | (coords[:, 1] << 9) | (coords[:, 2] << 18)
+        
+        # ✅ OPTIMIZATION: Use boolean mask for deduplication if batch size is large enough
+        # and keys are within range (which they are for 9x9x9)
+        # But we need "last wins", which is tricky with simple boolean mask.
+        # The previous np.unique approach was:
+        # _, unique_indices = np.unique(keys[::-1], return_index=True)
+        # last_indices = len(keys) - 1 - unique_indices
+        
+        # Faster approach for "last wins":
+        # Iterate in reverse and keep seen keys.
+        # For very small batches (< 50), simple python set is fastest.
+        # For larger batches, the np.unique approach is okay, but we can do better with numba.
+        
+        n = coords.shape[0]
+        if n < 50:
+            # Small batch optimization
+            seen = set()
+            indices = []
+            for i in range(n - 1, -1, -1):
+                k = keys[i]
+                if k not in seen:
+                    seen.add(k)
+                    indices.append(i)
+            # Indices are in reverse order of appearance (from end)
+            # We want to preserve original relative order? No, just need the set of updates.
+            # But batch_set_positions implies order might matter if we process sequentially?
+            # Actually, we apply all at once. So order of *different* coordinates doesn't matter.
+            last_indices = np.array(indices, dtype=INDEX_DTYPE)
+        else:
+            # Use np.unique approach for larger batches
+            _, unique_indices = np.unique(keys[::-1], return_index=True)
+            last_indices = n - 1 - unique_indices
+        
+        # Filter arrays using the indices of the last occurrences
+        coords = coords[last_indices]
+        pieces = pieces[last_indices]
         old_colors, old_types = self.batch_get_attributes(coords)
 
         # Vectorized update (this is the core operation)
@@ -442,6 +630,11 @@ class OccupancyCache:
         """Check if color has any priests."""
         color_idx = 0 if color == Color.WHITE else 1
         return int(self._priest_count[color_idx]) > 0
+
+    def get_priest_count(self, color: int) -> int:
+        """Get the number of priests for a color."""
+        color_idx = 0 if color == Color.WHITE else 1
+        return int(self._priest_count[color_idx])
 
     def get_piece_counts_by_type(self, color: int) -> np.ndarray:
         """Get counts of each piece type for color using parallel counting."""

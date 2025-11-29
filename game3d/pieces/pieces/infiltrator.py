@@ -37,9 +37,10 @@ def generate_infiltrator_moves(
     # Get teleport directions
     teleport_dirs = _get_pawn_front_directions(cache_manager, color, pos)
 
-    # Combine directions
+    # ✅ OPTIMIZATION: Skip np.unique - just concatenate directions
+    # Duplicates are rare and jump_engine handles them efficiently via occupancy check
     if teleport_dirs.shape[0] > 0:
-        all_dirs = np.unique(np.vstack((teleport_dirs, _KING_DIRECTIONS)), axis=0)
+        all_dirs = np.vstack((teleport_dirs, _KING_DIRECTIONS))
     else:
         all_dirs = _KING_DIRECTIONS
 
@@ -72,7 +73,8 @@ def _get_pawn_front_directions(
         return get_empty_coord_batch()
 
     # Get piece types for enemy positions (vectorized)
-    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(enemy_coords)
+    # ✅ OPTIMIZATION: Use unsafe variant - enemy_coords from get_positions are always valid
+    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(enemy_coords)
 
     # Filter to only pawn coordinates
     pawn_mask = piece_types == PieceType.PAWN.value
@@ -96,7 +98,7 @@ def _get_pawn_front_directions(
         return get_empty_coord_batch()
 
     # Filter to empty squares using the occupancy cache
-    empty_mask = ~cache_manager.occupancy_cache.batch_is_occupied(valid_front_squares)
+    empty_mask = ~cache_manager.occupancy_cache.batch_is_occupied_unsafe(valid_front_squares)
     empty_front_squares = valid_front_squares[empty_mask]
 
     if empty_front_squares.shape[0] == 0:

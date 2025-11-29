@@ -3,6 +3,7 @@
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
+from numba import njit
 
 from game3d.common.shared_types import SIZE, SIZE_MINUS_1, COORD_DTYPE, BOOL_DTYPE
 from game3d.common.shared_types import Color, PieceType
@@ -79,98 +80,110 @@ def _build_edge_graph() -> np.ndarray:
 # Initialize adjacency cache
 _EDGE_NEIGHBORS = _build_edge_graph()
 
-def generate_edgerook_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate edge-rook moves using numpy-native BFS."""
-    start = pos.astype(COORD_DTYPE).ravel()
+@njit(cache=True, fastmath=True)
+def _edgerook_bfs_numba(start_node: np.ndarray,
+                        neighbors_table: np.ndarray,
+                        flattened_occ: np.ndarray,
+                        color: int) -> np.ndarray:
+    """
+    Numba-optimized BFS for Edge Rook.
+    Eliminates Python loop overhead and np.vstack memory reallocation.
+    """
+    # 1. Pre-allocate max possible queue (surface area of cube is small enough)
+    max_queue = SIZE * SIZE * 6
+    queue = np.empty((max_queue, 3), dtype=COORD_DTYPE)
+    q_read = 0
+    q_write = 0
 
-    # Early exit if not on edge
-    if not np.any((start == 0) | (start == SIZE_MINUS_1)):
+    # 2. Visited array
+    visited = np.zeros((SIZE, SIZE, SIZE), dtype=np.bool_)
+
+    # 3. Output buffer (max possible moves)
+    found_targets = np.empty((max_queue, 3), dtype=COORD_DTYPE)
+    found_count = 0
+
+    # Initialize
+    start_x, start_y, start_z = start_node
+    queue[q_write] = start_node
+    q_write += 1
+    visited[start_x, start_y, start_z] = True
+
+    while q_read < q_write:
+        # Pop
+        curr = queue[q_read]
+        q_read += 1
+        cx, cy, cz = curr[0], curr[1], curr[2]
+
+        # Get neighbors from precomputed table
+        # neighbors_table shape: (SIZE, SIZE, SIZE, 6, 3)
+        # We assume invalid neighbors are marked with -1
+
+        for i in range(6):
+            # Direct lookup is faster than slicing in Numba
+            dx = neighbors_table[cx, cy, cz, i, 0]
+            if dx == -1: continue # Invalid neighbor (cached as -1)
+
+            dy = neighbors_table[cx, cy, cz, i, 1]
+            dz = neighbors_table[cx, cy, cz, i, 2]
+
+            # Target Coordinate
+            tx, ty, tz = cx + dx, cy + dy, cz + dz
+
+            if not visited[tx, ty, tz]:
+                visited[tx, ty, tz] = True
+
+                # Check occupancy (linear index)
+                flat_idx = tx + SIZE * ty + SIZE * SIZE * tz
+                occ_val = flattened_occ[flat_idx]
+
+                if occ_val == 0:
+                    # Empty: Add to queue and Continue BFS
+                    queue[q_write, 0] = tx
+                    queue[q_write, 1] = ty
+                    queue[q_write, 2] = tz
+                    q_write += 1
+
+                    # Add to valid targets
+                    found_targets[found_count, 0] = tx
+                    found_targets[found_count, 1] = ty
+                    found_targets[found_count, 2] = tz
+                    found_count += 1
+
+                elif occ_val != color:
+                    # Enemy: Capture and Stop BFS (don't add to queue)
+                    found_targets[found_count, 0] = tx
+                    found_targets[found_count, 1] = ty
+                    found_targets[found_count, 2] = tz
+                    found_count += 1
+                    # Blocked by piece, do not queue
+
+                # If friendly (occ_val == color), do nothing (blocked)
+
+    # Format result: (N, 6)
+    if found_count == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # BFS setup
-    visited = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-    queue = start.reshape(1, 3)
-    visited[int(start[2]), int(start[1]), int(start[0])] = True
+    result = np.empty((found_count, 6), dtype=COORD_DTYPE)
+    # Broadcast start position
+    result[:, 0] = start_x
+    result[:, 1] = start_y
+    result[:, 2] = start_z
+    # Fill targets
+    result[:, 3:6] = found_targets[:found_count]
 
-    flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
-    reachable_targets = []
+    return result
 
-    # BFS traversal
-    while queue.shape[0] > 0:
-        current = queue[0]
-        queue = queue[1:]
-
-        cx, cy, cz = current.astype(int)
-        neighbors = _EDGE_NEIGHBORS[cx, cy, cz]
-
-        # Filter valid neighbors
-        valid_mask = neighbors[:, 0] != -1
-        if not np.any(valid_mask):
-            continue
-
-        valid_neighbors = neighbors[valid_mask]
-        target_coords = current + valid_neighbors
-        target_indices = target_coords.astype(int)
-
-        # Check visited status
-        unvisited_mask = ~visited[target_indices[:, 2], target_indices[:, 1], target_indices[:, 0]]
-        if not np.any(unvisited_mask):
-            continue
-
-        unvisited_targets = target_coords[unvisited_mask]
-        unvisited_indices = target_indices[unvisited_mask]
-
-        # Mark as visited
-        visited[unvisited_indices[:, 2], unvisited_indices[:, 1], unvisited_indices[:, 0]] = True
-
-        # Check occupancy
-        flat_idxs = (unvisited_targets[:, 0] + SIZE * unvisited_targets[:, 1] + SIZE * SIZE * unvisited_targets[:, 2]).astype(int)
-        occs = flattened[flat_idxs]
-
-        # Empty cells continue BFS
-        empty_mask = occs == 0
-        if np.any(empty_mask):
-            empty_targets = unvisited_targets[empty_mask]
-            queue = np.vstack([queue, empty_targets]) if queue.size > 0 else empty_targets
-
-        # All unvisited targets are reachable
-        reachable_targets.append(unvisited_targets)
-
-    if not reachable_targets:
+def generate_edgerook_moves(cache_manager, color: int, pos: np.ndarray) -> np.ndarray:
+    """Optimized wrapper using Numba implementation."""
+    # Fast exit check
+    if not (np.any(pos == 0) or np.any(pos == SIZE_MINUS_1)):
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Combine targets
-    targets = np.vstack(reachable_targets)
+    # Get cached flattened occupancy (O(1) access)
+    flattened = cache_manager.occupancy_cache.get_cached_flattened()
 
-    # Remove start position
-    distances = np.sum((targets - start) ** 2, axis=1)
-    mask = distances > 0
-    targets = targets[mask]
-
-    if targets.size == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Filter valid moves and determine captures
-    flat_idxs = (targets[:, 0] + SIZE * targets[:, 1] + SIZE * SIZE * targets[:, 2]).astype(int)
-    occs = flattened[flat_idxs]
-
-    valid_mask = occs != color
-    if not np.any(valid_mask):
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    final_targets = targets[valid_mask]
-    
-    # Create move array: [from_x, from_y, from_z, to_x, to_y, to_z]
-    n_moves = final_targets.shape[0]
-    move_array = np.empty((n_moves, 6), dtype=COORD_DTYPE)
-    move_array[:, 0:3] = start
-    move_array[:, 3:6] = final_targets
-    
-    return move_array
+    # Run Numba BFS
+    return _edgerook_bfs_numba(pos.astype(COORD_DTYPE), _EDGE_NEIGHBORS, flattened, color)
 
 @register(PieceType.EDGEROOK)
 def edgerook_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

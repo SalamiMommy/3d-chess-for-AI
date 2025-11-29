@@ -102,11 +102,11 @@ if __name__ == "__main__":
 
     # CLI configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games-per-iter", type=int, default=1)  # Increased from 24 for more data
-    parser.add_argument("--num-parallel", type=int, default=1)  # Optimized for 6-core CPU
+    parser.add_argument("--games-per-iter", type=int, default=12)  # Increased from 24 for more data
+    parser.add_argument("--num-parallel", type=int, default=6)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
-    parser.add_argument("--max-replay", type=int, default=200000)  # Increased to utilize 64GB RAM
+    parser.add_argument("--max-replay", type=int, default=500000)  # Increased to utilize 64GB RAM
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--opponent-types", type=str, nargs="+", default=AVAILABLE_OPPONENTS)
     parser.add_argument("--epsilon", type=float, default=0.1)

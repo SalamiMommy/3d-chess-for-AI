@@ -184,11 +184,11 @@ class TrainingConfig:
     model_size: str = "huge"
 
     # Training hyperparameters
-    learning_rate: float = 8e-4  # Scaled down for larger batch size
+    learning_rate: float = 1e-4  # Scaled down for larger batch size
     weight_decay: float = 1e-4
-    batch_size: int = 32
-    epochs: int = 20
-    warmup_epochs: int = 5  # Reduced proportionally
+    batch_size: int = 64
+    epochs: int = 1
+    warmup_epochs: int = 1  # Reduced proportionally
     
     # Gradient accumulation for larger effective batch size
     gradient_accumulation_steps: int = 2  # Effective batch size: 96

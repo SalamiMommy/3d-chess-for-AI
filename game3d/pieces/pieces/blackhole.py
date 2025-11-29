@@ -93,10 +93,15 @@ def suck_candidates_vectorized(
     # Vectorized bounds and occupancy checking
     valid_bounds = in_bounds_vectorized(pull_positions)
 
-    # Batch occupancy check for all pull positions
-    valid_occupancy = np.array([
-        cache_manager.occupancy_cache.get(pos) is None for pos in pull_positions
-    ])
+    # ✅ OPTIMIZATION: Use batch_is_occupied_unsafe with masking
+    # Only check occupancy for in-bounds positions to avoid crash and overhead
+    is_occupied = np.ones(len(pull_positions), dtype=bool) # Default to occupied (invalid)
+    
+    if np.any(valid_bounds):
+        safe_coords = pull_positions[valid_bounds]
+        is_occupied[valid_bounds] = cache_manager.occupancy_cache.batch_is_occupied_unsafe(safe_coords)
+    
+    valid_occupancy = ~is_occupied
     
     # CRITICAL: Prevent pulling onto blackhole squares
     # Check if any pull position matches a blackhole position

@@ -36,9 +36,10 @@ def generate_friendlytp_moves(
     # Get teleport directions
     teleport_dirs = _build_network_directions(cache_manager, color, pos)
 
-    # Combine all directions
+    # ✅ OPTIMIZATION: Skip np.unique - just concatenate directions
+    # Duplicates are rare and jump_engine handles them efficiently via occupancy check
     if teleport_dirs.shape[0] > 0:
-        all_dirs = np.unique(np.vstack((_KING_DIRECTIONS, teleport_dirs)), axis=0)
+        all_dirs = np.vstack((_KING_DIRECTIONS, teleport_dirs))
     else:
         all_dirs = _KING_DIRECTIONS
 
@@ -80,37 +81,63 @@ def _build_network_directions(
         return get_empty_coord_batch()
 
     # Get all neighbors of friendly pieces
+    # Shape: (N_friendly, 26, 3) -> (N_friendly * 26, 3)
     neighbours = (friendly_arr[:, np.newaxis, :] + _KING_DIRECTIONS[np.newaxis, :, :]).reshape(-1, 3)
 
-    # Filter: in-bounds and empty
+    # Filter: in-bounds
+    # ✅ OPTIMIZATION: Use optimized in_bounds
     valid_mask = in_bounds_vectorized(neighbours)
     neighbours = neighbours[valid_mask]
 
     if neighbours.shape[0] == 0:
         return get_empty_coord_batch()
 
-    # ✅ OPTIMIZED: Use batch_get_colors_only instead of loop-based get()
-    # Old: [cache_manager.occupancy_cache.get(sq) is None for sq in neighbours]
-    # New: Direct batch array operation
-    colors = cache_manager.occupancy_cache.batch_get_colors_only(neighbours)
-    empty_mask = (colors == 0)
-    empty_neighbours = neighbours[empty_mask]
+    # ✅ OPTIMIZED: Use batch_is_occupied_unsafe for faster boolean check
+    # We only need to know if it's empty (color == 0), so is_occupied check is sufficient
+    # batch_is_occupied returns True if occupied, False if empty
+    is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(neighbours)
+    empty_neighbours = neighbours[~is_occupied]
 
     if empty_neighbours.shape[0] == 0:
         return get_empty_coord_batch()
 
-    # Remove duplicates and start position
-    unique_targets = np.unique(empty_neighbours, axis=0)
-    start_mask = np.all(unique_targets == start, axis=1)
-    unique_targets = unique_targets[~start_mask]
+    # ✅ OPTIMIZATION: Fast deduplication using boolean mask on 1D indices
+    # Convert to flat indices for O(1) deduplication
+    flat_indices = (empty_neighbours[:, 0] + SIZE * empty_neighbours[:, 1] + SIZE * SIZE * empty_neighbours[:, 2])
+    
+    # Use a boolean mask for deduplication (since max index is small: 9*9*9 = 729)
+    # This is much faster than np.unique or set() for dense coordinates
+    unique_mask = np.zeros(SIZE * SIZE * SIZE, dtype=np.bool_)
+    unique_mask[flat_indices] = True
+    
+    # Also mask out the start position to avoid self-teleport
+    start_idx = start[0] + SIZE * start[1] + SIZE * SIZE * start[2]
+    unique_mask[start_idx] = False
+    
+    # Get unique flat indices
+    unique_flat = np.flatnonzero(unique_mask)
+    
+    if unique_flat.shape[0] == 0:
+        return get_empty_coord_batch()
+        
+    # Convert back to coordinates
+    # z = idx // SIZE_SQUARED, y = (idx % SIZE_SQUARED) // SIZE, x = idx % SIZE
+    z = unique_flat // (SIZE * SIZE)
+    rem = unique_flat % (SIZE * SIZE)
+    y = rem // SIZE
+    x = rem % SIZE
+    
+    unique_targets = np.column_stack((x, y, z)).astype(COORD_DTYPE)
 
     # Convert to directions
     directions = (unique_targets - start).astype(COORD_DTYPE)
 
-    # Final validation
-    dest_coords = start + directions
-    valid_mask = np.all((dest_coords >= 0) & (dest_coords < SIZE), axis=1)
-    return directions[valid_mask]
+    # Final validation (should be redundant if logic is correct, but safe to keep for now)
+    # dest_coords = start + directions
+    # valid_mask = np.all((dest_coords >= 0) & (dest_coords < SIZE), axis=1)
+    # return directions[valid_mask]
+    
+    return directions
 
 @register(PieceType.FRIENDLYTELEPORTER)
 def friendlytp_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

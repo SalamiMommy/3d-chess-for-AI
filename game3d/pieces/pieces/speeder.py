@@ -47,7 +47,8 @@ def buffed_squares(
         return set()
         
     # Filter for Speeders
-    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(all_coords)
+    # ✅ OPTIMIZATION: Use unsafe access (coords from get_positions are valid)
+    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(all_coords)
     speeder_mask = piece_types == PieceType.SPEEDER
     speeder_coords = all_coords[speeder_mask]
 
@@ -61,15 +62,20 @@ def buffed_squares(
     # Vectorized bounds check
     in_bounds_mask = in_bounds_vectorized(aura_coords)
     valid_coords = aura_coords[in_bounds_mask]
+    
+    if valid_coords.shape[0] == 0:
+        return set()
 
-    # Check if squares contain friendly pieces
-    affected: Set[bytes] = set()
-    for coord in valid_coords:
-        target = cache_manager.occupancy_cache.get(coord)
-        if target is not None and target["color"] == effect_color:
-            affected.add(coord.tobytes())
+    # ✅ OPTIMIZATION: Vectorized color check using unsafe access
+    # We only check valid_coords which are already bounds-checked
+    colors, _ = cache_manager.occupancy_cache.batch_get_attributes_unsafe(valid_coords)
+    
+    # Filter for friendly pieces
+    friendly_mask = (colors == effect_color)
+    friendly_coords = valid_coords[friendly_mask]
 
-    return affected
+    # Convert to set of bytes
+    return {c.tobytes() for c in friendly_coords}
 
 
 @register(PieceType.SPEEDER)

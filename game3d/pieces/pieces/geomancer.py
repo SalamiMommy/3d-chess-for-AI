@@ -57,12 +57,9 @@ def block_candidates_numpy(
     if bounded_targets.shape[0] == 0:
         return get_empty_coord_batch()
 
-    # Vectorized occupancy check using occupancy_cache directly
-    empty_mask = np.array([
-        cache_manager.occupancy_cache.get(target) is None for target in bounded_targets
-    ], dtype=BOOL_DTYPE)
-
-    empty_targets = bounded_targets[empty_mask]
+    # ✅ OPTIMIZATION: Use batch_is_occupied_unsafe instead of loop
+    is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(bounded_targets)
+    empty_targets = bounded_targets[~is_occupied]
 
     if empty_targets.shape[0] == 0:
         return get_empty_coord_batch()
@@ -103,12 +100,9 @@ def generate_geomancer_moves(
     if valid_targets.shape[0] == 0:
         return king_moves if king_moves.size > 0 else np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Vectorized occupancy check - only empty squares can be blocked
-    empty_mask = np.array([
-        cache_manager.occupancy_cache.get(t) is None for t in valid_targets
-    ], dtype=BOOL_DTYPE)
-
-    geom_targets = valid_targets[empty_mask]
+    # ✅ OPTIMIZATION: Use batch_is_occupied_unsafe instead of loop
+    is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(valid_targets)
+    geom_targets = valid_targets[~is_occupied]
 
     if geom_targets.shape[0] == 0:
         return king_moves if king_moves.size > 0 else np.empty((0, 6), dtype=COORD_DTYPE)

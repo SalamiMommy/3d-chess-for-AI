@@ -218,6 +218,9 @@ class ConsolidatedAuraCache(CacheListener):
         """Fully vectorized aura effect application for multiple sources."""
         if source_coords.size == 0:
             return
+        
+        # DEBUG PRINT
+        print(f"DEBUG: _apply_aura_effect_vectorized type={effect_type} sources={source_coords}")
 
         # Get source piece colors
         n_sources = source_coords.shape[0]
@@ -240,7 +243,7 @@ class ConsolidatedAuraCache(CacheListener):
         target_coords = np.unique(target_coords, axis=0)
         valid_mask = in_bounds_vectorized(target_coords)
         valid_targets = target_coords[valid_mask]
-
+        
         if valid_targets.size == 0:
             return
 
@@ -411,6 +414,9 @@ class ConsolidatedAuraCache(CacheListener):
         
         # Check expiry for this victim color
         # If expiry >= turn_number, they are frozen
+        if isinstance(victim_color, np.ndarray):
+             victim_color = int(victim_color.item())
+        
         if victim_color in self._freeze_expiry:
             return self._freeze_expiry[victim_color][x, y, z] >= turn_number
         return np.zeros(coords.shape[0], dtype=BOOL_DTYPE)
@@ -473,6 +479,13 @@ class ConsolidatedAuraCache(CacheListener):
         
         # Determine enemy color
         enemy_color = Color.WHITE if color == Color.BLACK else Color.BLACK
+        
+        # "freeze every second iteration of a friendly player's turn"
+        # Turn 0, 1: Iteration 1 (Active) -> (0//2)%2 = 0, (1//2)%2 = 0
+        # Turn 2, 3: Iteration 2 (Inactive) -> (2//2)%2 = 1, (3//2)%2 = 1
+        # Turn 4, 5: Iteration 3 (Active) -> (4//2)%2 = 0
+        if (turn_number // 2) % 2 != 0:
+            return
         
         # Set freeze expiry for enemy pieces
         # Expiry is turn_number + 1, meaning:

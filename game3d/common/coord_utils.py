@@ -147,38 +147,124 @@ class CoordinateUtils:
         return result
 
     @staticmethod
-    def in_bounds(coords: np.ndarray) -> np.ndarray:  # Change return type to np.ndarray only
-        """Bounds checking for coordinates - fully vectorized."""
-        # ✅ OPTIMIZATION: Skip conversions if already correct format
-        # This is the common case - avoid asarray/atleast_2d overhead
-        if coords.ndim == 2 and coords.dtype in (COORD_DTYPE, BATCH_COORD_DTYPE):
-            # Already in correct format
-            if coords.shape[0] > VECTORIZATION_THRESHOLD:
-                return CoordinateUtils._bounds_check_batch_numba(coords)
-            result = ((coords >= 0).all(axis=1)) & ((coords <= SIZE_MINUS_1).all(axis=1))
-            return result
+    def in_bounds(coords: np.ndarray) -> np.ndarray:
+        """Bounds checking for coordinates - adaptive vectorization.
         
-        # Fallback: normalize input
-        coords = np.asarray(coords, dtype=BATCH_COORD_DTYPE)
-        coords = np.atleast_2d(coords)
+        PERFORMANCE OPTIMIZATION: Uses numba for medium-sized batches (4-100)
+        where it eliminates intermediate array creation. Falls back to numpy
+        for tiny batches (overhead) and large batches (better vectorization).
+        """
+        # Handle 1D array (single coordinate) case with fast scalar check
+        if coords.ndim == 1:
+            return (0 <= coords[0] < SIZE) & \
+                   (0 <= coords[1] < SIZE) & \
+                   (0 <= coords[2] < SIZE)
 
-        if coords.shape[0] > VECTORIZATION_THRESHOLD:
-            return CoordinateUtils._bounds_check_batch_numba(coords)
-
-        result = ((coords >= 0).all(axis=1)) & ((coords <= SIZE_MINUS_1).all(axis=1))
-
+        # Adaptive batch processing
+        n = coords.shape[0]
+        
+        # Tiny batches (1-3): Direct numpy (avoid numba overhead)
+        # ✅ OPTIMIZATION: Inline the check for tiny batches to avoid function call overhead
+        # Tiny batches (1-3): Direct numpy (avoid numba overhead)
+        # ✅ OPTIMIZATION: Inline the check for tiny batches to avoid function call overhead
+        if n < 4:
+            # For very small batches, pure python/numpy is faster than numba dispatch
+            if n == 1:
+                c = coords[0]
+                # Return array of shape (1,)
+                return np.array([(0 <= c[0] < SIZE) & (0 <= c[1] < SIZE) & (0 <= c[2] < SIZE)], dtype=BOOL_DTYPE)
+            elif n == 2:
+                c0 = coords[0]
+                c1 = coords[1]
+                # Pre-allocate result (faster than np.array creation with list)
+                res = np.empty(2, dtype=BOOL_DTYPE)
+                res[0] = (0 <= c0[0] < SIZE) & (0 <= c0[1] < SIZE) & (0 <= c0[2] < SIZE)
+                res[1] = (0 <= c1[0] < SIZE) & (0 <= c1[1] < SIZE) & (0 <= c1[2] < SIZE)
+                return res
+            elif n == 3:
+                c0 = coords[0]
+                c1 = coords[1]
+                c2 = coords[2]
+                res = np.empty(3, dtype=BOOL_DTYPE)
+                res[0] = (0 <= c0[0] < SIZE) & (0 <= c0[1] < SIZE) & (0 <= c0[2] < SIZE)
+                res[1] = (0 <= c1[0] < SIZE) & (0 <= c1[1] < SIZE) & (0 <= c1[2] < SIZE)
+                res[2] = (0 <= c2[0] < SIZE) & (0 <= c2[1] < SIZE) & (0 <= c2[2] < SIZE)
+                return res
+        
+        # Medium batches (4-100): Use numba to eliminate intermediate arrays
+        if n <= 100:
+            return CoordinateUtils._in_bounds_numba_optimized(coords)
+        
+        # Large batches (100+): Use parallel numba
+        return CoordinateUtils._in_bounds_numba_parallel(coords)
+    
+    @staticmethod
+    @njit(cache=True, fastmath=True)
+    def _in_bounds_numba_optimized(coords: np.ndarray) -> np.ndarray:
+        """Optimized numba bounds check for medium-sized batches.
+        
+        OPTIMIZATION: Single pass without creating intermediate x,y,z views
+        or multiple boolean array copies. Better cache locality.
+        """
+        n = coords.shape[0]
+        result = np.empty(n, dtype=np.bool_)
+        
+        for i in range(n):
+            result[i] = (
+                (coords[i, 0] >= 0) & (coords[i, 0] < SIZE) &
+                (coords[i, 1] >= 0) & (coords[i, 1] < SIZE) &
+                (coords[i, 2] >= 0) & (coords[i, 2] < SIZE)
+            )
+        
         return result
 
     @staticmethod
     @njit(cache=True, fastmath=True, parallel=True)
+    def _in_bounds_numba_parallel(coords: np.ndarray) -> np.ndarray:
+        """Optimized numba bounds check for large batches using parallel execution.
+        
+        OPTIMIZATION: Parallel execution for large batches (100+).
+        """
+        n = coords.shape[0]
+        result = np.empty(n, dtype=np.bool_)
+        
+        for i in prange(n):
+            result[i] = (
+                (coords[i, 0] >= 0) & (coords[i, 0] < SIZE) &
+                (coords[i, 1] >= 0) & (coords[i, 1] < SIZE) &
+                (coords[i, 2] >= 0) & (coords[i, 2] < SIZE)
+            )
+        
+        return result
+    
+    @staticmethod
+    def in_bounds_trusted(coords: np.ndarray) -> np.ndarray:
+        """No-op bounds check for coordinates already validated.
+        
+        Use this when coordinates come from trusted sources:
+        - get_positions() (always returns valid coords)
+        - After filtering with in_bounds_vectorized
+        - From precomputed move tables
+        
+        Returns array of True for all coords (for API compatibility).
+        """
+        if coords.ndim == 1:
+            return True
+        return np.ones(coords.shape[0], dtype=BOOL_DTYPE)
+
+    @staticmethod
+    @njit(cache=True, fastmath=True, parallel=True)
     def _bounds_check_batch_numba(coords: np.ndarray) -> np.ndarray:
-        """Numba bounds checking."""
+        """Numba bounds checking - DEPRECATED, kept for compatibility.
+        
+        Pure numpy is faster for typical batch sizes.
+        """
         n = coords.shape[0]
         result = np.empty(n, dtype=BOOL_DTYPE)
         
         for i in prange(n):
             x, y, z = coords[i, 0], coords[i, 1], coords[i, 2]
-            result[i] = (0 <= x <= SIZE_MINUS_1 and 0 <= y <= SIZE_MINUS_1 and 0 <= z <= SIZE_MINUS_1)
+            result[i] = (0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE)
         
         return result
 

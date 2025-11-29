@@ -160,17 +160,21 @@ class LegalMoveGenerator:
         """Entry point for move generation."""
         return self.generate_fused(state)
 
-    def generate_fused(self, state: "GameState") -> np.ndarray:
+    def generate_fused(self, state: 'GameState') -> np.ndarray:
         """
-        Generates moves using Transposition Table and Incremental Updates.
-        Steps:
-        1. Probe TT.
-        2. Probe Move Cache (fast path).
-        3. Identify cache misses or affected pieces.
-        4. Regenerate raw moves (ignore occupancy) AND pseudolegal moves (respect occupancy).
-        5. Validate and Filter (Freeze, Hive, Priest, Check).
-        6. Update Cache.
+        Fused generation pipeline:
+        1. Pseudolegal generation (batch)
+        2. Validation (check/pin/etc)
+        3. Filtering (safe moves)
         """
+        # 0. Check for checkmate/stalemate early exit?
+        # 1. Probe TT.
+        # 2. Probe Move Cache (fast path).
+        # 3. Identify cache misses or affected pieces.
+        # 4. Regenerate raw moves (ignore occupancy) AND pseudolegal moves (respect occupancy).
+        # 5. Validate and Filter (Freeze, Hive, Priest, Check).
+        # 6. Update Cache.
+        # """
         # 1. Check Transposition Table
         cache_key = state.zkey
         tt_entry = state.cache_manager.transposition_table.probe_with_symmetry(cache_key, state.board)
@@ -235,81 +239,24 @@ class LegalMoveGenerator:
 
         # ✅ Store PSEUDOLEGAL moves for check detection
         state.cache_manager.move_cache.store_pseudolegal_moves(state.color, final_moves)
+        
+        if final_moves.size == 0 and len(coords) > 0:
+             logger.debug(f"Generator: 0 moves after pseudolegal generation for {len(coords)} pieces")
+        # else:
+        #      logger.debug(f"Generator: {len(final_moves)} pseudolegal moves generated")
 
         # 4. Validation
         if final_moves.size > 0:
             valid_mask = self._validate_moves_array(state, final_moves)
             final_moves = final_moves[valid_mask]
+            if final_moves.size == 0:
+                 logger.debug("Generator: All moves filtered by validation")
+            # else:
+            #      logger.debug(f"Generator: {len(final_moves)} moves passed validation")
 
         # 5. Apply Game Rule Filters
-        occ_cache = state.cache_manager.occupancy_cache
-
-        # Filter: Frozen Pieces
-        if final_moves.size > 0:
-            is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
-                final_moves[:, :3], state.turn_number, state.color
-            )
-            if np.any(is_frozen): final_moves = final_moves[~is_frozen]
-
-        # Filter: Hive Movement (One hive per turn)
-        if final_moves.size > 0 and hasattr(state, '_moved_hive_positions') and len(state._moved_hive_positions) > 0:
-            _, piece_types = occ_cache.batch_get_attributes(final_moves[:, :3])
-            hive_mask = piece_types == PieceType.HIVE
-
-            can_move = ~hive_mask # Non-hives can always move
-
-            # Check hive history
-            for i in np.where(hive_mask)[0]:
-                if tuple(final_moves[i, :3]) not in state._moved_hive_positions:
-                    can_move[i] = True
-
-            final_moves = final_moves[can_move]
-
-
-        # Filter: Self-Check (Only if King has no Priests)
-        if final_moves.size > 0:
-            if not occ_cache.has_priest(state.color):
-                final_moves = filter_safe_moves_optimized(state, final_moves)
-
-        # Filter: Trailblazer Counter Avoidance (King with 2 counters cannot hit trail)
-        if final_moves.size > 0:
-            _, piece_types = occ_cache.batch_get_attributes(final_moves[:, :3])
-            king_mask = piece_types == PieceType.KING
-            
-            if np.any(king_mask):
-                # ✅ VECTORIZED: Batch process all king moves at once
-                king_indices = np.where(king_mask)[0]
-                king_positions = final_moves[king_mask, :3]
-                king_destinations = final_moves[king_mask, 3:]
-                
-                # Batch get counters for all kings
-                king_counters = state.cache_manager.trailblaze_cache.batch_get_counters(king_positions)
-                
-                # Find kings with dangerous counter levels (>= 2)
-                danger_mask = king_counters >= 2
-                
-                if np.any(danger_mask):
-                    # Only check trail intersection for kings at risk
-                    dangerous_dests = king_destinations[danger_mask]
-                    
-                    # Check which dangerous destinations hit trails
-                    hits_trail = np.array([
-                        state.cache_manager.trailblaze_cache.check_trail_intersection(
-                            dest.reshape(1, 3), avoider_color=state.color
-                        )
-                        for dest in dangerous_dests
-                    ], dtype=bool)
-                    
-                    # Build global keep mask
-                    keep_mask = np.ones(len(final_moves), dtype=bool)
-                    dangerous_king_indices = king_indices[danger_mask]
-                    
-                    # Mark dangerous kings that hit trails for removal
-                    for local_idx, global_idx in enumerate(dangerous_king_indices):
-                        if hits_trail[local_idx]:
-                            keep_mask[global_idx] = False
-                    
-                    final_moves = final_moves[keep_mask]
+        final_moves = self._apply_all_filters(state, final_moves)
+        # logger.debug(f"Generator: {len(final_moves)} moves passed all filters (Final Legal Moves)")
 
         # 6. Final Cache Store
         state.cache_manager.move_cache.store_legal_moves(state.color, final_moves)
@@ -380,7 +327,7 @@ class LegalMoveGenerator:
 
 
     def _apply_all_filters(self, state: 'GameState', moves: np.ndarray) -> np.ndarray:
-        """Apply all game rule filters to a batch of moves."""
+        """Apply all move filters (check, pin, wall capture, etc.)."""
         if moves.size == 0:
             return moves
 
@@ -395,7 +342,7 @@ class LegalMoveGenerator:
 
         # Filter: Hive Movement (One hive per turn)
         if moves.size > 0 and hasattr(state, '_moved_hive_positions') and len(state._moved_hive_positions) > 0:
-            _, piece_types = occ_cache.batch_get_attributes(moves[:, :3])
+            _, piece_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
             hive_mask = piece_types == PieceType.HIVE
 
             if np.any(hive_mask):
@@ -412,20 +359,54 @@ class LegalMoveGenerator:
                 # This replaces the old separate filter_safe_moves AND pinned logic
                 moves = filter_safe_moves_optimized(state, moves)
 
+        # Filter: Wall Capture Restrictions (Can only capture from behind/side)
+        if moves.size > 0:
+            # Identify moves that capture a WALL
+            # We need to check the piece type at the destination square
+            _, dest_types = occ_cache.batch_get_attributes_unsafe(moves[:, 3:])
+            wall_capture_mask = dest_types == PieceType.WALL
+            
+            if np.any(wall_capture_mask):
+                # Get indices of moves capturing walls
+                capture_indices = np.where(wall_capture_mask)[0]
+                
+                # Get wall colors to determine "front" direction
+                # Note: All parts of a wall share the same Z, so we can check dest Z directly
+                dest_colors, _ = occ_cache.batch_get_attributes_unsafe(moves[capture_indices, 3:])
+                
+                attacker_z = moves[capture_indices, 2]
+                wall_z = moves[capture_indices, 5]
+                
+                is_white_wall = (dest_colors == Color.WHITE)
+                is_black_wall = (dest_colors == Color.BLACK)
+                
+                # Invalid if: (White Wall AND Attacker Z > Wall Z) OR (Black Wall AND Attacker Z < Wall Z)
+                invalid_capture = (is_white_wall & (attacker_z > wall_z)) | \
+                                  (is_black_wall & (attacker_z < wall_z))
+                
+                if np.any(invalid_capture):
+                    # Remove invalid captures
+                    # We need to map back to original moves array
+                    indices_to_remove = capture_indices[invalid_capture]
+                    
+                    keep_mask = np.ones(len(moves), dtype=bool)
+                    keep_mask[indices_to_remove] = False
+                    
+                    moves = moves[keep_mask]
+
         # Filter: Trailblazer Counter Avoidance (King with 2 counters cannot hit trail)
         if moves.size > 0:
-            # ... [Keep existing Trailblazer logic unchanged] ...
-            _, piece_types = occ_cache.batch_get_attributes(moves[:, :3])
+            _, piece_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
             king_mask = piece_types == PieceType.KING
-
+            
             if np.any(king_mask):
                 king_indices = np.where(king_mask)[0]
                 king_positions = moves[king_mask, :3]
                 king_destinations = moves[king_mask, 3:]
-
+                
                 king_counters = state.cache_manager.trailblaze_cache.batch_get_counters(king_positions)
                 danger_mask = king_counters >= 2
-
+                
                 if np.any(danger_mask):
                     dangerous_dests = king_destinations[danger_mask]
                     hits_trail = np.array([
@@ -434,14 +415,14 @@ class LegalMoveGenerator:
                         )
                         for dest in dangerous_dests
                     ], dtype=bool)
-
+                    
                     keep_mask = np.ones(len(moves), dtype=bool)
                     dangerous_king_indices = king_indices[danger_mask]
-
+                    
                     for local_idx, global_idx in enumerate(dangerous_king_indices):
                         if hits_trail[local_idx]:
                             keep_mask[global_idx] = False
-
+                    
                     moves = moves[keep_mask]
 
         return moves

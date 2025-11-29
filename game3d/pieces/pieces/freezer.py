@@ -45,6 +45,8 @@ def get_all_frozen_squares_numpy(
     controller: Color,
 ) -> np.ndarray:
     """Get all enemy squares frozen by controller's freezers. Returns (N, 3) array."""
+    if isinstance(controller, np.ndarray):
+        controller = Color(int(controller.item()))
     enemy_color = controller.opposite()
 
     # Get all friendly pieces

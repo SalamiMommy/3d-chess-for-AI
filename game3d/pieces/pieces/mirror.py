@@ -33,7 +33,8 @@ def generate_mirror_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Check if target has friendly piece
-    colors, _ = cache_manager.occupancy_cache.batch_get_attributes(target_coord.reshape(1, 3))
+    # ✅ OPTIMIZATION: Use colors_only since we don't need piece type
+    colors = cache_manager.occupancy_cache.batch_get_colors_only(target_coord.reshape(1, 3))
     if colors[0] != 0 and colors[0] == (1 if color == Color.WHITE else 2):
         return np.empty((0, 6), dtype=COORD_DTYPE)
 

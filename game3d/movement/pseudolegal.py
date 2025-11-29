@@ -21,6 +21,11 @@ from game3d.common.shared_types import COORD_DTYPE, PieceType
 from game3d.common.registry import get_piece_dispatcher
 from game3d.pieces.pieces.pawn import generate_pawn_moves
 
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
+
+logger = logging.getLogger(__name__)
+
 # Parallel execution imports
 try:
     from joblib import Parallel, delayed
@@ -28,11 +33,6 @@ try:
 except ImportError:
     JOBLIB_AVAILABLE = False
     logger.warning("joblib not available - parallel move generation disabled")
-
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-
-logger = logging.getLogger(__name__)
 
 # Parallelization threshold: only parallelize when piece count exceeds this
 PARALLEL_THRESHOLD = 8
@@ -126,6 +126,40 @@ def _process_piece_type(
     Returns:
         (M, 6) array of moves for all pieces of this type
     """
+    # Check if we can use batch processing
+    # Currently only Pawn supports it fully
+    if piece_type == PieceType.PAWN.value:
+        # Extract all coords for this piece type
+        coords = batch_coords[indices]
+        
+        try:
+            # Call dispatcher with batch coordinates
+            # Note: dispatcher for pawn is lambda s, p: generate_pawn_moves(s.cache_manager, s.color, p)
+            # generate_pawn_moves now handles (N, 3) input
+            raw_moves = dispatcher(state, coords)
+            
+            if not isinstance(raw_moves, np.ndarray):
+                raise MoveContractViolation(
+                    f"Dispatcher for piece type {piece_type} returned {type(raw_moves)}. "
+                    f"Must return numpy array of shape (N, 6) with integer dtype."
+                )
+                
+            if raw_moves.dtype != COORD_DTYPE:
+                raw_moves = raw_moves.astype(COORD_DTYPE, copy=False)
+                
+            if raw_moves.ndim != 2 or raw_moves.shape[1] != 6:
+                raise MoveContractViolation(
+                    f"Dispatcher returned shape {raw_moves.shape}. Expected (N, 6)."
+                )
+                
+            return raw_moves
+            
+        except Exception as e:
+            # Fallback to sequential if batch fails (shouldn't happen)
+            logger.error(f"Batch pawn generation failed: {e}. Falling back to sequential.")
+            # Fall through to sequential loop
+            pass
+
     moves_list = []
     
     for i in indices:

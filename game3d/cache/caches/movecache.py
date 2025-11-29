@@ -141,9 +141,18 @@ class MoveCache:
             if moves.size == 0:
                 piece_count = len(self.cache_manager.occupancy_cache.get_positions(color))
                 if piece_count > 0:
-                    logger.warning(
-                        f"Storing empty legal moves for {piece_count} pieces - possible stalemate"
-                    )
+                    priest_count = self.cache_manager.occupancy_cache.get_priest_count(color)
+                    
+                    # Check if it's actually Checkmate
+                    from game3d.attacks.check import king_in_check
+                    is_check = king_in_check(self.cache_manager.board, Color(color).opposite(), color, self.cache_manager)
+                    
+                    if is_check:
+                        logger.info(f"Checkmate detected for {Color(color).name} (Priests: {priest_count})")
+                    else:
+                        logger.warning(
+                            f"Stalemate detected for {Color(color).name} - {piece_count} pieces (Priests: {priest_count}) - 0 legal moves"
+                        )
 
             self._legal_moves_cache[color_idx] = moves.copy() if moves.size > 0 else moves
             current_gen = getattr(self.cache_manager.board, 'generation', 0)
@@ -535,29 +544,41 @@ class MoveCache:
         """
         Extract moves that originate from specific piece coordinates.
         
+        ✅ OPTIMIZATION: Uses O(1) piece cache lookups instead of O(N*M) linear search.
+        
         Args:
-            all_moves: (N, 6) array of all moves [fx, fy, fz, tx, ty, tz]
+            all_moves: (N, 6) array of all moves [fx, fy, fz, tx, ty, tz] - IGNORED in optimized version
             piece_coords: (M, 3) array of piece coordinates to extract
             
         Returns:
             (K, 6) array of moves from the specified pieces
         """
-        if all_moves.size == 0 or piece_coords.size == 0:
+        if piece_coords.size == 0:
             return np.empty((0, 6), dtype=MOVE_DTYPE)
         
-        # Create mask for moves from any of the specified pieces
-        mask = np.zeros(len(all_moves), dtype=BOOL_DTYPE)
+        # ✅ OPTIMIZATION: Use piece cache for O(1) lookup instead of linear search
+        # Convert coordinates to keys
+        from game3d.movement.pseudolegal import coord_to_key
+        coord_keys = coord_to_key(piece_coords)
         
-        for coord in piece_coords:
-            # Find moves where source matches this coordinate
-            coord_mask = (
-                (all_moves[:, 0] == coord[0]) &
-                (all_moves[:, 1] == coord[1]) &
-                (all_moves[:, 2] == coord[2])
-            )
-            mask |= coord_mask
+        # Collect moves from piece cache (assume color from first piece in all_moves)
+        # Since we're in a check detection context, we know the color from context
+        moves_list = []
         
-        return all_moves[mask]
+        with self._lock:
+            # Try both colors to find the pieces (we don't know which color in this context)
+            for color_idx in [0, 1]:
+                for coord_key in coord_keys:
+                    piece_id = (color_idx, int(coord_key))
+                    if piece_id in self._piece_moves_cache:
+                        cached_moves = self._piece_moves_cache[piece_id]
+                        if cached_moves.size > 0:
+                            moves_list.append(cached_moves)
+        
+        if not moves_list:
+            return np.empty((0, 6), dtype=MOVE_DTYPE)
+        
+        return np.concatenate(moves_list, axis=0)
 
     def remove_moves_from_mask(
         self,

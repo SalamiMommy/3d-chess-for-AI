@@ -25,6 +25,7 @@ from game3d.board.board import Board
 from game3d.common.shared_types import Color, PieceType, Result
 from game3d.movement.movepiece import Move
 from game3d.attacks.check import king_in_check, get_check_summary
+from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
 
 # Cache frequently used utilities
 _coord_to_idx_scalar = CoordinateUtils.coord_to_idx_scalar
@@ -237,10 +238,101 @@ def is_game_over(game_state) -> bool:
 
     # No legal moves -> Game Over (either Checkmate or Stalemate)
     if is_check(game_state):
-        logger.warning(f"Game over: Checkmate (Winner: {Color(game_state.color).opposite().name})")
+        # Gather detailed info for logging
+        try:
+            current_color = game_state.color
+            opponent_color = Color(current_color).opposite()
+            cache_manager = getattr(game_state, 'cache_manager', None)
+            
+            white_priests = 0
+            black_priests = 0
+            white_king = None
+            black_king = None
+            attackers_info = []
+
+            if cache_manager:
+                occ_cache = cache_manager.occupancy_cache
+                white_priests = occ_cache.get_priest_count(COLOR_WHITE)
+                black_priests = occ_cache.get_priest_count(COLOR_BLACK)
+                white_king = occ_cache.find_king(COLOR_WHITE)
+                black_king = occ_cache.find_king(COLOR_BLACK)
+                
+                # Find attackers
+                king_pos = white_king if current_color == COLOR_WHITE else black_king
+                
+                if king_pos is not None:
+                    # Create dummy state for opponent to generate moves correctly
+                    # We need to use the same class as game_state
+                    dummy_state = game_state.__class__(game_state.board, opponent_color, cache_manager)
+                    
+                    attacker_positions = occ_cache.get_positions(opponent_color)
+                    moves = generate_pseudolegal_moves_batch(dummy_state, attacker_positions)
+                    
+                    # Filter moves hitting the king
+                    target_x, target_y, target_z = king_pos[0], king_pos[1], king_pos[2]
+                    hits = (moves[:, 3] == target_x) & (moves[:, 4] == target_y) & (moves[:, 5] == target_z)
+                    
+                    attacking_moves = moves[hits]
+                    
+                    for move in attacking_moves:
+                        src = move[:3]
+                        piece_info = occ_cache.get_fast(src)
+                        if piece_info:
+                            ptype = piece_info[0] # piece_type
+                            ptype_name = PieceType(ptype).name
+                            attackers_info.append(f"{ptype_name} at ({src[0]},{src[1]},{src[2]})")
+
+            def fmt_pos(pos):
+                return f"({pos[0]},{pos[1]},{pos[2]})" if pos is not None else "None"
+            
+            attackers_str = ", ".join(attackers_info) if attackers_info else "Unknown"
+
+            logger.warning(f"Game over: Checkmate (Winner: {opponent_color.name})")
+            logger.warning(f"  - White: Priests={white_priests}, King={fmt_pos(white_king)}")
+            logger.warning(f"  - Black: Priests={black_priests}, King={fmt_pos(black_king)}")
+            logger.warning(f"  - Attackers: {attackers_str}")
+
+        except Exception as e:
+            logger.error(f"Error logging game over details: {e}")
+            logger.warning(f"Game over: Checkmate (Winner: {Color(game_state.color).opposite().name})")
     else:
-        logger.warning("Game over: Stalemate")
-    
+        # STALEMATE DIAGNOSIS
+        # Determine 'kind' of stalemate by checking if player has pieces other than King
+        try:
+            current_color = game_state.color
+            color_name = Color(current_color).name
+
+            # Access cache to count remaining pieces for the immobilized player
+            cache_manager = getattr(game_state, 'cache_manager', None)
+            if cache_manager:
+                occ_cache = cache_manager.occupancy_cache
+                _, _, colors = occ_cache.get_all_occupied_vectorized()
+                # Count pieces belonging to the current player (who cannot move)
+                piece_count = np.sum(colors == current_color)
+
+                # Get additional info for debugging
+                white_priests = occ_cache.get_priest_count(COLOR_WHITE)
+                black_priests = occ_cache.get_priest_count(COLOR_BLACK)
+                
+                white_king = occ_cache.find_king(COLOR_WHITE)
+                black_king = occ_cache.find_king(COLOR_BLACK)
+                
+                def fmt_pos(pos):
+                    return f"({pos[0]},{pos[1]},{pos[2]})" if pos is not None else "None"
+                
+                extra_info = f" | Priests: W={white_priests}, B={black_priests} | Kings: W={fmt_pos(white_king)}, B={fmt_pos(black_king)}"
+
+                if piece_count <= 1:
+                    logger.warning(f"Game over: Stalemate - King Trapped (Player: {color_name}, Reason: King isolated with no safe squares){extra_info}")
+                else:
+                    logger.warning(f"Game over: Stalemate - Material Blocked (Player: {color_name}, Reason: {piece_count} pieces completely immobilized){extra_info}")
+            else:
+                # Fallback if cache unavailable
+                logger.warning(f"Game over: Stalemate (Player: {color_name}, Reason: No legal moves)")
+        except Exception as e:
+            # Safe fallback in case of introspection error
+            logger.warning(f"Game over: Stalemate (Error diagnosing type: {e})")
+
     return True
 
 @track_operation(metrics=None)

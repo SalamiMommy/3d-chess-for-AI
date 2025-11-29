@@ -37,10 +37,14 @@ def get_debuffed_squares(
     Get squares within 2-sphere of friendly SLOWER pieces that affect enemies.
     Returns array of shape (N, 3) containing affected square coordinates.
     """
-    effect_pieces = np.array([
-        coord for coord, piece in cache_manager.get_pieces_of_color(effect_color)
-        if piece["piece_type"] == PieceType.SLOWER
-    ], dtype=COORD_DTYPE)
+    # ✅ OPTIMIZATION: Use vectorized get_positions and batch_get_attributes_unsafe
+    all_coords = cache_manager.occupancy_cache.get_positions(effect_color)
+    if all_coords.size == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE)
+        
+    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(all_coords)
+    slower_mask = piece_types == PieceType.SLOWER
+    effect_pieces = all_coords[slower_mask]
 
     if effect_pieces.shape[0] == 0:
         return np.empty((0, 3), dtype=COORD_DTYPE)
@@ -56,18 +60,17 @@ def get_debuffed_squares(
     if valid_coords.shape[0] == 0:
         return np.empty((0, 3), dtype=COORD_DTYPE)
 
-    # Check each valid coordinate for enemy pieces
-    affected_coords = []
-    for sq in valid_coords:
-        target = cache_manager.get_piece(sq)
-        if target is not None and target["color"] != effect_color:
-            affected_coords.append(sq)
+    # ✅ OPTIMIZATION: Vectorized color check using unsafe access
+    colors, _ = cache_manager.occupancy_cache.batch_get_attributes_unsafe(valid_coords)
+    
+    # Filter for enemy pieces (not empty and not friendly)
+    enemy_mask = (colors != 0) & (colors != effect_color)
+    affected = valid_coords[enemy_mask]
 
-    if not affected_coords:
+    if affected.shape[0] == 0:
         return np.empty((0, 3), dtype=COORD_DTYPE)
 
     # Remove duplicates and return
-    affected = np.array(affected_coords, dtype=COORD_DTYPE)
     return np.unique(affected, axis=0)
 
 

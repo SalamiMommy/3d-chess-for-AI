@@ -104,7 +104,15 @@ def validate_move_integrated(game_state: 'GameState', move: Move) -> Optional[st
     if error:
         return error
 
-    # 5. Basic move validation
+    # 5. Wall-specific bounds validation (2x2 footprint)
+    if types[0] == PieceType.WALL:
+        # Wall occupies (x,y), (x+1,y), (x,y+1), (x+1,y+1) relative to anchor
+        # Check if destination anchor allows for the full 2x2 block
+        to_x, to_y, _ = move.to_coord
+        if to_x >= SIZE - 1 or to_y >= SIZE - 1:
+            return f"Wall move to {move.to_coord} would place part of the wall out of bounds"
+
+    # 6. Basic move validation
     if not validate_move(game_state, move):
         return "Move violates piece movement rules"
 
@@ -183,6 +191,26 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         # Update all cleared squares
         changed_coords = coords_to_clear
         pieces_data = np.zeros((len(coords_to_clear), 2), dtype=PIECE_TYPE_DTYPE)
+
+    elif from_piece["piece_type"] == PieceType.WALL:
+        # Wall: Move 2x2 block
+        # Calculate offsets for 2x2 block
+        block_offsets = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=COORD_DTYPE)
+        
+        # Source squares (to be cleared)
+        source_squares = mv[:3] + block_offsets
+        source_data = np.zeros((4, 2), dtype=PIECE_TYPE_DTYPE) # Empty
+        
+        # Destination squares (to be set)
+        dest_squares = mv[3:] + block_offsets
+        dest_data = np.tile(
+            np.array([from_piece["piece_type"], from_piece["color"]], dtype=PIECE_TYPE_DTYPE),
+            (4, 1)
+        )
+        
+        # Combine
+        changed_coords = np.vstack([source_squares, dest_squares])
+        pieces_data = np.vstack([source_data, dest_data])
 
     else:
         # Standard move or geomancy
@@ -289,9 +317,19 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     )], dtype=MOVE_DTYPE)
 
     game_state.history.append(move_record)
+    # Update turn number and color
+    game_state.turn_number += 1
+    
+    # DEBUG
+    if not isinstance(game_state.color, (int, np.integer)) or isinstance(game_state.color, np.ndarray):
+        print(f"DEBUG: make_move game_state.color type: {type(game_state.color)} value: {game_state.color}")
+    
+    # Ensure color is Color enum (handle numpy scalars)
+    if not isinstance(game_state.color, Color):
+        game_state.color = Color(int(game_state.color))
+
     game_state.color = game_state.color.opposite()
     game_state.halfmove_clock = new_halfmove_clock
-    game_state.turn_number += 1
     game_state._legal_moves_cache = None
 
     # --- 10. REGENERATE MOVES INCREMENTALLY ---
