@@ -1,6 +1,6 @@
 """Bishop movement generator - diagonal slider."""
 import numpy as np
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 
 from game3d.common.coord_utils import CoordinateUtils
 from game3d.common.shared_types import COORD_DTYPE, PieceType, MAX_STEPS_SLIDER
@@ -23,15 +23,16 @@ def generate_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = MAX_STEPS_SLIDER,
+    max_steps: Union[int, np.ndarray] = MAX_STEPS_SLIDER,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate bishop moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position
-    if not CoordinateUtils.in_bounds(pos_arr):
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not CoordinateUtils.in_bounds(pos_arr):
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use slider engine with piece-specific movement vectors
     slider_engine = get_slider_movement_generator()
@@ -48,7 +49,12 @@ def generate_bishop_moves(
 def bishop_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for bishop moves - receives numpy array position."""
     modifier = get_range_modifier(state, pos)
-    max_steps = max(1, MAX_STEPS_SLIDER + modifier)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, MAX_STEPS_SLIDER + modifier)
+    else:
+        max_steps = max(1, MAX_STEPS_SLIDER + modifier)
+        
     return generate_bishop_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['BISHOP_MOVEMENT_VECTORS', 'generate_bishop_moves']

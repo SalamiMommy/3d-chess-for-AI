@@ -245,14 +245,12 @@ class LegalMoveGenerator:
         # else:
         #      logger.debug(f"Generator: {len(final_moves)} pseudolegal moves generated")
 
-        # 4. Validation
-        if final_moves.size > 0:
-            valid_mask = self._validate_moves_array(state, final_moves)
-            final_moves = final_moves[valid_mask]
-            if final_moves.size == 0:
-                 logger.debug("Generator: All moves filtered by validation")
-            # else:
-            #      logger.debug(f"Generator: {len(final_moves)} moves passed validation")
+        # 4. Validation - REMOVED (Redundant: Generators guarantee in-bounds & valid moves)
+        # if final_moves.size > 0:
+        #     valid_mask = self._validate_moves_array(state, final_moves)
+        #     final_moves = final_moves[valid_mask]
+        #     if final_moves.size == 0:
+        #          logger.debug("Generator: All moves filtered by validation")
 
         # 5. Apply Game Rule Filters
         final_moves = self._apply_all_filters(state, final_moves)
@@ -483,7 +481,7 @@ class LegalMoveGenerator:
         # Store full pseudolegal moves
         state.cache_manager.move_cache.store_pseudolegal_moves(color, all_moves)
 
-        # Apply validation and filtering
+        # Apply validation (REMOVED: Redundant) and filtering
         all_moves = self._apply_all_filters(state, all_moves)
 
         # Store in legal moves cache

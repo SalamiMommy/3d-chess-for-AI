@@ -3,7 +3,7 @@
 XZ-Zig-Zag — 9-step zig-zag rays in XZ-plane.
 """
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
@@ -42,10 +42,19 @@ def generate_xz_zigzag_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
+    max_steps: Union[int, np.ndarray] = 16,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate XZ-zigzag slider moves."""
     pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Validate position
+    if pos_arr.ndim == 1:
+        # Lazy import to avoid circular dependency
+        from game3d.common.coord_utils import in_bounds_vectorized
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+
     slider_engine = get_slider_movement_generator()
 
     return slider_engine.generate_slider_moves_array(
@@ -53,13 +62,21 @@ def generate_xz_zigzag_moves(
         color=color,
         pos=pos_arr,
         directions=XZ_ZIGZAG_DIRECTIONS,
-        max_distance=16,
+        max_distance=max_steps,
         ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.XZZIGZAG)
 def xz_zigzag_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for XZ-ZigZag moves."""
-    return generate_xz_zigzag_moves(state.cache_manager, state.color, pos, ignore_occupancy)
+    from game3d.movement.movementmodifiers import get_range_modifier
+    modifier = get_range_modifier(state, pos)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, 16 + modifier)
+    else:
+        max_steps = max(1, 16 + modifier)
+        
+    return generate_xz_zigzag_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['XZ_ZIGZAG_DIRECTIONS', 'generate_xz_zigzag_moves']

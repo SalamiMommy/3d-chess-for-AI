@@ -30,8 +30,9 @@ def generate_knight_moves(
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Use centralized bounds checking from coord_utils
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump engine with piece-specific movement vectors
     jump_engine = get_jump_movement_generator()

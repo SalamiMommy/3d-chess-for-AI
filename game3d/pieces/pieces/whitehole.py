@@ -1,28 +1,23 @@
-# whitehole.py - FULLY NUMPY-NATIVE (NO TUPLES ANYWHERE)
+# whitehole.py - OPTIMIZED NUMBA VERSION
 """White-Hole — moves like a Speeder and pushes enemies 1 step away."""
 
 from __future__ import annotations
 from typing import TYPE_CHECKING
 import numpy as np
+from numba import njit, prange
 
 from game3d.common.shared_types import Color, PieceType, Result, WHITEHOLE
 from game3d.common.registry import register
 from game3d.pieces.pieces.kinglike import generate_king_moves
 from game3d.movement.movepiece import Move
-from game3d.common.shared_types import COORD_DTYPE, WHITEHOLE_PUSH_RADIUS
+from game3d.common.shared_types import (
+    COORD_DTYPE, WHITEHOLE_PUSH_RADIUS, SIZE, SIZE_SQUARED, BOOL_DTYPE
+)
 from game3d.common.coord_utils import in_bounds_vectorized
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
-
-
-def _away_numpy(pos: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """1 Chebyshev step from pos away from target. Returns (3,) COORD_DTYPE."""
-    diff = pos - target
-    direction = np.sign(diff).astype(COORD_DTYPE)
-    # np.sign already yields 0 where diff == 0, so np.where is redundant
-    return pos + direction
 
 
 def generate_whitehole_moves(
@@ -34,23 +29,108 @@ def generate_whitehole_moves(
     return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.WHITEHOLE)
 
 
+@njit(cache=True, fastmath=True, parallel=True)
+def _push_candidates_numba(
+    enemy_coords: np.ndarray,
+    whitehole_coords: np.ndarray,
+    flattened_occ: np.ndarray
+) -> np.ndarray:
+    """
+    Fused kernel to find enemies pushed by whiteholes.
+    Replaces broadcasting (N, 1, 3) - (1, M, 3) with parallel iteration.
+    """
+    n_enemies = enemy_coords.shape[0]
+    n_holes = whitehole_coords.shape[0]
+    
+    # Store results: (enemy_idx, push_x, push_y, push_z)
+    valid_mask = np.zeros(n_enemies, dtype=BOOL_DTYPE)
+    push_targets = np.empty((n_enemies, 3), dtype=COORD_DTYPE)
+    
+    for i in prange(n_enemies):
+        ex, ey, ez = enemy_coords[i]
+        
+        # Find closest whitehole
+        min_dist = 999999
+        closest_idx = -1
+        
+        for j in range(n_holes):
+            hx, hy, hz = whitehole_coords[j]
+            
+            # Chebyshev distance
+            dx = abs(ex - hx)
+            dy = abs(ey - hy)
+            dz = abs(ez - hz)
+            dist = max(dx, max(dy, dz))
+            
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = j
+            elif dist == min_dist:
+                pass
+                
+        if closest_idx != -1 and min_dist <= WHITEHOLE_PUSH_RADIUS:
+            # Calculate push
+            hx, hy, hz = whitehole_coords[closest_idx]
+            
+            # Direction: sign(enemy - hole) (Push AWAY)
+            dx = ex - hx
+            dy = ey - hy
+            dz = ez - hz
+            
+            # Sign
+            sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+            sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+            sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
+            
+            px, py, pz = ex + sx, ey + sy, ez + sz
+            
+            # Check bounds
+            if 0 <= px < SIZE and 0 <= py < SIZE and 0 <= pz < SIZE:
+                # Check occupancy (must be empty)
+                idx = px + SIZE * py + SIZE_SQUARED * pz
+                if flattened_occ[idx] == 0:
+                    valid_mask[i] = True
+                    push_targets[i, 0] = px
+                    push_targets[i, 1] = py
+                    push_targets[i, 2] = pz
+
+    # Collect results
+    count = 0
+    for i in range(n_enemies):
+        if valid_mask[i]:
+            count += 1
+            
+    if count == 0:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+        
+    out = np.empty((count, 6), dtype=COORD_DTYPE)
+    idx_out = 0
+    for i in range(n_enemies):
+        if valid_mask[i]:
+            out[idx_out, 0] = enemy_coords[i, 0]
+            out[idx_out, 1] = enemy_coords[i, 1]
+            out[idx_out, 2] = enemy_coords[i, 2]
+            out[idx_out, 3] = push_targets[i, 0]
+            out[idx_out, 4] = push_targets[i, 1]
+            out[idx_out, 5] = push_targets[i, 2]
+            idx_out += 1
+            
+    return out
+
+
 def push_candidates_vectorized(
     cache_manager: 'OptimizedCacheManager',
     controller: Color,
 ) -> np.ndarray:
-    """
-    Fully vectorized, tuple-free version.
-    Returns (N, 6) int8 array: [ex, ey, ez, px, py, pz].
-    """
+    """Find enemies to push away from whiteholes - optimized with Numba."""
     # Get all friendly pieces
     all_coords = cache_manager.occupancy_cache.get_positions(controller)
     if all_coords.size == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
     
     # Filter for whiteholes
-    # ✅ OPTIMIZATION: Use unsafe access (coords from get_positions are valid)
-    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(all_coords)
-    whitehole_mask = piece_types == PieceType.WHITEHOLE
+    types = cache_manager.occupancy_cache.batch_get_types_only(all_coords)
+    whitehole_mask = (types == PieceType.WHITEHOLE.value)
     
     if not np.any(whitehole_mask):
         return np.empty((0, 6), dtype=COORD_DTYPE)
@@ -64,60 +144,9 @@ def push_candidates_vectorized(
     if enemy_coords.size == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    if enemy_coords.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Vectorized distance calculation: all enemies vs all whiteholes
-    # Shape: (num_enemies, num_whiteholes, 3)
-    diff = enemy_coords[:, np.newaxis, :] - whitehole_coords[np.newaxis, :, :]
-    cheb_distances = np.max(np.abs(diff), axis=2)  # Shape: (num_enemies, num_whiteholes)
-
-    # Vectorized range checking
-    in_range = cheb_distances <= WHITEHOLE_PUSH_RADIUS  # Shape: (num_enemies, num_whiteholes)
-
-    # Find closest valid whitehole for each enemy using vectorized operations
-    # Use large penalty for out-of-range distances
-    penalty = 1e6
-    penalized_distances = cheb_distances + penalty * ~in_range
-    closest_indices = np.argmin(penalized_distances, axis=1)  # Shape: (num_enemies,)
-
-    # Vectorized push calculation for all enemies
-    closest_holes = whitehole_coords[closest_indices]  # Shape: (num_enemies, 3)
-
-    # Calculate push positions for all enemies
-    # Push AWAY from hole: direction is sign(enemy - hole)
-    diff_vectors = enemy_coords - closest_holes
-    push_directions = np.sign(diff_vectors).astype(COORD_DTYPE)
-    push_positions = enemy_coords + push_directions  # Shape: (num_enemies, 3)
-
-    # Vectorized bounds and occupancy checking
-    valid_bounds = in_bounds_vectorized(push_positions)
-
-    # ✅ OPTIMIZATION: Vectorized occupancy check using unsafe access
-    # We only check occupancy for positions that are in bounds
-    # Initialize valid_occupancy as False
-    valid_occupancy = np.zeros(push_positions.shape[0], dtype=bool)
-    
-    if np.any(valid_bounds):
-        # Only check in-bounds positions
-        bounds_indices = np.where(valid_bounds)[0]
-        check_pos = push_positions[bounds_indices]
-        
-        colors, _ = cache_manager.occupancy_cache.batch_get_attributes_unsafe(check_pos)
-        # Valid if empty (color == 0)
-        valid_occupancy[bounds_indices] = (colors == 0)
-
-    # Filter valid pushes using vectorized operations
-    valid_pushes_mask = valid_bounds & valid_occupancy & np.any(in_range, axis=1)
-
-    if not np.any(valid_pushes_mask):
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Create final push pairs using vectorized concatenation
-    valid_enemies = enemy_coords[valid_pushes_mask]
-    valid_pushes = push_positions[valid_pushes_mask]
-
-    return np.hstack([valid_enemies, valid_pushes])
+    # Run fused kernel
+    flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+    return _push_candidates_numba(enemy_coords, whitehole_coords, flattened_occ)
 
 
 @register(PieceType.WHITEHOLE)

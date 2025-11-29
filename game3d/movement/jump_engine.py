@@ -110,7 +110,122 @@ def _filter_jump_targets_by_occupancy(
             mask[i] = (occ == 0)
     
     # Filter targets (numba handles this efficiently)
+    # Filter targets (numba handles this efficiently)
     return targets[mask]
+
+
+@njit(cache=True, fastmath=True)
+def _generate_and_filter_jump_moves(
+    pos: np.ndarray,
+    directions: np.ndarray,
+    flattened_occ: np.ndarray,
+    allow_capture: bool,
+    player_color: int
+) -> np.ndarray:
+    """Generate and filter jump moves in a single pass.
+    
+    Fuses:
+    1. Target calculation (pos + direction)
+    2. Bounds checking
+    3. Occupancy/Capture filtering
+    
+    Avoids allocating intermediate 'targets' and 'mask' arrays.
+    """
+    n_dirs = directions.shape[0]
+    # Allocate max possible size
+    moves = np.empty((n_dirs, 6), dtype=COORD_DTYPE)
+    count = 0
+    
+    px, py, pz = pos[0], pos[1], pos[2]
+    
+    for i in range(n_dirs):
+        dx, dy, dz = directions[i]
+        
+        # Target
+        tx, ty, tz = px + dx, py + dy, pz + dz
+        
+        # Bounds check
+        if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+            # Occupancy check
+            idx = tx + SIZE * ty + SIZE_SQUARED * tz
+            occ = flattened_occ[idx]
+            
+            is_valid = False
+            if occ == 0:
+                is_valid = True
+            elif allow_capture:
+                if occ != player_color:
+                    is_valid = True
+            
+            if is_valid:
+                moves[count, 0] = px
+                moves[count, 1] = py
+                moves[count, 2] = pz
+                moves[count, 3] = tx
+                moves[count, 4] = ty
+                moves[count, 5] = tz
+                count += 1
+                
+    return moves[:count]
+
+
+@njit(cache=True, fastmath=True)
+def _generate_and_filter_jump_moves_batch(
+    positions: np.ndarray,
+    directions: np.ndarray,
+    flattened_occ: np.ndarray,
+    allow_capture: bool,
+    player_color: int
+) -> np.ndarray:
+    """Generate and filter jump moves for a BATCH of positions.
+    
+    Fuses:
+    1. Target calculation (pos + direction) for all positions
+    2. Bounds checking
+    3. Occupancy/Capture filtering
+    
+    Returns:
+        (K, 6) array of moves [fx, fy, fz, tx, ty, tz]
+    """
+    n_pos = positions.shape[0]
+    n_dirs = directions.shape[0]
+    max_moves = n_pos * n_dirs
+    
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
+    count = 0
+    
+    for i in range(n_pos):
+        px, py, pz = positions[i]
+        
+        for j in range(n_dirs):
+            dx, dy, dz = directions[j]
+            
+            # Target
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            
+            # Bounds check
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                # Occupancy check
+                idx = tx + SIZE * ty + SIZE_SQUARED * tz
+                occ = flattened_occ[idx]
+                
+                is_valid = False
+                if occ == 0:
+                    is_valid = True
+                elif allow_capture:
+                    if occ != player_color:
+                        is_valid = True
+                
+                if is_valid:
+                    moves[count, 0] = px
+                    moves[count, 1] = py
+                    moves[count, 2] = pz
+                    moves[count, 3] = tx
+                    moves[count, 4] = ty
+                    moves[count, 5] = tz
+                    count += 1
+                    
+    return moves[:count]
 
 
 class JumpMovementEngine:
@@ -141,20 +256,69 @@ class JumpMovementEngine:
         ) -> np.ndarray:
             """Generate jump moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
             
-            # Filter out zero-direction vectors unless explicitly allowed (e.g., for BOMB self-detonation)
+            # Filter out zero-direction vectors unless explicitly allowed
             if not allow_zero_direction:
                 zero_mask = ~((directions[:, 0] == 0) & (directions[:, 1] == 0) & (directions[:, 2] == 0))
                 directions = directions[zero_mask]
                 
                 if directions.shape[0] == 0:
                     return np.empty((0, 6), dtype=COORD_DTYPE)
+
+            # ✅ BATCH PROCESSING PATH
+            if pos.ndim == 2:
+                if pos.shape[0] == 0:
+                    return np.empty((0, 6), dtype=COORD_DTYPE)
+                
+                # Check buffs
+                aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
+                flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+                
+                if aura_cache is not None:
+                    # Check if ANY piece in batch is buffed
+                    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+                    buff_mask = aura_cache._buffed_squares[x, y, z]
+                    
+                    if np.any(buff_mask):
+                        moves_list = []
+                        
+                        # 1. Process unbuffed pieces
+                        unbuffed_pos = pos[~buff_mask]
+                        if unbuffed_pos.shape[0] > 0:
+                            moves_list.append(_generate_and_filter_jump_moves_batch(
+                                unbuffed_pos, directions, flattened_occ, allow_capture, color
+                            ))
+                            
+                        # 2. Process buffed pieces
+                        buffed_pos = pos[buff_mask]
+                        if buffed_pos.shape[0] > 0:
+                            # Calculate buffed directions (increase length of longest component)
+                            current_directions = directions.copy()
+                            abs_dirs = np.abs(current_directions)
+                            max_vals = np.max(abs_dirs, axis=1, keepdims=True)
+                            mask = (abs_dirs == max_vals)
+                            sign = np.sign(current_directions)
+                            buffed_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
+                            
+                            moves_list.append(_generate_and_filter_jump_moves_batch(
+                                buffed_pos, buffed_directions, flattened_occ, allow_capture, color
+                            ))
+                            
+                        return np.concatenate(moves_list) if moves_list else np.empty((0, 6), dtype=COORD_DTYPE)
+
+                # Fast path: No buffs, use batch kernel
+                # print(f"DEBUG: Calling batch kernel with pos shape {pos.shape}")
+                return _generate_and_filter_jump_moves_batch(
+                    pos, directions, flattened_occ, allow_capture, color
+                )
+
+            # ✅ SINGLE PIECE PATH (Legacy/Single)
+            # ---------------------------------------------------------
             
-            # ✅ OPTIMIZED: Direct buff check using cached array
+            # Direct buff check
             is_buffed = False
             aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
             
             if aura_cache is not None:
-                # Direct array access - O(1) lookup instead of method call overhead
                 x, y, z = pos[0], pos[1], pos[2]
                 is_buffed = aura_cache._buffed_squares[x, y, z]
             
@@ -162,90 +326,40 @@ class JumpMovementEngine:
             
             # Try to use precomputed moves if available and not buffed
             if not is_buffed and piece_type is not None and piece_type.value in _PRECOMPUTED_MOVES:
-                # ✅ OPTIMIZATION: Use cached SIZE_SQUARED constant
                 flat_idx = pos[0] + SIZE * pos[1] + SIZE_SQUARED * pos[2]
                 
-                # Retrieve targets from precomputed array
                 try:
                     targets = _PRECOMPUTED_MOVES[piece_type.value][flat_idx]
                 except IndexError:
-                    # Fallback if index out of bounds (shouldn't happen with valid pos)
                     pass
 
             # Fallback to vector calculation if no precomputed moves or buffed
             if targets is None:
                 current_directions = directions
                 if is_buffed:
-                    # Apply buff: increase length of longest directional vector(s) by 1
                     current_directions = directions.copy()
-                    
-                    # Vectorized application of the rule
                     abs_dirs = np.abs(current_directions)
                     max_vals = np.max(abs_dirs, axis=1, keepdims=True)
-                    
-                    # Identify components that are equal to the max value (longest components)
                     mask = (abs_dirs == max_vals)
                     sign = np.sign(current_directions)
-                    
-                    # Add sign where mask is True
                     current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
 
-                targets = _generate_jump_targets(pos, current_directions)
-                
-                # Early exit if no valid targets
-                if targets.shape[0] == 0:
-                    return np.empty((0, 6), dtype=COORD_DTYPE)
+                flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+                return _generate_and_filter_jump_moves(
+                    pos, current_directions, flattened_occ, allow_capture, color
+                )
 
-            # ✅ OPTIMIZATION: Use optimized batch_is_occupied_unsafe
-            # This leverages the adaptive dispatching in OccupancyCache
-            is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(targets)
+            # Use optimized batch_is_occupied_unsafe for precomputed targets
+            flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
             
-            if allow_capture:
-                # Valid if: NOT occupied OR (occupied AND color != self.color)
-                # But we need to check color if occupied.
-                # Actually, filtering by occupancy first is faster if we expect many empty squares.
-                
-                # Let's use the fused logic from before but via cache API if possible?
-                # No, batch_is_occupied_unsafe only returns boolean.
-                # If we want capture logic, we need colors for occupied squares.
-                
-                # Optimized approach:
-                # 1. Identify occupied squares
-                # 2. For occupied, check color
-                
-                # However, the previous _filter_jump_targets_by_occupancy was doing it all in one pass.
-                # Can we do better?
-                # batch_get_attributes_unsafe returns (colors, types).
-                
-                # If we use batch_get_colors_only (which we should add/use), we can do:
-                # colors = cache.batch_get_colors_only(targets)
-                # valid = (colors == 0) | (colors != color)
-                
-                # Let's check if batch_get_colors_only exists and is optimized.
-                # It exists in OccupancyCache.
-                
-                # Use batch_get_colors_only which is optimized
-                target_colors = cache_manager.occupancy_cache.batch_get_colors_only(targets)
-                
-                # Valid move if:
-                # 1. Empty (color == 0)
-                # 2. Enemy (color != self.color)
-                # Combined: target_colors != self.color (since self.color is never 0)
-                valid_mask = (target_colors != color)
-                
-            else:
-                # Only empty squares allowed
-                # batch_is_occupied_unsafe is perfect here
-                is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(targets)
-                valid_mask = ~is_occupied
-
-            valid_targets = targets[valid_mask]
+            valid_targets = _filter_jump_targets_by_occupancy(
+                targets, flattened_occ, allow_capture, color
+            )
             
             n_moves = valid_targets.shape[0]
             if n_moves == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)
 
-            # ✅ OPTIMIZATION: Construct move array more efficiently
             moves = np.empty((n_moves, 6), dtype=COORD_DTYPE)
             moves[:, :3] = pos  # Broadcasts pos to all rows
             moves[:, 3:6] = valid_targets

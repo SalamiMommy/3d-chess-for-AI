@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
+origin_mask = np.any(all_coords != 0, axis=1)
 _KING_DIRECTIONS = all_coords[origin_mask].astype(COORD_DTYPE)
 
 def generate_infiltrator_moves(
@@ -33,6 +34,18 @@ def generate_infiltrator_moves(
 ) -> np.ndarray:
     """Generate infiltrator moves: king walks + pawn-front teleports."""
     start = pos.astype(COORD_DTYPE)
+    
+    # For batch input, process each piece individually
+    # This is because _get_pawn_front_directions is position-specific
+    if start.ndim == 2:
+        moves_list = []
+        for i in range(start.shape[0]):
+            piece_moves = generate_infiltrator_moves(cache_manager, color, start[i])
+            if piece_moves.size > 0:
+                moves_list.append(piece_moves)
+        if not moves_list:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+        return np.concatenate(moves_list)
 
     # Get teleport directions
     teleport_dirs = _get_pawn_front_directions(cache_manager, color, pos)
@@ -104,6 +117,10 @@ def _get_pawn_front_directions(
     if empty_front_squares.shape[0] == 0:
         return get_empty_coord_batch()
 
+    # Ensure start is 1D for broadcasting
+    if start.ndim == 2:
+        start = start[0]
+    
     # Calculate directions from start to targets
     directions = (empty_front_squares - start).astype(COORD_DTYPE)
 

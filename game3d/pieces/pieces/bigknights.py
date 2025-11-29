@@ -44,8 +44,10 @@ def generate_knight31_moves(
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    # Validate position
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump engine with piece-specific vectors
     jump_engine = get_jump_movement_generator()
@@ -66,8 +68,9 @@ def generate_knight32_moves(
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump engine with piece-specific vectors
     jump_engine = get_jump_movement_generator()

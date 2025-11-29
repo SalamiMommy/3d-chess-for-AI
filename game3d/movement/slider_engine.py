@@ -92,6 +92,95 @@ def _generate_all_slider_moves(
     return moves[:write_idx], captures[:write_idx]
 
 
+@njit(cache=True, fastmath=True)
+def _generate_all_slider_moves_batch(
+    color: int,
+    positions: np.ndarray,
+    directions: np.ndarray,
+    max_distances: np.ndarray,
+    flattened: np.ndarray,
+    ignore_occupancy: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """Numba-compiled slider move generation for BATCH of positions."""
+    n_pos = positions.shape[0]
+    n_dirs = directions.shape[0]
+    
+    # Estimate max moves (heuristic)
+    # Use max possible distance from array
+    global_max_dist = np.max(max_distances)
+    max_moves_per_piece = n_dirs * global_max_dist
+    total_max_moves = n_pos * max_moves_per_piece
+    
+    # Pre-allocate buffers
+    moves = np.empty((total_max_moves, 6), dtype=COORD_DTYPE)
+    
+    write_idx = 0
+    
+    for i in range(n_pos):
+        px, py, pz = positions[i]
+        max_dist = max_distances[i]
+        
+        for d in range(n_dirs):
+            dx, dy, dz = directions[d]
+            
+            # Skip zero vectors
+            if dx == 0 and dy == 0 and dz == 0:
+                continue
+            
+            current_x = px + dx
+            current_y = py + dy
+            current_z = pz + dz
+            
+            for _ in range(max_dist):
+                # Bounds check
+                if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
+                    break
+                
+                # Check occupancy
+                idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
+                occupant = flattened[idx]
+                
+                if occupant == 0:
+                    # Empty square - quiet move
+                    moves[write_idx, 0] = px
+                    moves[write_idx, 1] = py
+                    moves[write_idx, 2] = pz
+                    moves[write_idx, 3] = current_x
+                    moves[write_idx, 4] = current_y
+                    moves[write_idx, 5] = current_z
+                    write_idx += 1
+                else:
+                    # Blocked
+                    if ignore_occupancy:
+                        moves[write_idx, 0] = px
+                        moves[write_idx, 1] = py
+                        moves[write_idx, 2] = pz
+                        moves[write_idx, 3] = current_x
+                        moves[write_idx, 4] = current_y
+                        moves[write_idx, 5] = current_z
+                        write_idx += 1
+                        # CONTINUE RAY
+                    else:
+                        if occupant != color:
+                            # Capture move
+                            moves[write_idx, 0] = px
+                            moves[write_idx, 1] = py
+                            moves[write_idx, 2] = pz
+                            moves[write_idx, 3] = current_x
+                            moves[write_idx, 4] = current_y
+                            moves[write_idx, 5] = current_z
+                            write_idx += 1
+                        break  # Stop ray
+                
+                # Step forward
+                current_x += dx
+                current_y += dy
+                current_z += dz
+                
+    return moves[:write_idx], np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
+
+
+
 class SliderMovementEngine:
     """
     Raw slider move generation.
@@ -147,6 +236,22 @@ class SliderMovementEngine:
         ignore_occupancy: bool = False
     ) -> np.ndarray:
         """Generate slider moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
+        # Check for batch input
+        if pos.ndim == 2:
+            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
+            
+            # Ensure max_distances is an array
+            if isinstance(max_distance, (int, np.integer)):
+                max_dists = np.full(pos.shape[0], max_distance, dtype=np.int32)
+            else:
+                max_dists = max_distance.astype(np.int32)
+                
+            moves, _ = _generate_all_slider_moves_batch(
+                color, pos, directions, max_dists, flattened, ignore_occupancy
+            )
+            return moves
+
+        # Legacy single position path
         destinations, captures = self.generate_slider_moves_vectorized(
             cache_manager, color, pos, directions, max_distance, ignore_occupancy
         )

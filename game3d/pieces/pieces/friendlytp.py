@@ -1,4 +1,4 @@
-# game3d/movement/pieces/friendlytp.py - FULLY NUMPY-NATIVE
+# game3d/movement/pieces/friendlytp.py - OPTIMIZED NUMBA VERSION
 """
 Friendly-Teleporter – teleport to any empty neighbour of a friendly piece
 PLUS normal 1-step King moves.
@@ -6,9 +6,11 @@ PLUS normal 1-step King moves.
 
 from __future__ import annotations
 import numpy as np
+from numba import njit, prange
 from typing import List, TYPE_CHECKING
+
 from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch
-from game3d.common.shared_types import COORD_DTYPE, SIZE
+from game3d.common.shared_types import COORD_DTYPE, SIZE, SIZE_SQUARED, BOOL_DTYPE
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.jump_engine import get_jump_movement_generator
@@ -18,12 +20,84 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# King directions (1-step moves) - converted to numpy-native using meshgrid
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
-_KING_DIRECTIONS = all_coords[origin_mask].astype(COORD_DTYPE)
+# King directions (1-step moves)
+# Pre-computed as constant for Numba
+_KING_DIRECTIONS = np.array([
+    [0, 1, 1], [0, 1, -1], [0, -1, 1], [0, -1, -1],
+    [1, 0, 1], [1, 0, -1], [-1, 0, 1], [-1, 0, -1],
+    [1, 1, 0], [1, -1, 0], [-1, 1, 0], [-1, -1, 0],
+    [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
+    [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1],
+    [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0],
+    [1, 0, 0], [-1, 0, 0]
+], dtype=COORD_DTYPE)
+
+@njit(cache=True, fastmath=True)
+def _build_network_directions_numba(
+    start: np.ndarray,
+    friendly_coords: np.ndarray,
+    flattened_occ: np.ndarray
+) -> np.ndarray:
+    """
+    Fused kernel to find teleport directions.
+    Generates neighbors of all friendly pieces, filters bounds/occupancy,
+    deduplicates, and calculates direction vectors from start.
+    """
+    n_friendly = friendly_coords.shape[0]
+    n_dirs = _KING_DIRECTIONS.shape[0]
+    
+    # Use boolean mask for deduplication
+    mask = np.zeros(SIZE * SIZE_SQUARED, dtype=BOOL_DTYPE)
+    
+    # Start index to exclude self-teleport
+    start_idx = start[0] + SIZE * start[1] + SIZE_SQUARED * start[2]
+    
+    for i in range(n_friendly):
+        fx, fy, fz = friendly_coords[i]
+        
+        # Skip if friendly piece is the teleporter itself (optional, but cleaner)
+        if fx == start[0] and fy == start[1] and fz == start[2]:
+            continue
+            
+        for j in range(n_dirs):
+            dx, dy, dz = _KING_DIRECTIONS[j]
+            tx, ty, tz = fx + dx, fy + dy, fz + dz
+            
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                idx = tx + SIZE * ty + SIZE_SQUARED * tz
+                
+                # Must be empty and not the start square
+                if idx != start_idx and flattened_occ[idx] == 0:
+                    mask[idx] = True
+                    
+    # Collect results
+    count = 0
+    for i in range(SIZE * SIZE_SQUARED):
+        if mask[i]:
+            count += 1
+            
+    if count == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE)
+        
+    # We return DIRECTIONS from start, not absolute coords
+    out_dirs = np.empty((count, 3), dtype=COORD_DTYPE)
+    idx_out = 0
+    
+    for i in range(SIZE * SIZE_SQUARED):
+        if mask[i]:
+            # Decode index
+            z = i // SIZE_SQUARED
+            rem = i % SIZE_SQUARED
+            y = rem // SIZE
+            x = rem % SIZE
+            
+            # Calculate direction vector
+            out_dirs[idx_out, 0] = x - start[0]
+            out_dirs[idx_out, 1] = y - start[1]
+            out_dirs[idx_out, 2] = z - start[2]
+            idx_out += 1
+            
+    return out_dirs
 
 def generate_friendlytp_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -31,20 +105,57 @@ def generate_friendlytp_moves(
     pos: np.ndarray
 ) -> np.ndarray:
     """Generate friendly teleporter moves: king walks + network teleports."""
-    start = pos.astype(COORD_DTYPE)
+    pos_arr = pos.astype(COORD_DTYPE)
+    
+    jump_engine = get_jump_movement_generator()
+    
+    # Handle batch input
+    if pos_arr.ndim == 2:
+        moves_list = []
+        friendly_coords = cache_manager.occupancy_cache.get_positions(color)
+        flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+        
+        for i in range(pos_arr.shape[0]):
+            start = pos_arr[i]
+            teleport_dirs = _build_network_directions_numba(start, friendly_coords, flattened_occ)
+            
+            if teleport_dirs.shape[0] > 0:
+                all_dirs = np.vstack((_KING_DIRECTIONS, teleport_dirs))
+            else:
+                all_dirs = _KING_DIRECTIONS
+                
+            moves = jump_engine.generate_jump_moves(
+                cache_manager=cache_manager,
+                color=color,
+                pos=start,
+                directions=all_dirs,
+                allow_capture=True,
+                piece_type=PieceType.FRIENDLYTELEPORTER
+            )
+            if moves.shape[0] > 0:
+                moves_list.append(moves)
+                
+        if not moves_list:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+        return np.concatenate(moves_list, axis=0)
 
-    # Get teleport directions
-    teleport_dirs = _build_network_directions(cache_manager, color, pos)
+    # Single input path
+    start = pos_arr
 
-    # ✅ OPTIMIZATION: Skip np.unique - just concatenate directions
-    # Duplicates are rare and jump_engine handles them efficiently via occupancy check
+    # Get all friendly pieces
+    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
+    
+    # Build network directions using fused kernel
+    flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+    teleport_dirs = _build_network_directions_numba(start, friendly_coords, flattened_occ)
+
+    # Combine with normal King moves
     if teleport_dirs.shape[0] > 0:
         all_dirs = np.vstack((_KING_DIRECTIONS, teleport_dirs))
     else:
         all_dirs = _KING_DIRECTIONS
 
     # Generate all moves
-    jump_engine = get_jump_movement_generator()
     moves = jump_engine.generate_jump_moves(
         cache_manager=cache_manager,
         color=color,
@@ -54,90 +165,7 @@ def generate_friendlytp_moves(
         piece_type=PieceType.FRIENDLYTELEPORTER
     )
 
-    # Note: Metadata annotation removed as it was already being lost when
-    # generator.py converted Move objects to arrays. The teleport functionality
-    # works without the metadata flag.
     return moves
-
-def _build_network_directions(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Build directions to empty squares adjacent to friendly pieces."""
-    start = pos.astype(COORD_DTYPE)
-
-    # ✅ FIXED: Use occupancy_cache.get_positions() instead of get_pieces_of_color()
-    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
-
-    # Filter out the start position
-    if friendly_coords.shape[0] > 0:
-        not_start_mask = ~np.all(friendly_coords == start, axis=1)
-        friendly_arr = friendly_coords[not_start_mask]
-    else:
-        friendly_arr = friendly_coords
-
-    if friendly_arr.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    # Get all neighbors of friendly pieces
-    # Shape: (N_friendly, 26, 3) -> (N_friendly * 26, 3)
-    neighbours = (friendly_arr[:, np.newaxis, :] + _KING_DIRECTIONS[np.newaxis, :, :]).reshape(-1, 3)
-
-    # Filter: in-bounds
-    # ✅ OPTIMIZATION: Use optimized in_bounds
-    valid_mask = in_bounds_vectorized(neighbours)
-    neighbours = neighbours[valid_mask]
-
-    if neighbours.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    # ✅ OPTIMIZED: Use batch_is_occupied_unsafe for faster boolean check
-    # We only need to know if it's empty (color == 0), so is_occupied check is sufficient
-    # batch_is_occupied returns True if occupied, False if empty
-    is_occupied = cache_manager.occupancy_cache.batch_is_occupied_unsafe(neighbours)
-    empty_neighbours = neighbours[~is_occupied]
-
-    if empty_neighbours.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    # ✅ OPTIMIZATION: Fast deduplication using boolean mask on 1D indices
-    # Convert to flat indices for O(1) deduplication
-    flat_indices = (empty_neighbours[:, 0] + SIZE * empty_neighbours[:, 1] + SIZE * SIZE * empty_neighbours[:, 2])
-    
-    # Use a boolean mask for deduplication (since max index is small: 9*9*9 = 729)
-    # This is much faster than np.unique or set() for dense coordinates
-    unique_mask = np.zeros(SIZE * SIZE * SIZE, dtype=np.bool_)
-    unique_mask[flat_indices] = True
-    
-    # Also mask out the start position to avoid self-teleport
-    start_idx = start[0] + SIZE * start[1] + SIZE * SIZE * start[2]
-    unique_mask[start_idx] = False
-    
-    # Get unique flat indices
-    unique_flat = np.flatnonzero(unique_mask)
-    
-    if unique_flat.shape[0] == 0:
-        return get_empty_coord_batch()
-        
-    # Convert back to coordinates
-    # z = idx // SIZE_SQUARED, y = (idx % SIZE_SQUARED) // SIZE, x = idx % SIZE
-    z = unique_flat // (SIZE * SIZE)
-    rem = unique_flat % (SIZE * SIZE)
-    y = rem // SIZE
-    x = rem % SIZE
-    
-    unique_targets = np.column_stack((x, y, z)).astype(COORD_DTYPE)
-
-    # Convert to directions
-    directions = (unique_targets - start).astype(COORD_DTYPE)
-
-    # Final validation (should be redundant if logic is correct, but safe to keep for now)
-    # dest_coords = start + directions
-    # valid_mask = np.all((dest_coords >= 0) & (dest_coords < SIZE), axis=1)
-    # return directions[valid_mask]
-    
-    return directions
 
 @register(PieceType.FRIENDLYTELEPORTER)
 def friendlytp_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

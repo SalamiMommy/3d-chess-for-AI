@@ -107,9 +107,9 @@ __all__ = [
     'get_range_modifier'
 ]
 
-def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> int:
+def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> Union[int, np.ndarray]:
     """
-    Get range modifier for a piece at pos based on auras.
+    Get range modifier for a piece or batch of pieces.
     Returns:
         +1 if buffed (Speeder)
         -1 if debuffed (Slower)
@@ -123,10 +123,19 @@ def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> int:
             break
             
     if aura_cache is None:
-        return 0
+        return 0 if pos.ndim == 1 else np.zeros(pos.shape[0], dtype=np.int8)
         
-    # Check buff/debuff status
-    # batch_is_buffed expects (N, 3) array
+    # Handle batch input
+    if pos.ndim == 2:
+        is_buffed = aura_cache.batch_is_buffed(pos, game_state.color)
+        is_debuffed = aura_cache.batch_is_debuffed(pos, game_state.color)
+        
+        modifiers = np.zeros(pos.shape[0], dtype=np.int8)
+        modifiers[is_buffed] += 1
+        modifiers[is_debuffed] -= 1
+        return modifiers
+
+    # Handle single input
     pos_arr = pos.reshape(1, 3)
     
     is_buffed = aura_cache.batch_is_buffed(pos_arr, game_state.color)[0]

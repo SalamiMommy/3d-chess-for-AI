@@ -1,7 +1,7 @@
 """Trigonal Bishop - 8 space-diagonal movement vectors."""
 from __future__ import annotations
 import numpy as np
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 
 from game3d.common.shared_types import COORD_DTYPE, SIZE_MINUS_1, Color, PieceType
 from game3d.common.registry import register
@@ -23,15 +23,16 @@ def generate_trigonal_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = SIZE_MINUS_1,
+    max_steps: Union[int, np.ndarray] = SIZE_MINUS_1,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate trigonal bishop moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position using vectorized bounds check
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use slider engine for movement generation
     slider_engine = get_slider_movement_generator()
@@ -49,6 +50,14 @@ def generate_trigonal_bishop_moves(
 @register(PieceType.TRIGONALBISHOP)
 def trigonal_bishop_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Trigonal Bishop moves."""
-    return generate_trigonal_bishop_moves(state.cache_manager, state.color, pos, ignore_occupancy=ignore_occupancy)
+    from game3d.movement.movementmodifiers import get_range_modifier
+    modifier = get_range_modifier(state, pos)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, SIZE_MINUS_1 + modifier)
+    else:
+        max_steps = max(1, SIZE_MINUS_1 + modifier)
+        
+    return generate_trigonal_bishop_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy=ignore_occupancy)
 
 __all__ = ['TRIGONAL_BISHOP_VECTORS', 'generate_trigonal_bishop_moves', 'trigonal_bishop_move_dispatcher']

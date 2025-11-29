@@ -1,6 +1,6 @@
 """Vector-Slider piece implementation with 152 primitive directions."""
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
@@ -64,10 +64,18 @@ def generate_vector_slider_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
+    max_steps: Union[int, np.ndarray] = 8,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate vector slider moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Validate position
+    if pos_arr.ndim == 1:
+        # Lazy import to avoid circular dependency
+        from game3d.common.coord_utils import in_bounds_vectorized
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use the slider engine
     slider_engine = get_slider_movement_generator()
@@ -76,13 +84,21 @@ def generate_vector_slider_moves(
         color=color,
         pos=pos_arr,
         directions=VECTOR_DIRECTIONS,
-        max_distance=8,
+        max_distance=max_steps,
         ignore_occupancy=ignore_occupancy
     )
 
 @register(PieceType.VECTORSLIDER)
 def vectorslider_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Vector Slider moves."""
-    return generate_vector_slider_moves(state.cache_manager, state.color, pos, ignore_occupancy)
+    from game3d.movement.movementmodifiers import get_range_modifier
+    modifier = get_range_modifier(state, pos)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, 8 + modifier)
+    else:
+        max_steps = max(1, 8 + modifier)
+        
+    return generate_vector_slider_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['VECTOR_DIRECTIONS', 'generate_vector_slider_moves', 'vectorslider_move_dispatcher']

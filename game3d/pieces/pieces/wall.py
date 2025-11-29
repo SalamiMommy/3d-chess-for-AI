@@ -1,13 +1,14 @@
-# game3d/movement/movetypes/wall.py - FULLY NUMPY-NATIVE
+# game3d/movement/movetypes/wall.py - OPTIMIZED NUMBA VERSION
 """
-Unified Wall movement + behind-capture logic - fully vectorized.
+Unified Wall movement + behind-capture logic - optimized with Numba.
 """
 
 from __future__ import annotations
 from typing import List, TYPE_CHECKING
 import numpy as np
+from numba import njit, prange
 
-from game3d.common.shared_types import Color, PieceType, Result, WALL, COORD_DTYPE, SIZE, get_empty_coord_batch
+from game3d.common.shared_types import Color, PieceType, Result, WALL, COORD_DTYPE, SIZE, get_empty_coord_batch, BOOL_DTYPE
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds_vectorized
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# Wall-specific movement vectors - orthogonal movement (6 directions) - numpy native
+# Wall-specific movement vectors - orthogonal movement (6 directions)
 WALL_MOVEMENT_VECTORS = np.array([
     [1, 0, 0], [-1, 0, 0],
     [0, 1, 0], [0, -1, 0],
@@ -26,109 +27,129 @@ WALL_MOVEMENT_VECTORS = np.array([
 # Wall block offsets (constant)
 WALL_BLOCK_OFFSETS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=COORD_DTYPE)
 
-# 2×2×1 block geometry helpers
-def _wall_squares_numpy(anchor: np.ndarray) -> np.ndarray:
+@njit(cache=True, fastmath=True)
+def _wall_squares_numba(anchor: np.ndarray) -> np.ndarray:
     """Return the 4 squares occupied by a Wall anchored at anchor."""
-    return anchor.reshape(1, 3) + WALL_BLOCK_OFFSETS
+    # (4, 3)
+    res = np.empty((4, 3), dtype=COORD_DTYPE)
+    for i in range(4):
+        res[i, 0] = anchor[0] + WALL_BLOCK_OFFSETS[i, 0]
+        res[i, 1] = anchor[1] + WALL_BLOCK_OFFSETS[i, 1]
+        res[i, 2] = anchor[2] + WALL_BLOCK_OFFSETS[i, 2]
+    return res
 
-def _block_in_bounds_numpy(anchor: np.ndarray) -> bool:
+@njit(cache=True, fastmath=True)
+def _block_in_bounds_numba(anchor: np.ndarray) -> bool:
     """True if the entire 2×2×1 block stays inside the board."""
-    # Check anchor and anchor + [1, 1, 0]
     # Anchor must be strictly less than SIZE - 1 to allow room for the +1 block
-    if not (0 <= anchor[0] < SIZE - 1 and 0 <= anchor[1] < SIZE - 1 and 0 <= anchor[2] < SIZE):
-        return False
-    return True
+    return (0 <= anchor[0] < SIZE - 1 and 
+            0 <= anchor[1] < SIZE - 1 and 
+            0 <= anchor[2] < SIZE)
 
-# Behind-mask builder (fully vectorized)
-def _build_behind_mask_numpy(anchor: np.ndarray) -> np.ndarray:
+@njit(cache=True, fastmath=True)
+def _build_behind_mask_numba(anchor: np.ndarray) -> np.ndarray:
     """
     Return every square that is **behind** the Wall anchored at *anchor*.
     Returns array of shape (N, 3) containing all behind squares.
-    Fully vectorized implementation.
     """
-    directions = WALL_MOVEMENT_VECTORS
+    # Max possible squares: 6 directions * (SIZE-1) steps * 4 squares/block?
+    # No, "behind" means along the movement lines from the wall.
+    # The original implementation generated rays from the anchor.
+    # Let's replicate that logic but faster.
+    
+    # Original logic: anchor + direction * step for all 6 directions
+    # Max squares = 6 * (SIZE-1)
+    max_squares = 6 * (SIZE - 1)
+    out = np.empty((max_squares, 3), dtype=COORD_DTYPE)
+    count = 0
+    
+    for d in range(6):
+        dx, dy, dz = WALL_MOVEMENT_VECTORS[d]
+        
+        # Start from 1 step away
+        curr_x = anchor[0] + dx
+        curr_y = anchor[1] + dy
+        curr_z = anchor[2] + dz
+        
+        while 0 <= curr_x < SIZE and 0 <= curr_y < SIZE and 0 <= curr_z < SIZE:
+            out[count, 0] = curr_x
+            out[count, 1] = curr_y
+            out[count, 2] = curr_z
+            count += 1
+            
+            curr_x += dx
+            curr_y += dy
+            curr_z += dz
+            
+    return out[:count]
 
-    # Vectorized calculation of all possible positions in each direction
-    max_steps = SIZE - 1
-    step_range = np.arange(1, max_steps + 1, dtype=COORD_DTYPE)
-
-    # Calculate all positions: anchor + direction * step for all combinations
-    direction_expanded = directions[:, np.newaxis, :]
-    step_expanded = step_range[np.newaxis, :, np.newaxis]
-    anchor_expanded = anchor[np.newaxis, np.newaxis, :]
-
-    all_positions = anchor_expanded + direction_expanded * step_expanded
-
-    # Flatten and filter valid positions
-    positions_2d = all_positions.reshape(-1, 3)
-
-    # Vectorized bounds checking
-    valid_mask = np.all((positions_2d >= 0) & (positions_2d < SIZE), axis=1)
-    valid_positions = positions_2d[valid_mask]
-
-    if valid_positions.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    return valid_positions.astype(COORD_DTYPE)
+@njit(cache=True, fastmath=True, parallel=True)
+def _can_capture_wall_numba(attacker_sqs: np.ndarray, wall_anchors: np.ndarray) -> np.ndarray:
+    """
+    Check if attackers can capture walls.
+    Returns boolean array of shape (num_attackers,)
+    """
+    n_attackers = attacker_sqs.shape[0]
+    n_walls = wall_anchors.shape[0]
+    result = np.zeros(n_attackers, dtype=BOOL_DTYPE)
+    
+    if n_walls == 0:
+        return result
+        
+    for i in prange(n_attackers):
+        ax, ay, az = attacker_sqs[i]
+        
+        for j in range(n_walls):
+            wx, wy, wz = wall_anchors[j]
+            
+            # Check alignment
+            dx = ax - wx
+            dy = ay - wy
+            dz = az - wz
+            
+            # Count zeros
+            zeros = 0
+            if dx == 0: zeros += 1
+            if dy == 0: zeros += 1
+            if dz == 0: zeros += 1
+            
+            if zeros == 2:
+                # Aligned on one axis. Check direction.
+                # Must be "behind" -> diff > 0?
+                # Original logic: diff > 0
+                
+                is_valid = False
+                if dx != 0:
+                    if dx > 0: is_valid = True
+                elif dy != 0:
+                    if dy > 0: is_valid = True
+                elif dz != 0:
+                    if dz > 0: is_valid = True
+                    
+                if is_valid:
+                    result[i] = True
+                    break # Found a wall this attacker can capture
+                    
+    return result
 
 def can_capture_wall_vectorized(attacker_sqs: np.ndarray, wall_anchors: np.ndarray) -> np.ndarray:
-    """Check if attackers can capture walls - fully vectorized numpy operations."""
+    """Public API wrapper."""
     if attacker_sqs.shape[0] == 0:
         return np.array([], dtype=bool)
-
-    attacker_sqs = np.asarray(attacker_sqs, dtype=COORD_DTYPE)
-    wall_anchors = np.asarray(wall_anchors, dtype=COORD_DTYPE)
-
-    # Broadcast for all combinations: (num_attackers, num_walls, 3)
-    diff = attacker_sqs[:, np.newaxis, :] - wall_anchors[np.newaxis, :, :]
-
-    # Check alignment in each axis (2 coordinates must be zero, 1 must be non-zero)
-    zero_mask = (diff == 0)
-    zero_count = np.sum(zero_mask, axis=2)
-    aligned_mask = (zero_count == 2)
-
-    # For aligned pairs, check direction validity
-    non_zero_mask = ~zero_mask
-    non_zero_axis = np.where(non_zero_mask)
-
-    if len(non_zero_axis[0]) > 0:
-        attacker_indices, wall_indices, axis_indices = non_zero_axis
-        diff_values = diff[attacker_indices, wall_indices, axis_indices]
-        valid_direction_mask = diff_values > 0
-        valid_directions = np.zeros_like(aligned_mask)
-        valid_directions[attacker_indices, wall_indices] = valid_direction_mask
-
-        return (aligned_mask & valid_directions).any(axis=1)
-
-    return np.zeros(attacker_sqs.shape[0], dtype=bool)
-
-def can_capture_wall_numpy(attacker_sq: np.ndarray, wall_anchor: np.ndarray) -> bool:
-    """
-    Return True if *attacker_sq* is **behind** the Wall anchored at *wall_anchor*.
-    Numpy native version.
-    """
-    behind_mask = _build_behind_mask_numpy(wall_anchor)
-    if len(behind_mask) == 0:
-        return False
-
-    # Check if attacker_sq matches any behind square
-    return np.any(np.all(behind_mask == attacker_sq.reshape(1, 3), axis=1))
+    return _can_capture_wall_numba(
+        attacker_sqs.astype(COORD_DTYPE), 
+        wall_anchors.astype(COORD_DTYPE)
+    )
 
 def is_wall_anchor(pos: np.ndarray, cache_manager: 'OptimizedCacheManager') -> bool:
-    """Check if pos is the top-left anchor of a 2x2 wall block.
-    
-    OPTIMIZED: Uses scalar accessors to avoid array creation.
-    """
+    """Check if pos is the top-left anchor of a 2x2 wall block."""
     x, y, z = pos[0], pos[1], pos[2]
     
     # Check left neighbor (x-1)
     if x > 0:
-        # Check if left neighbor is a WALL
-        # Use scalar accessor if available (it is now)
         if hasattr(cache_manager.occupancy_cache, 'get_type_at'):
             type_l = cache_manager.occupancy_cache.get_type_at(x-1, y, z)
         else:
-            # Fallback (should not happen with updated cache)
             left = np.array([x-1, y, z], dtype=COORD_DTYPE)
             type_l, _ = cache_manager.occupancy_cache.get_fast(left)
             
@@ -148,6 +169,86 @@ def is_wall_anchor(pos: np.ndarray, cache_manager: 'OptimizedCacheManager') -> b
             
     return True
 
+@njit(cache=True, fastmath=True)
+def _generate_wall_moves_kernel(
+    anchor: np.ndarray, 
+    colors: np.ndarray, 
+    types: np.ndarray,
+    my_color: int
+) -> np.ndarray:
+    """
+    Fused kernel for wall move generation.
+    Input:
+        anchor: (3,)
+        colors: (6, 4) - colors at target squares for 6 directions
+        types: (6, 4) - types at target squares
+        my_color: int
+    Returns:
+        (N, 6) moves
+    """
+    moves = np.empty((6, 6), dtype=COORD_DTYPE)
+    count = 0
+    
+    # Current wall squares for overlap check
+    current_squares = np.empty((4, 3), dtype=COORD_DTYPE)
+    for k in range(4):
+        current_squares[k, 0] = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
+        current_squares[k, 1] = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
+        current_squares[k, 2] = anchor[2] + WALL_BLOCK_OFFSETS[k, 2]
+    
+    for i in range(6):
+        # Target anchor for this direction
+        tax = anchor[0] + WALL_MOVEMENT_VECTORS[i, 0]
+        tay = anchor[1] + WALL_MOVEMENT_VECTORS[i, 1]
+        taz = anchor[2] + WALL_MOVEMENT_VECTORS[i, 2]
+        
+        # Bounds check for target anchor
+        if not (0 <= tax < SIZE - 1 and 0 <= tay < SIZE - 1 and 0 <= taz < SIZE):
+            continue
+            
+        # Check the 4 squares of the target wall
+        is_blocked = False
+        
+        for j in range(4):
+            # Target square coords
+            tx = tax + WALL_BLOCK_OFFSETS[j, 0]
+            ty = tay + WALL_BLOCK_OFFSETS[j, 1]
+            tz = taz + WALL_BLOCK_OFFSETS[j, 2]
+            
+            # Occupancy at target square
+            occ_color = colors[i, j]
+            
+            if occ_color != 0:
+                # Square is occupied.
+                # It blocks IF:
+                # 1. It is friendly (occ_color == my_color)
+                # 2. AND it is NOT part of the current wall (self-overlap)
+                
+                if occ_color == my_color:
+                    # Check self-overlap
+                    is_self = False
+                    for k in range(4):
+                        if (current_squares[k, 0] == tx and 
+                            current_squares[k, 1] == ty and 
+                            current_squares[k, 2] == tz):
+                            is_self = True
+                            break
+                    
+                    if not is_self:
+                        is_blocked = True
+                        break
+        
+        if not is_blocked:
+            moves[count, 0] = anchor[0]
+            moves[count, 1] = anchor[1]
+            moves[count, 2] = anchor[2]
+            moves[count, 3] = tax
+            moves[count, 4] = tay
+            moves[count, 5] = taz
+            count += 1
+            
+    return moves[:count]
+
 def generate_wall_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
@@ -155,156 +256,46 @@ def generate_wall_moves(
 ) -> np.ndarray:
     anchor = pos.astype(COORD_DTYPE)
 
-    # 1. Enforce Anchor Logic: Only the top-left piece generates moves
+    # 1. Enforce Anchor Logic
     if not is_wall_anchor(anchor, cache_manager):
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    if not _block_in_bounds_numpy(anchor):
+    if not _block_in_bounds_numba(anchor):
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # 2. Vectorized Move Generation
-    # Calculate all 6 potential target anchors at once
-    # WALL_MOVEMENT_VECTORS shape is (6, 3)
+    # 2. Prepare data for kernel
+    # We need to fetch occupancy for all 6 potential moves * 4 squares
+    # Total 24 squares to check.
+    
+    # Generate all target squares
+    # (6, 4, 3)
     target_anchors = anchor + WALL_MOVEMENT_VECTORS
+    all_targets = target_anchors[:, np.newaxis, :] + WALL_BLOCK_OFFSETS[np.newaxis, :, :]
     
-    # Filter out-of-bounds target anchors
-    # For a 2x2 block at anchor (x,y,z), we need:
-    # 0 <= x < SIZE - 1
-    # 0 <= y < SIZE - 1
-    # 0 <= z < SIZE
-    valid_mask = (
-        (target_anchors[:, 0] >= 0) & (target_anchors[:, 0] < SIZE - 1) &
-        (target_anchors[:, 1] >= 0) & (target_anchors[:, 1] < SIZE - 1) &
-        (target_anchors[:, 2] >= 0) & (target_anchors[:, 2] < SIZE)
-    )
+    # Flatten for batch lookup
+    flat_targets = all_targets.reshape(-1, 3)
     
-    valid_target_anchors = target_anchors[valid_mask]
+    # Batch lookup (unsafe is fine as we handle bounds in kernel? 
+    # No, we need valid coords for lookup.
+    # The kernel checks bounds for the *anchor*, but we need to check bounds for *squares* before lookup?
+    # Actually, if anchor is in bounds (0..SIZE-2), then anchor+offset (0..1) is in bounds (0..SIZE-1).
+    # So if target anchor is valid, all its squares are valid.
     
-    if valid_target_anchors.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-        
-    # 3. Batch Occupancy Check
-    # We need to check 4 squares for each valid target anchor
-    # Total squares to check = num_valid_moves * 4
+    # But fetching for INVALID target anchors might be OOB.
+    # So we should filter valid anchors first, OR use safe lookup.
+    # Safe lookup is easier.
     
-    # Offsets for the 4 squares of the wall: (0,0,0), (1,0,0), (0,1,0), (1,1,0)
-    # Use constant to avoid allocation
-    block_offsets = WALL_BLOCK_OFFSETS
+    colors, types = cache_manager.occupancy_cache.batch_get_attributes(flat_targets)
     
-    # Create all target squares: (num_moves, 4, 3)
-    # Broadcasting: (num_moves, 1, 3) + (1, 4, 3) -> (num_moves, 4, 3)
-    all_target_squares = valid_target_anchors[:, np.newaxis, :] + block_offsets[np.newaxis, :, :]
+    # Reshape
+    colors = colors.reshape(6, 4)
+    types = types.reshape(6, 4)
     
-    # Flatten to (num_moves * 4, 3) for batch lookup
-    flat_target_squares = all_target_squares.reshape(-1, 3)
-    
-    # Batch lookup attributes
-    # Use unsafe variant as coordinates are guaranteed valid by valid_mask logic
-    colors, types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(flat_target_squares)
-    
-    # Reshape back to (num_moves, 4)
-    colors = colors.reshape(-1, 4)
-    types = types.reshape(-1, 4)
-    
-    # 4. Vectorized Validity Logic
-    # Valid if:
-    # - Square is empty (color == 0)
-    # - Square is occupied by opponent (Capture)
-    # - Square is occupied by self, BUT it's part of the current wall (Self-overlap allowed)
-    
-    # Check for self-overlap
-    # Current wall squares: anchor + block_offsets
-    current_wall_squares = anchor + block_offsets # (4, 3)
-    
-    # We need to check if each target square matches ANY of the current wall squares
-    # all_target_squares: (num_moves, 4, 3)
-    # current_wall_squares: (4, 3)
-    # Result: (num_moves, 4) boolean mask where True means "is part of current wall"
-    
-    # Expand dims for broadcasting:
-    # (num_moves, 4, 1, 3) == (1, 1, 4, 3) -> (num_moves, 4, 4, 3)
-    # Check equality on last axis (coords), then any on the 3rd axis (matching any current square)
-    
-    # Optimization: We know the geometry.
-    # A move by (dx, dy, dz) overlaps if:
-    # - dx=0, dy=0, dz!=0: All 4 squares move to new Z. No overlap (unless dz=0 which is impossible)
-    # - dx=1: (0,0)->(1,0), (0,1)->(1,1). 2 squares overlap.
-    # - dx=-1: (1,0)->(0,0), (1,1)->(0,1). 2 squares overlap.
-    # - dy=1: (0,0)->(0,1), (1,0)->(1,1). 2 squares overlap.
-    # - dy=-1: (0,1)->(0,0), (1,1)->(1,0). 2 squares overlap.
-    
-    # Let's use the general approach for correctness, it's vectorized anyway.
-    # Actually, we can just check if target_square is in current_wall_squares.
-    # But doing this for every square is expensive (N*4*4 comparisons).
-    
-    # Faster approach:
-    # Identify friendly pieces (colors == color)
-    friendly_mask = (colors == color)
-    
-    # If no friendly pieces, we don't need to check overlap
-    if not np.any(friendly_mask):
-        # All non-empty are opponents -> captures
-        # Blocked if ANY square is friendly (already checked) or if we can't capture?
-        # Wait, wall captures if it moves into opponent.
-        # It is blocked if it moves into friendly (unless self-overlap).
-        pass
-        
-    # Self-overlap check
-    # A square is "self" if it equals any of the current wall squares
-    # We can pre-calculate this based on the move direction, but let's be robust.
-    # We can use the fact that we are moving the ANCHOR.
-    # target_sq = target_anchor + offset
-    # current_sq = anchor + offset'
-    # target_sq == current_sq  =>  target_anchor + offset == anchor + offset'
-    # => move_vec + offset == offset'
-    # => move_vec == offset' - offset
-    
-    # This is still complex. Let's use the coordinate comparison.
-    # (num_moves, 4, 3) vs (4, 3)
-    # We can use isin or similar, but manual broadcasting is fine for small 4x4.
-    
-    diffs = all_target_squares[:, :, np.newaxis, :] - current_wall_squares[np.newaxis, np.newaxis, :, :]
-    # (num_moves, 4, 4, 3)
-    
-    # Check where diff is 0,0,0
-    is_self_overlap = np.any(np.all(diffs == 0, axis=3), axis=2) # (num_moves, 4)
-    
-    # Logic:
-    # A square blocks if:
-    # - It is occupied (color != 0)
-    # - AND it is NOT self-overlap
-    # - AND (it is friendly OR (it is opponent AND cannot be captured?))
-    # Wait, Wall captures ANY opponent. So opponent never blocks (unless special rules apply like Armour?)
-    # Assuming Wall crushes everything.
-    
-    # So, blocked if:
-    # - Friendly AND NOT self-overlap
-    
-    is_friendly = (colors == color)
-    is_blocking_friendly = is_friendly & (~is_self_overlap)
-    
-    # Move is blocked if ANY of its 4 squares are blocking friendly
-    move_is_blocked = np.any(is_blocking_friendly, axis=1)
-    
-    # Filter valid moves
-    valid_indices = np.where(~move_is_blocked)[0]
-    
-    if valid_indices.size == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-        
-    final_moves = valid_target_anchors[valid_indices]
-    
-    # Construct result: (N, 6) [from_x, from_y, from_z, to_x, to_y, to_z]
-    # We use the ANCHOR as the from/to coordinates
-    n_moves = final_moves.shape[0]
-    result = np.empty((n_moves, 6), dtype=COORD_DTYPE)
-    result[:, :3] = anchor
-    result[:, 3:] = final_moves
-    
-    return result
+    # 3. Run kernel
+    return _generate_wall_moves_kernel(anchor, colors, types, color)
 
 @register(PieceType.WALL)
 def wall_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_wall_moves(state.cache_manager, state.color, pos)
 
-__all__ = ["WALL_MOVEMENT_VECTORS", "generate_wall_moves", "can_capture_wall_numpy", "can_capture_wall_vectorized"]
+__all__ = ["WALL_MOVEMENT_VECTORS", "generate_wall_moves", "can_capture_wall_vectorized"]

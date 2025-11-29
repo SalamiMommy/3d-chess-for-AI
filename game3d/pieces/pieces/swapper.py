@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
+origin_mask = np.any(all_coords != 0, axis=1)
 _SWAPPER_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 
 def generate_swapper_moves(
@@ -31,12 +32,15 @@ def generate_swapper_moves(
 ) -> List[Move]:
     jump_engine = get_jump_movement_generator()
     moves_list = []
+    
+    pos_arr = pos.astype(COORD_DTYPE)
 
     # 1. King walks
+    # jump_engine handles batch input natively
     king_moves = jump_engine.generate_jump_moves(
         cache_manager=cache_manager,
         color=color,
-        pos=pos.astype(COORD_DTYPE),
+        pos=pos_arr,
         directions=_SWAPPER_MOVEMENT_VECTORS,
         allow_capture=True,
         piece_type=PieceType.SWAPPER
@@ -45,17 +49,35 @@ def generate_swapper_moves(
         moves_list.append(king_moves)
 
     # 2. Friendly swaps
-    swap_dirs = _get_friendly_swap_directions(cache_manager, color, pos)
-    if swap_dirs.shape[0] > 0:
-        swap_moves = jump_engine.generate_jump_moves(
-            cache_manager=cache_manager,
-        color=color,
-            pos=pos.astype(COORD_DTYPE),
-            directions=swap_dirs,
-            allow_capture=False,  # Swaps don't capture
-        )
-        if swap_moves.size > 0:
-            moves_list.append(swap_moves)
+    # Swaps are tricky for batch because directions vary per piece.
+    # We'll use a loop for batch input for now.
+    if pos_arr.ndim == 2:
+        for i in range(pos_arr.shape[0]):
+            single_pos = pos_arr[i]
+            swap_dirs = _get_friendly_swap_directions(cache_manager, color, single_pos)
+            
+            if swap_dirs.shape[0] > 0:
+                swap_moves = jump_engine.generate_jump_moves(
+                    cache_manager=cache_manager,
+                    color=color,
+                    pos=single_pos,
+                    directions=swap_dirs,
+                    allow_capture=False,
+                )
+                if swap_moves.size > 0:
+                    moves_list.append(swap_moves)
+    else:
+        swap_dirs = _get_friendly_swap_directions(cache_manager, color, pos_arr)
+        if swap_dirs.shape[0] > 0:
+            swap_moves = jump_engine.generate_jump_moves(
+                cache_manager=cache_manager,
+                color=color,
+                pos=pos_arr,
+                directions=swap_dirs,
+                allow_capture=False,  # Swaps don't capture
+            )
+            if swap_moves.size > 0:
+                moves_list.append(swap_moves)
 
     if not moves_list:
         return np.empty((0, 6), dtype=COORD_DTYPE)

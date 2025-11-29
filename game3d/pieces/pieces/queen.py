@@ -1,6 +1,6 @@
 """Queen movement generator - combines rook and bishop movement."""
 import numpy as np
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 
 from game3d.common.coord_utils import CoordinateUtils
 from game3d.common.shared_types import COORD_DTYPE, PieceType
@@ -26,15 +26,16 @@ def generate_queen_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = 8,
+    max_steps: Union[int, np.ndarray] = 8,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate queen moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position
-    if not CoordinateUtils.in_bounds(pos_arr):
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not CoordinateUtils.in_bounds(pos_arr):
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use integrated slider generator with queen-specific vectors
     slider_engine = get_slider_movement_generator()
@@ -51,7 +52,12 @@ def generate_queen_moves(
 def queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for queen moves - receives numpy array position."""
     modifier = get_range_modifier(state, pos)
-    max_steps = max(1, 8 + modifier)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, 8 + modifier)
+    else:
+        max_steps = max(1, 8 + modifier)
+        
     return generate_queen_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['QUEEN_MOVEMENT_VECTORS', 'generate_queen_moves']

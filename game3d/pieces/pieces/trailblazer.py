@@ -3,7 +3,7 @@
 Trailblazer piece implementation.
 """
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import (
@@ -33,11 +33,18 @@ def generate_trailblazer_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_distance: int = MAX_TRAILBLAZER_DISTANCE,
+    max_distance: Union[int, np.ndarray] = MAX_TRAILBLAZER_DISTANCE,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate trailblazer moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Validate position
+    if pos_arr.ndim == 1:
+        # Lazy import to avoid circular dependency
+        from game3d.common.coord_utils import in_bounds_vectorized
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     slider_engine = get_slider_movement_generator()
     moves = slider_engine.generate_slider_moves_array(
@@ -135,7 +142,12 @@ def _any_priest_alive(board, color: Color) -> bool:
 def trailblazer_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Trailblazer moves."""
     modifier = get_range_modifier(state, pos)
-    max_dist = max(1, MAX_TRAILBLAZER_DISTANCE + modifier)
+    
+    if isinstance(modifier, np.ndarray):
+        max_dist = np.maximum(1, MAX_TRAILBLAZER_DISTANCE + modifier)
+    else:
+        max_dist = max(1, MAX_TRAILBLAZER_DISTANCE + modifier)
+        
     return generate_trailblazer_moves(state.cache_manager, state.color, pos, max_dist, ignore_occupancy)
 
 __all__ = [

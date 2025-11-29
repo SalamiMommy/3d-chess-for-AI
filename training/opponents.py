@@ -649,7 +649,7 @@ class AdaptiveOpponent(OpponentBase):
         # 4. Capture rewards (vectorized) with PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0  # PRIEST & FREEZER BONUSES
+            priest_bonus=10.0, freezer_bonus=8.0  # PRIEST & FREEZER BONUSES
         )
         # Boost capture rewards when clock is dangerously high (PRIORITY 2 boost)
         if halfmove_clock > 70:
@@ -731,7 +731,7 @@ class AdaptiveOpponent(OpponentBase):
                     
                     # KING PROXIMITY REWARD - PRIORITY 4 (small bonus for being near king)
                     proximity_rewards = _compute_king_proximity_rewards_vectorized(
-                        filtered_to, enemy_king_pos, 0.15  # Small reward for being adjacent
+                        filtered_to, enemy_king_pos, 0.08  # Small reward for being adjacent
                     )
                     rewards[relevant_mask] += proximity_rewards
 
@@ -799,7 +799,7 @@ class CenterControlOpponent(OpponentBase):
         # 4. Capture rewards with bonus for high clock - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
+            priest_bonus=10.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -854,7 +854,7 @@ class CenterControlOpponent(OpponentBase):
                  
                  # KING PROXIMITY REWARD - PRIORITY 4
                  proximity_rewards = _compute_king_proximity_rewards_vectorized(
-                     to_coords, enemy_king_pos, 0.15
+                     to_coords, enemy_king_pos, 0.08
                  )
                  rewards += proximity_rewards
 
@@ -905,7 +905,7 @@ class PieceCaptureOpponent(OpponentBase):
         # 4. Capture rewards (primary) with high-clock bonus - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
+            priest_bonus=10.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5
@@ -948,7 +948,7 @@ class PieceCaptureOpponent(OpponentBase):
                   
                  # KING PROXIMITY REWARD - PRIORITY 4
                  proximity_rewards = _compute_king_proximity_rewards_vectorized(
-                     to_coords, enemy_king_pos, 0.15
+                     to_coords, enemy_king_pos, 0.08
                  )
                  rewards += proximity_rewards
 
@@ -1007,7 +1007,7 @@ class PriestHunterOpponent(OpponentBase):
         for i in range(len(moves)):
             if captured_colors[i] == self.color.opposite().value:
                 if captured_types[i] == PieceType.PRIEST.value:
-                    rewards[i] += 15.0 * clock_multiplier  # PRIORITY 1 - INCREASED
+                    rewards[i] += 10.0 * clock_multiplier  # PRIORITY 1 - INCREASED
                 else:
                     rewards[i] += 0.1 * clock_multiplier  # PRIORITY 4
 
@@ -1081,7 +1081,7 @@ class PriestHunterOpponent(OpponentBase):
 
                     # KING PROXIMITY REWARD - PRIORITY 4 (small bonus for being near king)
                     proximity_rewards = _compute_king_proximity_rewards_vectorized(
-                        filtered_to, enemy_king_pos, 0.15  # Small reward for being adjacent
+                        filtered_to, enemy_king_pos, 0.08  # Small reward for being adjacent
                     )
                     rewards[relevant_mask] += proximity_rewards
 
@@ -1150,7 +1150,7 @@ class GraphAwareOpponent(OpponentBase):
         # 4. Capture rewards with high-clock multiplier - PRIEST & FREEZER PRIORITY
         capture_rewards = _compute_capture_rewards_vectorized(
             to_coords, captured_colors, captured_types, self.color.value,
-            priest_bonus=15.0, freezer_bonus=8.0  # INCREASED
+            priest_bonus=10.0, freezer_bonus=8.0  # INCREASED
         )
         if halfmove_clock > 70:
             capture_rewards *= 1.5

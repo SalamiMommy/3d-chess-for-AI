@@ -220,7 +220,7 @@ class ConsolidatedAuraCache(CacheListener):
             return
         
         # DEBUG PRINT
-        print(f"DEBUG: _apply_aura_effect_vectorized type={effect_type} sources={source_coords}")
+        # print(f"DEBUG: _apply_aura_effect_vectorized type={effect_type} sources={source_coords}")
 
         # Get source piece colors
         n_sources = source_coords.shape[0]

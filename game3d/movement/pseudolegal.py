@@ -126,39 +126,41 @@ def _process_piece_type(
     Returns:
         (M, 6) array of moves for all pieces of this type
     """
-    # Check if we can use batch processing
-    # Currently only Pawn supports it fully
-    if piece_type == PieceType.PAWN.value:
-        # Extract all coords for this piece type
-        coords = batch_coords[indices]
-        
+    # Try batch processing for all types
+    # Extract all coords for this piece type
+    coords = batch_coords[indices]
+    
+    try:
+        # Call dispatcher with batch coordinates
+        # Try to pass ignore_occupancy first
         try:
-            # Call dispatcher with batch coordinates
-            # Note: dispatcher for pawn is lambda s, p: generate_pawn_moves(s.cache_manager, s.color, p)
-            # generate_pawn_moves now handles (N, 3) input
+            raw_moves = dispatcher(state, coords, ignore_occupancy=ignore_occupancy)
+        except TypeError:
+            # Dispatcher doesn't support ignore_occupancy
             raw_moves = dispatcher(state, coords)
+        
+        if not isinstance(raw_moves, np.ndarray):
+            raise MoveContractViolation(
+                f"Dispatcher for piece type {piece_type} returned {type(raw_moves)}. "
+                f"Must return numpy array of shape (N, 6) with integer dtype."
+            )
             
-            if not isinstance(raw_moves, np.ndarray):
-                raise MoveContractViolation(
-                    f"Dispatcher for piece type {piece_type} returned {type(raw_moves)}. "
-                    f"Must return numpy array of shape (N, 6) with integer dtype."
-                )
-                
-            if raw_moves.dtype != COORD_DTYPE:
-                raw_moves = raw_moves.astype(COORD_DTYPE, copy=False)
-                
-            if raw_moves.ndim != 2 or raw_moves.shape[1] != 6:
-                raise MoveContractViolation(
-                    f"Dispatcher returned shape {raw_moves.shape}. Expected (N, 6)."
-                )
-                
-            return raw_moves
+        if raw_moves.dtype != COORD_DTYPE:
+            raw_moves = raw_moves.astype(COORD_DTYPE, copy=False)
             
-        except Exception as e:
-            # Fallback to sequential if batch fails (shouldn't happen)
-            logger.error(f"Batch pawn generation failed: {e}. Falling back to sequential.")
-            # Fall through to sequential loop
-            pass
+        if raw_moves.ndim != 2 or raw_moves.shape[1] != 6:
+            raise MoveContractViolation(
+                f"Dispatcher returned shape {raw_moves.shape}. Expected (N, 6)."
+            )
+            
+        return raw_moves
+        
+    except Exception as e:
+        # Fallback to sequential if batch fails
+        # This handles cases where dispatcher doesn't support batch input
+        # or raises an error during batch processing
+        # logger.debug(f"Batch generation failed for type {piece_type}: {e}. Falling back to sequential.")
+        pass
 
     moves_list = []
     

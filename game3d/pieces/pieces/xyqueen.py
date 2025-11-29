@@ -3,7 +3,7 @@
 XY-Queen: 8 slider rays in XY-plane + full 3-D king hop (26 directions, 1 step).
 """
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
@@ -27,17 +27,26 @@ _XY_SLIDER_DIRS = np.array([
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
+origin_mask = np.any(all_coords != 0, axis=1)
 _KING_3D_DIRS = all_coords[origin_mask].astype(COORD_DTYPE)
 
 def generate_xy_queen_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
+    slider_max_steps: Union[int, np.ndarray] = 8,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Slider rays (XY-plane, 8 dirs, 8 steps) + king hop (26 dirs, 1 step)."""
     pos_arr = pos.astype(COORD_DTYPE)
+
+    # Validate position
+    if pos_arr.ndim == 1:
+        # Lazy import to avoid circular dependency
+        from game3d.common.coord_utils import in_bounds_vectorized
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Get slider engine instance
     slider_engine = get_slider_movement_generator()
@@ -49,7 +58,7 @@ def generate_xy_queen_moves(
         color=color,
         pos=pos_arr,
         directions=_XY_SLIDER_DIRS,
-        max_distance=8,
+        max_distance=slider_max_steps,
         ignore_occupancy=ignore_occupancy
     )
     if slider_moves.size > 0:
@@ -75,6 +84,14 @@ def generate_xy_queen_moves(
 @register(PieceType.XYQUEEN)
 def xy_queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for XY-Queen moves."""
-    return generate_xy_queen_moves(state.cache_manager, state.color, pos, ignore_occupancy)
+    from game3d.movement.movementmodifiers import get_range_modifier
+    modifier = get_range_modifier(state, pos)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, 8 + modifier)
+    else:
+        max_steps = max(1, 8 + modifier)
+        
+    return generate_xy_queen_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['_XY_SLIDER_DIRS', '_KING_3D_DIRS', 'generate_xy_queen_moves']

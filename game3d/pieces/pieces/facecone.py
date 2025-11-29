@@ -2,7 +2,7 @@
 Face-Cone-Slider — 6 conical rays (fully numpy native).
 """
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import COORD_DTYPE, PieceType, SIZE_MINUS_1
@@ -78,11 +78,18 @@ def generate_face_cone_slider_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = SIZE_MINUS_1,
+    max_steps: Union[int, np.ndarray] = SIZE_MINUS_1,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate face-cone slider moves using numpy-native operations."""
     pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Validate position
+    if pos_arr.ndim == 1:
+        # Lazy import to avoid circular dependency
+        from game3d.common.coord_utils import in_bounds_vectorized
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use integrated slider generator with cone-specific vectors
     slider_engine = get_slider_movement_generator()
@@ -98,11 +105,19 @@ def generate_face_cone_slider_moves(
 @register(PieceType.CONESLIDER)
 def face_cone_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for face-cone slider moves - receives numpy array position."""
+    from game3d.movement.movementmodifiers import get_range_modifier
+    modifier = get_range_modifier(state, pos)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, SIZE_MINUS_1 + modifier)
+    else:
+        max_steps = max(1, SIZE_MINUS_1 + modifier)
+
     return generate_face_cone_slider_moves(
         cache_manager=state.cache_manager,
         color=state.color,
         pos=pos,
-        max_steps=SIZE_MINUS_1,
+        max_steps=max_steps,
         ignore_occupancy=ignore_occupancy
     )
 

@@ -35,7 +35,8 @@ z_moves = np.column_stack([np.zeros_like(z_range), np.zeros_like(z_range), z_ran
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
+origin_mask = np.any(all_coords != 0, axis=1)
 king_moves = all_coords[origin_mask].astype(COORD_DTYPE)
 
 # Combine all movement vectors
@@ -48,9 +49,10 @@ def generate_panel_moves(
 ) -> np.ndarray:
     pos_arr = pos.astype(COORD_DTYPE)
 
-    # Validate position
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    # Validate position only for single piece input
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use jump generator with piece-specific vectors
     jump_engine = get_jump_movement_generator()

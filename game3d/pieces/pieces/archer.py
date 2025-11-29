@@ -53,31 +53,66 @@ def generate_archer_moves(
         moves_list.append(king_moves)
 
     # 2. Archery shots (2-radius surface capture only) - FULLY VECTORIZED
-
-    # Generate all possible archery targets at once using broadcasting
-    # _ARCHERY_DIRECTIONS is (N, 3), start is (3,), result is (N, 3)
-    targets = start + _ARCHERY_DIRECTIONS
-
-    # Vectorized bounds check - filters out-of-board targets
-    valid_mask = in_bounds_vectorized(targets)
-    valid_targets = targets[valid_mask]
-
-    if valid_targets.shape[0] > 0:
-        # Vectorized occupancy check using flattened cache (same pattern as jump_engine.py)
-        flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
-        idxs = valid_targets[:, 0] + SIZE * valid_targets[:, 1] + SIZE * SIZE * valid_targets[:, 2]
-        occs = flattened[idxs]
-
-        # Filter for enemy pieces only (occupied by opponent)
-        enemy_mask = (occs != 0) & (occs != color)
-        enemy_targets = valid_targets[enemy_mask]
-
-        if enemy_targets.shape[0] > 0:
-            n_shots = enemy_targets.shape[0]
-            shot_moves = np.empty((n_shots, 6), dtype=COORD_DTYPE)
-            shot_moves[:, 0:3] = start
-            shot_moves[:, 3:6] = enemy_targets
-            moves_list.append(shot_moves)
+    
+    # Handle batch input for archery shots
+    if start.ndim == 2:
+        # start: (N, 3)
+        # _ARCHERY_DIRECTIONS: (M, 3)
+        # targets: (N, M, 3)
+        targets = start[:, np.newaxis, :] + _ARCHERY_DIRECTIONS[np.newaxis, :, :]
+        N, M, _ = targets.shape
+        flat_targets = targets.reshape(N * M, 3)
+        
+        # We need to track which archer generated which target
+        # Create corresponding start positions
+        flat_starts = np.repeat(start, M, axis=0)
+        
+        # Vectorized bounds check
+        valid_mask = in_bounds_vectorized(flat_targets)
+        valid_targets = flat_targets[valid_mask]
+        valid_starts = flat_starts[valid_mask]
+        
+        if valid_targets.shape[0] > 0:
+            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
+            idxs = valid_targets[:, 0] + SIZE * valid_targets[:, 1] + SIZE * SIZE * valid_targets[:, 2]
+            occs = flattened[idxs]
+            
+            enemy_mask = (occs != 0) & (occs != color)
+            enemy_targets = valid_targets[enemy_mask]
+            enemy_starts = valid_starts[enemy_mask]
+            
+            if enemy_targets.shape[0] > 0:
+                n_shots = enemy_targets.shape[0]
+                shot_moves = np.empty((n_shots, 6), dtype=COORD_DTYPE)
+                shot_moves[:, 0:3] = enemy_starts
+                shot_moves[:, 3:6] = enemy_targets
+                moves_list.append(shot_moves)
+    else:
+        # Single input path
+        # Generate all possible archery targets at once using broadcasting
+        # _ARCHERY_DIRECTIONS is (N, 3), start is (3,), result is (N, 3)
+        targets = start + _ARCHERY_DIRECTIONS
+    
+        # Vectorized bounds check - filters out-of-board targets
+        valid_mask = in_bounds_vectorized(targets)
+        valid_targets = targets[valid_mask]
+    
+        if valid_targets.shape[0] > 0:
+            # Vectorized occupancy check using flattened cache (same pattern as jump_engine.py)
+            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
+            idxs = valid_targets[:, 0] + SIZE * valid_targets[:, 1] + SIZE * SIZE * valid_targets[:, 2]
+            occs = flattened[idxs]
+    
+            # Filter for enemy pieces only (occupied by opponent)
+            enemy_mask = (occs != 0) & (occs != color)
+            enemy_targets = valid_targets[enemy_mask]
+    
+            if enemy_targets.shape[0] > 0:
+                n_shots = enemy_targets.shape[0]
+                shot_moves = np.empty((n_shots, 6), dtype=COORD_DTYPE)
+                shot_moves[:, 0:3] = start
+                shot_moves[:, 3:6] = enemy_targets
+                moves_list.append(shot_moves)
 
     if not moves_list:
         return np.empty((0, 6), dtype=COORD_DTYPE)

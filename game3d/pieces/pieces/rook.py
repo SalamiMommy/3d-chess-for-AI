@@ -1,6 +1,6 @@
 """Rook movement generator - orthogonal slider with 6 directions."""
 import numpy as np
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 
 from game3d.common.shared_types import COORD_DTYPE, Color, PieceType
 from game3d.common.registry import register
@@ -24,15 +24,16 @@ def generate_rook_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_steps: int = 8,
+    max_steps: Union[int, np.ndarray] = 8,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """Generate rook moves from numpy-native position array."""
     pos_arr = pos.astype(COORD_DTYPE)
 
     # Validate position using vectorized bounds check
-    if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Use centralized slider generator with piece-specific vectors
     moves = get_slider_movement_generator().generate_slider_moves_array(
@@ -50,7 +51,12 @@ def generate_rook_moves(
 def rook_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Rook moves."""
     modifier = get_range_modifier(state, pos)
-    max_steps = max(1, 8 + modifier)
+    
+    if isinstance(modifier, np.ndarray):
+        max_steps = np.maximum(1, 8 + modifier)
+    else:
+        max_steps = max(1, 8 + modifier)
+        
     return generate_rook_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
 
 __all__ = ['ROOK_MOVEMENT_VECTORS', 'generate_rook_moves', 'rook_move_dispatcher']

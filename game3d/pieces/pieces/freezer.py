@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
 all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
 # Remove the (0, 0, 0) origin
-origin_mask = np.all(all_coords != 0, axis=1)
+# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
+origin_mask = np.any(all_coords != 0, axis=1)
 FREEZER_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 
 def generate_freezer_moves(
