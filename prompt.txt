@@ -1,3 +1,0 @@
-Can you make sure that when a move is made turnmove calls manager:
-which incrementally update occupancycache, then incrementally update zobrist, symmetry_tt, board, and transpositions
-Then turnmove calls generator to incrementally update the legal moves and cache them
