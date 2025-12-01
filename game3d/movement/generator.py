@@ -103,32 +103,48 @@ def filter_safe_moves_optimized(game_state: 'GameState', moves: np.ndarray) -> n
 
         if pinned_info:
             source_keys = coord_to_key(sources)
-            dest_keys = None # Lazy compute
-
-            for i in range(len(moves)):
-                # Skip if already filtered (e.g. invalid king move) or is a king move
-                if not mask[i] or is_king_move[i]:
-                    continue
-
-                s_key = int(source_keys[i])
-                if s_key in pinned_info:
-                    # Piece is pinned! Check strict movement rules
-                    attacker_key = pinned_info[s_key]
-
+            
+            # Get keys of all pinned pieces
+            pinned_keys = np.array(list(pinned_info.keys()), dtype=np.int32)
+            
+            # Identify moves made by pinned pieces
+            # Use isin for vectorized check
+            is_pinned_move = np.isin(source_keys, pinned_keys)
+            
+            if np.any(is_pinned_move):
+                dest_keys = coord_to_key(dests)
+                
+                # Iterate only over unique pinned pieces involved in moves (usually 1 or 2)
+                unique_pinned_keys = np.unique(source_keys[is_pinned_move])
+                
+                for s_key in unique_pinned_keys:
+                    s_key_int = int(s_key)
+                    if s_key_int not in pinned_info:
+                        continue
+                        
+                    attacker_key = pinned_info[s_key_int]
+                    
                     # Resolve attacker coordinate
-                    # (We reconstruct coord from key - bitwise ops matching coord_to_key)
                     ax = attacker_key & 0x1FF
                     ay = (attacker_key >> 9) & 0x1FF
                     az = (attacker_key >> 18) & 0x1FF
                     attacker_pos = np.array([ax, ay, az], dtype=COORD_DTYPE)
 
                     allowed_keys = get_legal_pin_squares(king_pos, attacker_pos)
-
-                    if dest_keys is None:
-                        dest_keys = coord_to_key(dests)
-
-                    if int(dest_keys[i]) not in allowed_keys:
-                        mask[i] = False
+                    allowed_keys_arr = np.array(list(allowed_keys), dtype=np.int32)
+                    
+                    # Apply filter to all moves by this pinned piece
+                    # Mask: (This piece) AND (Not King - redundant but safe) AND (Already valid)
+                    piece_mask = (source_keys == s_key) & mask & (~is_king_move)
+                    
+                    if np.any(piece_mask):
+                        # Check if destinations are allowed
+                        valid_dest = np.isin(dest_keys[piece_mask], allowed_keys_arr)
+                        
+                        # Update global mask
+                        # We need to map back to original indices
+                        piece_indices = np.where(piece_mask)[0]
+                        mask[piece_indices] = valid_dest
 
         # C. Unpinned, Non-King moves are automatically safe when not in check.
 
@@ -407,12 +423,11 @@ class LegalMoveGenerator:
                 
                 if np.any(danger_mask):
                     dangerous_dests = king_destinations[danger_mask]
-                    hits_trail = np.array([
-                        state.cache_manager.trailblaze_cache.check_trail_intersection(
-                            dest.reshape(1, 3), avoider_color=state.color
-                        )
-                        for dest in dangerous_dests
-                    ], dtype=bool)
+                    
+                    # Vectorized trail check
+                    hits_trail = state.cache_manager.trailblaze_cache.batch_check_trail_intersection(
+                        dangerous_dests, avoider_color=state.color
+                    )
                     
                     keep_mask = np.ones(len(moves), dtype=bool)
                     dangerous_king_indices = king_indices[danger_mask]

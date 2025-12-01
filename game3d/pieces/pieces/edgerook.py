@@ -1,9 +1,10 @@
+# edgerook.py - OPTIMIZED BATCH NUMBA VERSION
 """Edge-Rook piece - fully numpy native edge graph traversal."""
 
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
-from numba import njit
+from numba import njit, prange
 
 from game3d.common.shared_types import SIZE, SIZE_MINUS_1, COORD_DTYPE, BOOL_DTYPE
 from game3d.common.shared_types import Color, PieceType
@@ -81,109 +82,118 @@ def _build_edge_graph() -> np.ndarray:
 _EDGE_NEIGHBORS = _build_edge_graph()
 
 @njit(cache=True, fastmath=True)
-def _edgerook_bfs_numba(start_node: np.ndarray,
-                        neighbors_table: np.ndarray,
-                        flattened_occ: np.ndarray,
-                        color: int) -> np.ndarray:
+def _edgerook_bfs_batch_numba(
+    start_nodes: np.ndarray,
+    neighbors_table: np.ndarray,
+    flattened_occ: np.ndarray,
+    color: int
+) -> np.ndarray:
     """
-    Numba-optimized BFS for Edge Rook.
-    Eliminates Python loop overhead and np.vstack memory reallocation.
+    Numba-optimized BFS for Edge Rook batch.
+    Performs BFS for each start node.
     """
-    # 1. Pre-allocate max possible queue (surface area of cube is small enough)
-    max_queue = SIZE * SIZE * 6
-    queue = np.empty((max_queue, 3), dtype=COORD_DTYPE)
-    q_read = 0
-    q_write = 0
-
-    # 2. Visited array
-    visited = np.zeros((SIZE, SIZE, SIZE), dtype=np.bool_)
-
-    # 3. Output buffer (max possible moves)
-    found_targets = np.empty((max_queue, 3), dtype=COORD_DTYPE)
-    found_count = 0
-
-    # Initialize
-    start_x, start_y, start_z = start_node
-    queue[q_write] = start_node
-    q_write += 1
-    visited[start_x, start_y, start_z] = True
-
-    while q_read < q_write:
-        # Pop
-        curr = queue[q_read]
-        q_read += 1
-        cx, cy, cz = curr[0], curr[1], curr[2]
-
-        # Get neighbors from precomputed table
-        # neighbors_table shape: (SIZE, SIZE, SIZE, 6, 3)
-        # We assume invalid neighbors are marked with -1
-
-        for i in range(6):
-            # Direct lookup is faster than slicing in Numba
-            dx = neighbors_table[cx, cy, cz, i, 0]
-            if dx == -1: continue # Invalid neighbor (cached as -1)
-
-            dy = neighbors_table[cx, cy, cz, i, 1]
-            dz = neighbors_table[cx, cy, cz, i, 2]
-
-            # Target Coordinate
-            tx, ty, tz = cx + dx, cy + dy, cz + dz
-
-            if not visited[tx, ty, tz]:
-                visited[tx, ty, tz] = True
-
-                # Check occupancy (linear index)
-                flat_idx = tx + SIZE * ty + SIZE * SIZE * tz
-                occ_val = flattened_occ[flat_idx]
-
-                if occ_val == 0:
-                    # Empty: Add to queue and Continue BFS
-                    queue[q_write, 0] = tx
-                    queue[q_write, 1] = ty
-                    queue[q_write, 2] = tz
-                    q_write += 1
-
-                    # Add to valid targets
-                    found_targets[found_count, 0] = tx
-                    found_targets[found_count, 1] = ty
-                    found_targets[found_count, 2] = tz
-                    found_count += 1
-
-                elif occ_val != color:
-                    # Enemy: Capture and Stop BFS (don't add to queue)
-                    found_targets[found_count, 0] = tx
-                    found_targets[found_count, 1] = ty
-                    found_targets[found_count, 2] = tz
-                    found_count += 1
-                    # Blocked by piece, do not queue
-
-                # If friendly (occ_val == color), do nothing (blocked)
-
-    # Format result: (N, 6)
-    if found_count == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    result = np.empty((found_count, 6), dtype=COORD_DTYPE)
-    # Broadcast start position
-    result[:, 0] = start_x
-    result[:, 1] = start_y
-    result[:, 2] = start_z
-    # Fill targets
-    result[:, 3:6] = found_targets[:found_count]
-
-    return result
+    n_starts = start_nodes.shape[0]
+    
+    # Max moves per piece is small (edge graph is sparse)
+    # But to be safe, let's allocate a decent buffer
+    max_moves_per_piece = SIZE * SIZE * 6
+    total_max_moves = n_starts * max_moves_per_piece
+    
+    # Output buffer
+    all_moves = np.empty((total_max_moves, 6), dtype=COORD_DTYPE)
+    total_count = 0
+    
+    # Reusable buffers for BFS (per piece)
+    queue = np.empty((max_moves_per_piece, 3), dtype=COORD_DTYPE)
+    
+    for i in range(n_starts):
+        start_node = start_nodes[i]
+        start_x, start_y, start_z = start_node
+        
+        # Reset BFS state
+        q_read = 0
+        q_write = 0
+        
+        # Visited array (reset for each piece)
+        # Optimization: Could use a generation counter to avoid clearing, 
+        # but for now simple reset is safer and fast enough for small 9x9x9
+        visited = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+        
+        # Initialize BFS
+        queue[q_write] = start_node
+        q_write += 1
+        visited[start_x, start_y, start_z] = True
+        
+        while q_read < q_write:
+            # Pop
+            curr = queue[q_read]
+            q_read += 1
+            cx, cy, cz = curr[0], curr[1], curr[2]
+            
+            for j in range(6):
+                # Direct lookup
+                dx = neighbors_table[cx, cy, cz, j, 0]
+                if dx == -1: continue # Invalid neighbor
+                
+                dy = neighbors_table[cx, cy, cz, j, 1]
+                dz = neighbors_table[cx, cy, cz, j, 2]
+                
+                tx, ty, tz = cx + dx, cy + dy, cz + dz
+                
+                if not visited[tx, ty, tz]:
+                    visited[tx, ty, tz] = True
+                    
+                    # Check occupancy
+                    flat_idx = tx + SIZE * ty + SIZE * SIZE * tz
+                    occ_val = flattened_occ[flat_idx]
+                    
+                    if occ_val == 0:
+                        # Empty: Add to queue and record move
+                        queue[q_write, 0] = tx
+                        queue[q_write, 1] = ty
+                        queue[q_write, 2] = tz
+                        q_write += 1
+                        
+                        all_moves[total_count, 0] = start_x
+                        all_moves[total_count, 1] = start_y
+                        all_moves[total_count, 2] = start_z
+                        all_moves[total_count, 3] = tx
+                        all_moves[total_count, 4] = ty
+                        all_moves[total_count, 5] = tz
+                        total_count += 1
+                        
+                    elif occ_val != color:
+                        # Enemy: Capture and Stop BFS (don't add to queue)
+                        all_moves[total_count, 0] = start_x
+                        all_moves[total_count, 1] = start_y
+                        all_moves[total_count, 2] = start_z
+                        all_moves[total_count, 3] = tx
+                        all_moves[total_count, 4] = ty
+                        all_moves[total_count, 5] = tz
+                        total_count += 1
+                        
+    return all_moves[:total_count]
 
 def generate_edgerook_moves(cache_manager, color: int, pos: np.ndarray) -> np.ndarray:
     """Optimized wrapper using Numba implementation."""
-    # Fast exit check
-    if not (np.any(pos == 0) or np.any(pos == SIZE_MINUS_1)):
+    pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Handle single input
+    if pos_arr.ndim == 1:
+        pos_arr = pos_arr.reshape(1, 3)
+        
+    if pos_arr.shape[0] == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
+
+    # Fast exit check - filter pieces not on edge?
+    # Actually, if a piece is not on edge, it has no neighbors in the graph, 
+    # so BFS will just terminate immediately. No need for explicit filter.
 
     # Get cached flattened occupancy (O(1) access)
     flattened = cache_manager.occupancy_cache.get_cached_flattened()
 
     # Run Numba BFS
-    return _edgerook_bfs_numba(pos.astype(COORD_DTYPE), _EDGE_NEIGHBORS, flattened, color)
+    return _edgerook_bfs_batch_numba(pos_arr, _EDGE_NEIGHBORS, flattened, color)
 
 @register(PieceType.EDGEROOK)
 def edgerook_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

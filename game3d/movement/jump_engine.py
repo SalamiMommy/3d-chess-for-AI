@@ -56,33 +56,13 @@ def _load_precomputed_moves():
     _PRECOMPUTED_LOADED = True
 
 
-@njit(cache=True, fastmath=True, inline='always')
-def _generate_jump_targets(pos: np.ndarray, offsets: np.ndarray) -> np.ndarray:
-    """Generate jump target coordinates with inlined bounds checking.
-    
-    PERFORMANCE: inline='always' eliminates function call overhead.
-    Uses mask-based filtering (thread-safe) instead of parallel loop with shared counter.
-    """
-    targets = pos + offsets
 
-    # Vectorized bounds filter (thread-safe, no race conditions)
-    valid_mask = ((targets[:, 0] >= 0) & (targets[:, 0] < SIZE) &
-                  (targets[:, 1] >= 0) & (targets[:, 1] < SIZE) &
-                  (targets[:, 2] >= 0) & (targets[:, 2] < SIZE))
-
-    valid_targets = targets[valid_mask]
-
-    # Return empty array if no valid targets
-    if valid_targets.shape[0] == 0:
-        return np.empty((0, 3), dtype=COORD_DTYPE)
-
-    return valid_targets
 
 
 @njit(cache=True, fastmath=True, parallel=False)
 def _filter_jump_targets_by_occupancy(
     targets: np.ndarray,
-    flattened_occ: np.ndarray,
+    occ: np.ndarray,
     allow_capture: bool,
     player_color: int
 ) -> np.ndarray:
@@ -101,15 +81,14 @@ def _filter_jump_targets_by_occupancy(
     
     # Single pass: calculate index, lookup occupancy, apply filter
     for i in range(n):
-        idx = targets[i, 0] + SIZE * targets[i, 1] + SIZE_SQUARED * targets[i, 2]
-        occ = flattened_occ[idx]
+        tx, ty, tz = targets[i, 0], targets[i, 1], targets[i, 2]
+        occ_val = occ[tx, ty, tz]
         
         if allow_capture:
-            mask[i] = (occ != player_color)
+            mask[i] = (occ_val != player_color)
         else:
-            mask[i] = (occ == 0)
+            mask[i] = (occ_val == 0)
     
-    # Filter targets (numba handles this efficiently)
     # Filter targets (numba handles this efficiently)
     return targets[mask]
 
@@ -118,7 +97,7 @@ def _filter_jump_targets_by_occupancy(
 def _generate_and_filter_jump_moves(
     pos: np.ndarray,
     directions: np.ndarray,
-    flattened_occ: np.ndarray,
+    occ: np.ndarray,
     allow_capture: bool,
     player_color: int
 ) -> np.ndarray:
@@ -147,14 +126,13 @@ def _generate_and_filter_jump_moves(
         # Bounds check
         if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
             # Occupancy check
-            idx = tx + SIZE * ty + SIZE_SQUARED * tz
-            occ = flattened_occ[idx]
+            occ_val = occ[tx, ty, tz]
             
             is_valid = False
-            if occ == 0:
+            if occ_val == 0:
                 is_valid = True
             elif allow_capture:
-                if occ != player_color:
+                if occ_val != player_color:
                     is_valid = True
             
             if is_valid:
@@ -169,11 +147,11 @@ def _generate_and_filter_jump_moves(
     return moves[:count]
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def _generate_and_filter_jump_moves_batch(
     positions: np.ndarray,
     directions: np.ndarray,
-    flattened_occ: np.ndarray,
+    occ: np.ndarray,
     allow_capture: bool,
     player_color: int
 ) -> np.ndarray:
@@ -189,43 +167,193 @@ def _generate_and_filter_jump_moves_batch(
     """
     n_pos = positions.shape[0]
     n_dirs = directions.shape[0]
-    max_moves = n_pos * n_dirs
     
-    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
-    count = 0
+    # Pass 1: Count
+    counts = np.zeros(n_pos, dtype=np.int32)
     
+    for i in prange(n_pos):
+        px, py, pz = positions[i]
+        count = 0
+        
+        for j in range(n_dirs):
+            dx, dy, dz = directions[j]
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                occ_val = occ[tx, ty, tz]
+                is_valid = False
+                if occ_val == 0:
+                    is_valid = True
+                elif allow_capture:
+                    if occ_val != player_color:
+                        is_valid = True
+                
+                if is_valid:
+                    count += 1
+        counts[i] = count
+        
+    # Pass 2: Offsets
+    total_moves = np.sum(counts)
+    offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
     for i in range(n_pos):
+        offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in prange(n_pos):
+        write_idx = offsets[i]
         px, py, pz = positions[i]
         
         for j in range(n_dirs):
             dx, dy, dz = directions[j]
-            
-            # Target
             tx, ty, tz = px + dx, py + dy, pz + dz
             
-            # Bounds check
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-                # Occupancy check
-                idx = tx + SIZE * ty + SIZE_SQUARED * tz
-                occ = flattened_occ[idx]
-                
+                occ_val = occ[tx, ty, tz]
                 is_valid = False
-                if occ == 0:
+                if occ_val == 0:
                     is_valid = True
                 elif allow_capture:
-                    if occ != player_color:
+                    if occ_val != player_color:
                         is_valid = True
                 
                 if is_valid:
-                    moves[count, 0] = px
-                    moves[count, 1] = py
-                    moves[count, 2] = pz
-                    moves[count, 3] = tx
-                    moves[count, 4] = ty
-                    moves[count, 5] = tz
-                    count += 1
+                    moves[write_idx, 0] = px
+                    moves[write_idx, 1] = py
+                    moves[write_idx, 2] = pz
+                    moves[write_idx, 3] = tx
+                    moves[write_idx, 4] = ty
+                    moves[write_idx, 5] = tz
+                    write_idx += 1
                     
-    return moves[:count]
+    return moves
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _generate_jump_moves_batch_unified(
+    positions: np.ndarray,
+    directions: np.ndarray,
+    buffed_squares: np.ndarray,
+    occ: np.ndarray,
+    allow_capture: bool,
+    player_color: int
+) -> np.ndarray:
+    """Generate moves for a batch with integrated buff handling.
+    
+    Fuses:
+    1. Buff check per piece
+    2. Direction calculation (normal vs buffed)
+    3. Target calculation
+    4. Bounds checking
+    5. Occupancy/Capture filtering
+    
+    Args:
+        positions: (N, 3) array of piece positions
+        directions: (M, 3) array of base jump offsets
+        buffed_squares: (SIZE, SIZE, SIZE) boolean array of buffed status
+        occ: (SIZE, SIZE, SIZE) occupancy array
+        allow_capture: Whether capturing is allowed
+        player_color: Color of the moving player
+        
+    Returns:
+        (K, 6) array of moves [fx, fy, fz, tx, ty, tz]
+    """
+    n_pos = positions.shape[0]
+    n_dirs = directions.shape[0]
+    
+    # Pass 1: Count
+    counts = np.zeros(n_pos, dtype=np.int32)
+    
+    for i in prange(n_pos):
+        px, py, pz = positions[i]
+        is_buffed = buffed_squares[px, py, pz]
+        count = 0
+        
+        for j in range(n_dirs):
+            dx, dy, dz = directions[j]
+            
+            if is_buffed:
+                adx, ady, adz = abs(dx), abs(dy), abs(dz)
+                max_val = max(adx, max(ady, adz))
+                
+                sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
+                
+                dx = dx + (sx if adx == max_val else 0)
+                dy = dy + (sy if ady == max_val else 0)
+                dz = dz + (sz if adz == max_val else 0)
+            
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                occ_val = occ[tx, ty, tz]
+                is_valid = False
+                if occ_val == 0:
+                    is_valid = True
+                elif allow_capture:
+                    if occ_val != player_color:
+                        is_valid = True
+                
+                if is_valid:
+                    count += 1
+        counts[i] = count
+        
+    # Pass 2: Offsets
+    total_moves = np.sum(counts)
+    offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
+    for i in range(n_pos):
+        offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in prange(n_pos):
+        write_idx = offsets[i]
+        px, py, pz = positions[i]
+        is_buffed = buffed_squares[px, py, pz]
+        
+        for j in range(n_dirs):
+            dx, dy, dz = directions[j]
+            
+            if is_buffed:
+                adx, ady, adz = abs(dx), abs(dy), abs(dz)
+                max_val = max(adx, max(ady, adz))
+                
+                sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
+                
+                dx = dx + (sx if adx == max_val else 0)
+                dy = dy + (sy if ady == max_val else 0)
+                dz = dz + (sz if adz == max_val else 0)
+            
+            tx, ty, tz = px + dx, py + dy, pz + dz
+            
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                occ_val = occ[tx, ty, tz]
+                is_valid = False
+                if occ_val == 0:
+                    is_valid = True
+                elif allow_capture:
+                    if occ_val != player_color:
+                        is_valid = True
+                
+                if is_valid:
+                    moves[write_idx, 0] = px
+                    moves[write_idx, 1] = py
+                    moves[write_idx, 2] = pz
+                    moves[write_idx, 3] = tx
+                    moves[write_idx, 4] = ty
+                    moves[write_idx, 5] = tz
+                    write_idx += 1
+                    
+    return moves
 
 
 class JumpMovementEngine:
@@ -271,44 +399,21 @@ class JumpMovementEngine:
                 
                 # Check buffs
                 aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
-                flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+                # Use 3D occupancy directly to avoid copy
+                occ = cache_manager.occupancy_cache._occ
                 
                 if aura_cache is not None:
-                    # Check if ANY piece in batch is buffed
-                    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
-                    buff_mask = aura_cache._buffed_squares[x, y, z]
-                    
-                    if np.any(buff_mask):
-                        moves_list = []
-                        
-                        # 1. Process unbuffed pieces
-                        unbuffed_pos = pos[~buff_mask]
-                        if unbuffed_pos.shape[0] > 0:
-                            moves_list.append(_generate_and_filter_jump_moves_batch(
-                                unbuffed_pos, directions, flattened_occ, allow_capture, color
-                            ))
-                            
-                        # 2. Process buffed pieces
-                        buffed_pos = pos[buff_mask]
-                        if buffed_pos.shape[0] > 0:
-                            # Calculate buffed directions (increase length of longest component)
-                            current_directions = directions.copy()
-                            abs_dirs = np.abs(current_directions)
-                            max_vals = np.max(abs_dirs, axis=1, keepdims=True)
-                            mask = (abs_dirs == max_vals)
-                            sign = np.sign(current_directions)
-                            buffed_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
-                            
-                            moves_list.append(_generate_and_filter_jump_moves_batch(
-                                buffed_pos, buffed_directions, flattened_occ, allow_capture, color
-                            ))
-                            
-                        return np.concatenate(moves_list) if moves_list else np.empty((0, 6), dtype=COORD_DTYPE)
+                    # Use unified kernel that handles buffs per-piece
+                    # This avoids Python-side "any" checks and array allocations
+                    buffed_squares = aura_cache._buffed_squares
+                    return _generate_jump_moves_batch_unified(
+                        pos, directions, buffed_squares, 
+                        occ, allow_capture, color
+                    )
 
-                # Fast path: No buffs, use batch kernel
-                # print(f"DEBUG: Calling batch kernel with pos shape {pos.shape}")
+                # Fast path: No buffs, use standard batch kernel
                 return _generate_and_filter_jump_moves_batch(
-                    pos, directions, flattened_occ, allow_capture, color
+                    pos, directions, occ, allow_capture, color
                 )
 
             # ✅ SINGLE PIECE PATH (Legacy/Single)
@@ -334,9 +439,14 @@ class JumpMovementEngine:
                     pass
 
             # Fallback to vector calculation if no precomputed moves or buffed
+            occ = cache_manager.occupancy_cache._occ
+            
             if targets is None:
                 current_directions = directions
                 if is_buffed:
+                    # For single piece, just calculating here is fine, or we could use the unified kernel too.
+                    # But let's keep it simple and consistent with legacy for now unless we want to unify everything.
+                    # Actually, calculating buffed directions in Python for single piece is fast enough.
                     current_directions = directions.copy()
                     abs_dirs = np.abs(current_directions)
                     max_vals = np.max(abs_dirs, axis=1, keepdims=True)
@@ -344,16 +454,13 @@ class JumpMovementEngine:
                     sign = np.sign(current_directions)
                     current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
 
-                flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
                 return _generate_and_filter_jump_moves(
-                    pos, current_directions, flattened_occ, allow_capture, color
+                    pos, current_directions, occ, allow_capture, color
                 )
 
             # Use optimized batch_is_occupied_unsafe for precomputed targets
-            flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
-            
             valid_targets = _filter_jump_targets_by_occupancy(
-                targets, flattened_occ, allow_capture, color
+                targets, occ, allow_capture, color
             )
             
             n_moves = valid_targets.shape[0]

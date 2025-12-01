@@ -172,7 +172,9 @@ class CoordinateUtils:
             if n == 1:
                 c = coords[0]
                 # Return array of shape (1,)
-                return np.array([(0 <= c[0] < SIZE) & (0 <= c[1] < SIZE) & (0 <= c[2] < SIZE)], dtype=BOOL_DTYPE)
+                res = np.empty(1, dtype=BOOL_DTYPE)
+                res[0] = (0 <= c[0] < SIZE) & (0 <= c[1] < SIZE) & (0 <= c[2] < SIZE)
+                return res
             elif n == 2:
                 c0 = coords[0]
                 c1 = coords[1]

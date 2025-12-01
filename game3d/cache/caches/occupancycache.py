@@ -85,6 +85,24 @@ def _vectorized_batch_attributes(occ: np.ndarray, ptype: np.ndarray, coords: np.
     return colors, types
 
 @njit(cache=True, nogil=True)
+def _vectorized_batch_attributes_serial(occ: np.ndarray, ptype: np.ndarray, coords: np.ndarray) -> tuple:
+    """Optimized batch attribute lookup with bounds safety - SERIAL version."""
+    n = coords.shape[0]
+    colors = np.empty(n, dtype=COLOR_DTYPE)
+    types = np.empty(n, dtype=PIECE_TYPE_DTYPE)
+
+    for i in range(n):
+        x, y, z = coords[i]
+        if (0 <= x <= MAX_COORD_VALUE and 0 <= y <= MAX_COORD_VALUE and 0 <= z <= MAX_COORD_VALUE):
+            colors[i] = occ[x, y, z]
+            types[i] = ptype[x, y, z]
+        else:
+            colors[i] = 0
+            types[i] = 0
+
+    return colors, types
+
+@njit(cache=True, nogil=True)
 def _vectorized_batch_attributes_unsafe(occ: np.ndarray, ptype: np.ndarray, coords: np.ndarray) -> tuple:
     """UNSAFE: Batch attribute lookup with NO bounds checking - SERIAL version.
     
@@ -251,8 +269,8 @@ class OccupancyCache:
             x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
             return self._occ[x, y, z] != 0
             
-        # Medium batches (10-100): Serial numba (no parallel overhead)
-        if n < 100:
+        # Medium batches (10-2000): Serial numba (no parallel overhead)
+        if n < 2000:
             return _vectorized_batch_occupied_serial(self._occ, coords)
             
         # Large batches (100+): Parallel numba
@@ -266,12 +284,14 @@ class OccupancyCache:
         """
         # ✅ OPTIMIZATION: Skip normalization if already correct format
         # This is the common case from move generators - avoid reshape/copy overhead
-        if coords.ndim == 2 and coords.shape[1] == 3 and coords.dtype == COORD_DTYPE:
-            # Already in correct format, skip normalization
-            return _vectorized_batch_attributes(self._occ, self._ptype, coords)
+        if not (coords.ndim == 2 and coords.shape[1] == 3 and coords.dtype == COORD_DTYPE):
+            coords = self._normalize_coords(coords)
+            
+        # ✅ OPTIMIZATION: Adaptive execution strategy
+        # Use serial for small/medium batches to avoid parallel overhead
+        if coords.shape[0] < 2000:
+             return _vectorized_batch_attributes_serial(self._occ, self._ptype, coords)
         
-        # Fallback to normalization for other cases
-        coords = self._normalize_coords(coords)
         return _vectorized_batch_attributes(self._occ, self._ptype, coords)
     
     def batch_get_attributes_unsafe(self, coords: np.ndarray) -> tuple:
@@ -285,46 +305,10 @@ class OccupancyCache:
         Eliminates ~36% overhead from normalization + bounds checking.
         """
         # ✅ OPTIMIZATION: Adaptive execution strategy based on batch size
-        # Tiny batches (< 10): Pure numpy (no JIT overhead)
-        # Medium batches (10-99): Serial numba (no parallel overhead)
-        # Large batches (100+): Parallel numba (amortize parallel overhead)
-        n = coords.shape[0]
-        if n < 10:
-            # Tiny batch optimization: avoid advanced indexing overhead
-            if n == 1:
-                x, y, z = coords[0]
-                # Return arrays of shape (1,)
-                return (np.array([self._occ[x, y, z]], dtype=COLOR_DTYPE),
-                        np.array([self._ptype[x, y, z]], dtype=PIECE_TYPE_DTYPE))
-            elif n == 2:
-                x0, y0, z0 = coords[0]
-                x1, y1, z1 = coords[1]
-                return (np.array([self._occ[x0, y0, z0], self._occ[x1, y1, z1]], dtype=COLOR_DTYPE),
-                        np.array([self._ptype[x0, y0, z0], self._ptype[x1, y1, z1]], dtype=PIECE_TYPE_DTYPE))
-            elif n == 3:
-                x0, y0, z0 = coords[0]
-                x1, y1, z1 = coords[1]
-                x2, y2, z2 = coords[2]
-                
-                # Pre-allocate result arrays (faster than np.array creation)
-                out_colors = np.empty(3, dtype=COLOR_DTYPE)
-                out_types = np.empty(3, dtype=PIECE_TYPE_DTYPE)
-                
-                out_colors[0] = self._occ[x0, y0, z0]
-                out_colors[1] = self._occ[x1, y1, z1]
-                out_colors[2] = self._occ[x2, y2, z2]
-                
-                out_types[0] = self._ptype[x0, y0, z0]
-                out_types[1] = self._ptype[x1, y1, z1]
-                out_types[2] = self._ptype[x2, y2, z2]
-                
-                return out_colors, out_types
-            
-            colors = self._occ[coords[:, 0], coords[:, 1], coords[:, 2]]
-            types = self._ptype[coords[:, 0], coords[:, 1], coords[:, 2]]
-            return colors, types
+        # Serial numba (no parallel overhead) for small/medium batches
+        # Parallel numba for large batches (100+)
         
-        if n < 100:
+        if coords.shape[0] < 2000:
             return _vectorized_batch_attributes_unsafe(self._occ, self._ptype, coords)
         
         return _vectorized_batch_attributes_unsafe_parallel(self._occ, self._ptype, coords)
@@ -498,6 +482,24 @@ class OccupancyCache:
         x = coords[:, 0].astype(INDEX_DTYPE)
         y = coords[:, 1].astype(INDEX_DTYPE)
         z = coords[:, 2].astype(INDEX_DTYPE)
+
+        # ✅ CRITICAL: Validate bounds before array access
+        # This prevents cryptic IndexError and provides actionable debugging info
+        x_valid = (x >= 0) & (x < SIZE)
+        y_valid = (y >= 0) & (y < SIZE)
+        z_valid = (z >= 0) & (z < SIZE)
+        all_valid = x_valid & y_valid & z_valid
+        
+        if not np.all(all_valid):
+            invalid_indices = np.where(~all_valid)[0]
+            invalid_coords = coords[invalid_indices]
+            raise ValueError(
+                f"Out-of-bounds coordinates detected in batch_set_positions:\n"
+                f"  SIZE={SIZE}, valid range=[0, {SIZE-1}]\n"
+                f"  Invalid coordinates ({len(invalid_indices)} total): {invalid_coords[:5]}...\n"
+                f"  First invalid: {invalid_coords[0]} at batch index {invalid_indices[0]}\n"
+                f"  Total coordinates in batch: {len(coords)}"
+            )
 
         # Update occupancy and piece type arrays atomically
         self._occ[x, y, z] = pieces[:, 1]  # colors

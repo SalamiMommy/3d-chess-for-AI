@@ -6,11 +6,12 @@ Swapper == King-steps ∪ friendly-swap teleport
 from __future__ import annotations
 import numpy as np
 from typing import List, TYPE_CHECKING
-from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch, SWAPPER
+from numba import njit
+
+from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch, SWAPPER, COORD_DTYPE
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.jump_engine import get_jump_movement_generator
-from game3d.common.shared_types import COORD_DTYPE
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
@@ -25,15 +26,54 @@ all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=
 origin_mask = np.any(all_coords != 0, axis=1)
 _SWAPPER_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 
+@njit(cache=True)
+def _generate_swap_moves_kernel(
+    swapper_positions: np.ndarray,
+    friendly_positions: np.ndarray
+) -> np.ndarray:
+    """Fused kernel to generate swap moves (swapper -> friendly piece)."""
+    n_swappers = swapper_positions.shape[0]
+    n_friendly = friendly_positions.shape[0]
+    
+    # Max moves = n_swappers * (n_friendly - 1)
+    # But we allocate safely
+    max_moves = n_swappers * n_friendly
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
+    
+    count = 0
+    for i in range(n_swappers):
+        sx, sy, sz = swapper_positions[i]
+        
+        for j in range(n_friendly):
+            fx, fy, fz = friendly_positions[j]
+            
+            # Skip self (cannot swap with self)
+            if sx == fx and sy == fy and sz == fz:
+                continue
+                
+            moves[count, 0] = sx
+            moves[count, 1] = sy
+            moves[count, 2] = sz
+            moves[count, 3] = fx
+            moves[count, 4] = fy
+            moves[count, 5] = fz
+            count += 1
+            
+    return moves[:count]
+
 def generate_swapper_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray
-) -> List[Move]:
+) -> np.ndarray:
     jump_engine = get_jump_movement_generator()
     moves_list = []
     
     pos_arr = pos.astype(COORD_DTYPE)
+    
+    # Handle single input by reshaping to (1, 3)
+    if pos_arr.ndim == 1:
+        pos_arr = pos_arr.reshape(1, 3)
 
     # 1. King walks
     # jump_engine handles batch input natively
@@ -49,69 +89,23 @@ def generate_swapper_moves(
         moves_list.append(king_moves)
 
     # 2. Friendly swaps
-    # Swaps are tricky for batch because directions vary per piece.
-    # We'll use a loop for batch input for now.
-    if pos_arr.ndim == 2:
-        for i in range(pos_arr.shape[0]):
-            single_pos = pos_arr[i]
-            swap_dirs = _get_friendly_swap_directions(cache_manager, color, single_pos)
-            
-            if swap_dirs.shape[0] > 0:
-                swap_moves = jump_engine.generate_jump_moves(
-                    cache_manager=cache_manager,
-                    color=color,
-                    pos=single_pos,
-                    directions=swap_dirs,
-                    allow_capture=False,
-                )
-                if swap_moves.size > 0:
-                    moves_list.append(swap_moves)
-    else:
-        swap_dirs = _get_friendly_swap_directions(cache_manager, color, pos_arr)
-        if swap_dirs.shape[0] > 0:
-            swap_moves = jump_engine.generate_jump_moves(
-                cache_manager=cache_manager,
-                color=color,
-                pos=pos_arr,
-                directions=swap_dirs,
-                allow_capture=False,  # Swaps don't capture
-            )
-            if swap_moves.size > 0:
-                moves_list.append(swap_moves)
+    # Get all friendly pieces
+    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
+    
+    if friendly_coords.shape[0] > 0:
+        # Use fused kernel to generate swap moves
+        swap_moves = _generate_swap_moves_kernel(pos_arr, friendly_coords)
+        
+        if swap_moves.size > 0:
+            moves_list.append(swap_moves)
 
     if not moves_list:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     return np.concatenate(moves_list, axis=0)
 
-def _get_friendly_swap_directions(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Get directions to all friendly pieces (excluding self) - VECTORIZED.
-    
-    OPTIMIZATION: Replaced Python loop + np.array_equal with vectorized broadcasting.
-    This eliminates O(N²) comparison overhead, ~70-80% faster.
-    """
-    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
-    
-    if friendly_coords.shape[0] == 0:
-        return get_empty_coord_batch()
-    
-    # ✅ VECTORIZED: Compare all coordinates at once using broadcasting
-    # Instead of looping with np.array_equal, use np.all with axis=1
-    is_self = np.all(friendly_coords == pos, axis=1)
-    friendly_coords = friendly_coords[~is_self]
-    
-    if friendly_coords.shape[0] == 0:
-        return get_empty_coord_batch()
-    
-    directions = (friendly_coords - pos).astype(COORD_DTYPE)
-    return directions
-
 @register(PieceType.SWAPPER)
-def swapper_move_dispatcher(state: 'GameState', pos: np.ndarray) -> List[Move]:
+def swapper_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_swapper_moves(state.cache_manager, state.color, pos)
 
 __all__ = ["generate_swapper_moves"]

@@ -52,6 +52,24 @@ def benchmark():
     
     iterations = 1000
     
+    # Warmup
+    print("Warming up JIT...")
+    occ.batch_is_occupied_unsafe(coords[:3])
+    occ.batch_is_occupied_unsafe(coords[:50])
+    occ.batch_is_occupied_unsafe(coords[:200])
+    occ.batch_get_attributes_unsafe(coords[:3])
+    occ.batch_get_attributes(coords[:24]) # Warmup for wall moves
+    
+    # Warmup generate_wall_moves
+    wall_pos_warmup = np.array([2, 2, 2], dtype=COORD_DTYPE)
+    try:
+        generate_wall_moves(cache_manager, Color.WHITE, wall_pos_warmup)
+    except:
+        pass
+    
+    # ... (rest of the code)
+    # ... (rest of the code)
+    
     # Benchmark batch_is_occupied_unsafe (Adaptive)
     print("\nBenchmarking batch_is_occupied_unsafe (Adaptive)...")
     

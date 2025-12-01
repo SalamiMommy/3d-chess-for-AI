@@ -171,7 +171,8 @@ class ConsolidatedAuraCache(CacheListener):
             coords = self._ensure_coords(coords)
 
             # Get old piece types before change
-            old_pieces = self.cm.occupancy_cache.batch_get_attributes(coords)[1]
+            # Use unsafe lookup as coords are trusted (from internal update)
+            _, old_pieces = self.cm.occupancy_cache.batch_get_attributes_unsafe(coords)
 
             # Clear old effects
             self._clear_piece_effects_batch(coords, old_pieces)
@@ -224,10 +225,8 @@ class ConsolidatedAuraCache(CacheListener):
 
         # Get source piece colors
         n_sources = source_coords.shape[0]
-        source_colors = np.empty(n_sources, dtype=COLOR_DTYPE)
-        for i in range(n_sources):
-            piece = self.cm.occupancy_cache.get(source_coords[i])
-            source_colors[i] = piece['color'] if piece else Color.EMPTY
+        # Use unsafe lookup for sources (they are valid)
+        source_colors, _ = self.cm.occupancy_cache.batch_get_attributes_unsafe(source_coords)
 
         # Get all potential target coordinates
         offsets = RADIUS_2_OFFSETS
@@ -266,31 +265,51 @@ class ConsolidatedAuraCache(CacheListener):
 
     def _filter_targets_by_color(self, targets: np.ndarray, sources: np.ndarray, source_colors: np.ndarray, effect_type: np.uint8) -> np.ndarray:
         """Filter target coordinates based on color relationships with sources."""
-        affected_list = []
-
-        for target in targets:
-            target_piece = self.cm.occupancy_cache.get(target)
-            if target_piece is None:
-                continue
-
-            target_color = target_piece['color']
-
-            # Check each source for color-based effect application
-            for i in range(sources.shape[0]):
-                if effect_type == EFFECT_FREEZE and target_color != source_colors[i]:
-                    affected_list.append(target)
-                    break
-                elif effect_type == EFFECT_BUFF and target_color == source_colors[i] and not np.array_equal(target, sources[i]):
-                    affected_list.append(target)
-                    break
-                elif effect_type == EFFECT_DEBUFF and target_color != source_colors[i]:
-                    affected_list.append(target)
-                    break
-
-        if not affected_list:
+        if targets.size == 0:
             return np.empty((0, 3), dtype=COORD_DTYPE)
 
-        return np.unique(np.array(affected_list, dtype=COORD_DTYPE), axis=0)
+        # Batch get target colors (unsafe is fine as targets are pre-validated by in_bounds_vectorized)
+        target_colors, _ = self.cm.occupancy_cache.batch_get_attributes_unsafe(targets)
+        
+        # We need to check if ANY source satisfies the condition for each target
+        # Sources (S,), Targets (T,)
+        # Broadcast: (T, 1) vs (1, S)
+        
+        t_colors = target_colors[:, np.newaxis] # (T, 1)
+        s_colors = source_colors[np.newaxis, :] # (1, S)
+        
+        # Conditions
+        if effect_type == EFFECT_FREEZE:
+            # target_color != source_color
+            match_matrix = (t_colors != s_colors)
+        elif effect_type == EFFECT_DEBUFF:
+            # target_color != source_color
+            match_matrix = (t_colors != s_colors)
+        elif effect_type == EFFECT_BUFF:
+            # target_color == source_color AND target != source
+            color_match = (t_colors == s_colors)
+            
+            # Check position equality (target != source)
+            # targets (T, 3), sources (S, 3)
+            # expand: (T, 1, 3) == (1, S, 3) -> (T, S, 3) -> all(axis=2) -> (T, S)
+            t_pos = targets[:, np.newaxis, :]
+            s_pos = sources[np.newaxis, :, :]
+            pos_match = np.all(t_pos == s_pos, axis=2)
+            
+            match_matrix = color_match & (~pos_match)
+        else:
+            return np.empty((0, 3), dtype=COORD_DTYPE)
+            
+        # Check if any source matches for each target
+        # match_matrix is (T, S)
+        valid_targets_mask = np.any(match_matrix, axis=1) # (T,)
+        
+        # Filter empty squares (color == 0)
+        occupied_mask = (target_colors != 0)
+        
+        final_mask = valid_targets_mask & occupied_mask
+        
+        return targets[final_mask]
 
     def _apply_directional_effect_vectorized(self, source_coords: np.ndarray, effect_type: np.uint8) -> None:
         """Vectorized directional effect (PULL/PUSH) for multiple sources."""

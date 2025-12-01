@@ -144,6 +144,16 @@ def push_candidates_vectorized(
     if enemy_coords.size == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
+    # ✅ CRITICAL FIX: Filter out Walls (immune to physics)
+    # Walls are 2x2 structures and cannot be moved point-wise by physics
+    enemy_types = cache_manager.occupancy_cache.batch_get_types_only(enemy_coords)
+    non_wall_mask = (enemy_types != PieceType.WALL.value)
+    
+    if not np.any(non_wall_mask):
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+        
+    enemy_coords = enemy_coords[non_wall_mask]
+
     # Run fused kernel
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
     return _push_candidates_numba(enemy_coords, whitehole_coords, flattened_occ)

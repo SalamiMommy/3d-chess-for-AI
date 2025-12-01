@@ -133,20 +133,7 @@ class NumpyStatsTracker:
 # NUMBA-OPTIMIZED CORE OPERATIONS
 # =============================================================================
 
-@njit(cache=True, fastmath=True, parallel=True)
-def _batch_invalidate_keys_numba(keys: np.ndarray, targets: np.ndarray) -> np.ndarray:
-    """Vectorized key invalidation."""
-    n = keys.shape[0]
-    valid = np.ones(n, dtype=BOOL_DTYPE)
 
-    for i in prange(n):
-        key = keys[i]
-        for j in range(targets.shape[0]):
-            if key == targets[j]:
-                valid[i] = False
-                break
-
-    return valid
 
 @njit(cache=True, nogil=True)
 def _coords_to_keys(coords: np.ndarray) -> np.ndarray:
@@ -379,7 +366,7 @@ class OptimizedCacheManager:
         """Generate cache key from Zobrist."""
         # Board generation is no longer used as Board is stateless
         # Zobrist key is sufficient for position uniqueness
-        return ((self._zkey & 0xFFFF) << 1) | (color & 1)
+        return ((int(self._zkey) & 0xFFFF) << 1) | (int(color) & 1)
 
     def update_zobrist_after_move(self, current_hash: HASH_DTYPE, move: np.ndarray,
                                  from_piece: object, captured_piece: object | None) -> HASH_DTYPE:
@@ -442,60 +429,35 @@ class OptimizedCacheManager:
 
         with self._lock:
             opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
+            c_idx = 0 if color == Color.WHITE else 1
+            opp_c_idx = 0 if opp_color == Color.WHITE else 1
 
             # --- STEP 1: Mark direct pieces (at affected squares) ---
             if affected_coords.size > 0:
                 keys = _coords_to_keys(affected_coords)
-                for key in keys:
-                    # Invalidate for both colors
-                    self.move_cache.mark_piece_invalid(color, key)
-                    self.move_cache.mark_piece_invalid(opp_color, key)
+                
+                # Invalidate for both colors using batch operations
+                n = keys.size
+                c_indices = np.full(n, c_idx, dtype=np.int8)
+                opp_c_indices = np.full(n, opp_c_idx, dtype=np.int8)
+                
+                self.move_cache.mark_pieces_invalid_batch(c_indices, keys)
+                self.move_cache.mark_pieces_invalid_batch(opp_c_indices, keys)
 
                 # --- STEP 2: Mark pieces targeting these squares (Reverse Map) ---
-                targeting_pieces = self.move_cache.get_pieces_targeting(keys)
-                for (c_idx, p_key) in targeting_pieces:
-                    p_color = Color.WHITE if c_idx == 0 else Color.BLACK
-                    self.move_cache.mark_piece_invalid(p_color, p_key)
+                self.move_cache.invalidate_targeting_pieces(keys)
 
             # --- STEP 3: Get dependency-affected pieces ---
             dep_coords = self.dependency_graph.get_affected_pieces_vectorized(game_state, color)
 
             if dep_coords.size > 0:
                 dep_keys = _coords_to_keys(dep_coords)
-                for key in dep_keys:
-                    self.move_cache.mark_piece_invalid(color, key)
+                
+                # Batch invalidate
+                c_indices = np.full(dep_keys.size, c_idx, dtype=np.int8)
+                self.move_cache.mark_pieces_invalid_batch(c_indices, dep_keys)
 
-    def _invalidate_attacking_pieces(self, opp_color: int, target_coord: np.ndarray) -> None:
-        """Invalidate opponent pieces that can capture target."""
-        if target_coord.size == 0:
-            return
 
-        # Get opponent pieces
-        opp_coords = self.occupancy_cache.get_positions(opp_color)
-
-        if opp_coords.size == 0:
-            return
-
-        # For each opponent piece, check if it can attack target
-        # In practice, this would use vectorized attack detection
-        # target_key = target_coord.data.tobytes() # REMOVED
-
-        opp_keys = _coords_to_keys(opp_coords)
-
-        for i in range(len(opp_coords)):
-            coord_key = opp_keys[i]
-            moves = self.move_cache.get_piece_moves(opp_color, coord_key)
-
-            if moves.size > 0:
-                # Check if target is in move destinations
-                can_attack = (
-                    (moves[:, 3] == target_coord[0]) &
-                    (moves[:, 4] == target_coord[1]) &
-                    (moves[:, 5] == target_coord[2])
-                ).any()
-
-                if can_attack:
-                    self.move_cache.mark_piece_invalid(opp_color, coord_key)
 
 
     def apply_move_incremental(self, mv: np.ndarray, from_piece: dict,

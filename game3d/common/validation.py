@@ -461,13 +461,15 @@ def validate_move_basic(
     else:
         return False
 
-    # Validate bounds
-    if not in_bounds_vectorized(np.array([from_coord]))[0] or not in_bounds_vectorized(np.array([to_coord]))[0]:
+    # Validate bounds - fast scalar check
+    if not (0 <= from_coord[0] < SIZE and 0 <= from_coord[1] < SIZE and 0 <= from_coord[2] < SIZE):
+        return False
+    if not (0 <= to_coord[0] < SIZE and 0 <= to_coord[1] < SIZE and 0 <= to_coord[2] < SIZE):
         return False
 
-    # Check piece ownership
-    from_colors, _ = cache.occupancy_cache.batch_get_attributes(np.array([from_coord]))
-    return (from_colors[0] == expected_color) and (from_colors[0] != 0)
+    # Check piece ownership - fast scalar lookup
+    color = cache.occupancy_cache.get_color_at(from_coord[0], from_coord[1], from_coord[2])
+    return (color == expected_color) and (color != 0)
 # ==============================================================================
 # CORE VALIDATION FUNCTION 8: validate_move - PUBLIC API
 # ==============================================================================
@@ -689,25 +691,30 @@ def ensure_coords(coords: Union[np.ndarray, list, tuple, int]) -> np.ndarray:
     This is the single, canonical implementation that replaces duplicate
     ensure_coords functions across the codebase.
     """
-    if isinstance(coords, (list, tuple)):
-        if len(coords) == 3:
-            return np.array(coords, dtype=COORD_DTYPE).reshape(1, 3)
-        elif all(isinstance(c, (list, tuple)) and len(c) == 3 for c in coords):
-            return np.array(coords, dtype=COORD_DTYPE)
-    
-    elif isinstance(coords, np.ndarray):
-        if coords.ndim == 0:
+    # Fast path for numpy arrays (most common case)
+    if isinstance(coords, np.ndarray):
+        if coords.ndim == 2:
+            if coords.shape[1] == 3:
+                return coords.astype(COORD_DTYPE, copy=False)
+        elif coords.ndim == 1:
+            if coords.shape[0] == 3:
+                return coords.astype(COORD_DTYPE, copy=False).reshape(1, 3)
+            elif coords.shape[0] == 1 and coords.dtype == COORD_DTYPE:
+                return coords.reshape(1, 3)
+        elif coords.ndim == 0:
             # Single scalar - convert from flat index
             from .coord_utils import idx_to_coord
             return idx_to_coord(int(coords)).reshape(1, 3)
-        elif coords.ndim == 1:
-            if coords.shape[0] == 3:
-                return coords.astype(COORD_DTYPE).reshape(1, 3)
-            elif coords.shape[0] == 1 and coords.dtype == COORD_DTYPE:
-                return coords.reshape(1, 3)
-        elif coords.ndim == 2:
-            if coords.shape[1] == 3:
-                return coords.astype(COORD_DTYPE)
+            
+    elif isinstance(coords, (list, tuple)):
+        if len(coords) == 3:
+            # Check if it's a single coord [x, y, z] or list of coords
+            if isinstance(coords[0], (int, np.integer)):
+                return np.array(coords, dtype=COORD_DTYPE).reshape(1, 3)
+            # Assume list of coords
+            return np.array(coords, dtype=COORD_DTYPE)
+        elif all(isinstance(c, (list, tuple)) and len(c) == 3 for c in coords):
+            return np.array(coords, dtype=COORD_DTYPE)
     
     elif isinstance(coords, (int, np.integer)):
         from .coord_utils import idx_to_coord

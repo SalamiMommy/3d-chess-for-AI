@@ -1,8 +1,8 @@
 """
-Echo piece implementation - 2-sphere surface projection with ±3 axis movement.
+Echo piece implementation - 1-sphere surface projection with ±2 axis offset.
 
-The Echo piece moves along a 2-sphere surface by projecting from 8 anchor points
-(±2, ±2, ±2) and adding 32 radius-2 bubble offsets, creating 256 total movement vectors.
+The Echo piece moves along a 1-sphere surface by projecting from 6 cardinal anchor points
+(offset by 2 spaces) and adding 26 radius-1 bubble offsets.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 
 from game3d.common.shared_types import (
-    COORD_DTYPE, RADIUS_2_OFFSETS, PieceType
+    COORD_DTYPE, RADIUS_1_OFFSETS, PieceType
 )
 from game3d.common.registry import register
 from game3d.movement.jump_engine import get_jump_movement_generator
@@ -21,16 +21,17 @@ if TYPE_CHECKING:
     from game3d.movement.movepiece import Move
 
 # Echo piece-specific movement vectors (numpy arrays)
-# 8 anchor offsets (±2, ±2, ±2)
+# 6 cardinal anchors at offset 2
 _ANCHORS = np.array([
-    [-2, -2, -2], [-2, -2, 2], [-2, 2, -2], [-2, 2, 2],
-    [2, -2, -2], [2, -2, 2], [2, 2, -2], [2, 2, 2]
+    [-2, 0, 0], [2, 0, 0],
+    [0, -2, 0], [0, 2, 0],
+    [0, 0, -2], [0, 0, 2]
 ], dtype=COORD_DTYPE)
 
-# 32 radius-2 bubble offsets from shared types
-_BUBBLE = RADIUS_2_OFFSETS.copy()
+# 26 radius-1 bubble offsets
+_BUBBLE = RADIUS_1_OFFSETS.copy()
 
-# 256 raw jump vectors (anchors + bubbles)
+# 156 raw jump vectors (anchors + bubbles)
 _ECHO_DIRECTIONS = (_ANCHORS[:, None, :] + _BUBBLE[None, :, :]).reshape(-1, 3)
 
 def generate_echo_moves(
@@ -40,8 +41,8 @@ def generate_echo_moves(
 ) -> np.ndarray:
     """Generate echo piece movement vectors using vectorized operations.
 
-    The Echo moves along a 2-sphere surface by projecting from anchor points
-    and adding radius-2 bubble offsets for complex movement patterns.
+    The Echo moves along a 1-sphere surface by projecting from 6 cardinal anchor points
+    (offset by 2) and adding radius-1 bubble offsets for complex movement patterns.
 
     Args:
         cache_manager: Cache manager for board state access
@@ -51,7 +52,11 @@ def generate_echo_moves(
     Returns:
         Array of valid movement vectors
     """
-    start = pos.astype(COORD_DTYPE).ravel()
+    start = pos.astype(COORD_DTYPE)
+    
+    # Handle single input
+    if start.ndim == 1:
+        start = start.reshape(1, 3)
 
     # Generate jump movements through cache manager
     jump_engine = get_jump_movement_generator()

@@ -5,7 +5,7 @@ Validation happens in generator.py.
 """
 
 import numpy as np
-from numba import njit, objmode
+from numba import njit, objmode, prange
 from typing import TYPE_CHECKING
 
 from game3d.common.shared_types import (
@@ -48,6 +48,11 @@ def _generate_all_slider_moves(
         current_y = pos[1] + direction[1]
         current_z = pos[2] + direction[2]
 
+        # DEBUG
+        if direction[0] == 1 and direction[1] == 2 and direction[2] == 0:
+            print("Checking dir [1, 2, 0]")
+            print("Start:", current_x, current_y, current_z)
+
         for _ in range(max_distance):
             # Bounds check
             if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
@@ -65,6 +70,11 @@ def _generate_all_slider_moves(
                 captures[write_idx] = False
                 write_idx += 1
             else:
+                # DEBUG
+                if direction[0] == 1 and direction[1] == 2 and direction[2] == 0:
+                    print("Hit occupant:", occupant, "at", current_x, current_y, current_z)
+                    print("Color:", color, "Ignore:", ignore_occupancy)
+
                 # Blocked
                 if ignore_occupancy:
                     # Treat as a move (capture logic irrelevant for raw moves, but we mark it)
@@ -92,7 +102,7 @@ def _generate_all_slider_moves(
     return moves[:write_idx], captures[:write_idx]
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def _generate_all_slider_moves_batch(
     color: int,
     positions: np.ndarray,
@@ -105,43 +115,96 @@ def _generate_all_slider_moves_batch(
     n_pos = positions.shape[0]
     n_dirs = directions.shape[0]
     
-    # Estimate max moves (heuristic)
-    # Use max possible distance from array
-    global_max_dist = np.max(max_distances)
-    max_moves_per_piece = n_dirs * global_max_dist
-    total_max_moves = n_pos * max_moves_per_piece
+    # Pass 1: Count moves per piece
+    counts = np.zeros(n_pos, dtype=np.int32)
     
-    # Pre-allocate buffers
-    moves = np.empty((total_max_moves, 6), dtype=COORD_DTYPE)
-    
-    write_idx = 0
-    
+    for i in prange(n_pos):
+        px, py, pz = positions[i]
+        max_dist = max_distances[i]
+        count = 0
+        
+        for d in range(n_dirs):
+            dx, dy, dz = directions[d]
+            
+            if dx == 0 and dy == 0 and dz == 0:
+                continue
+                
+            current_x = px + dx
+            current_y = py + dy
+            current_z = pz + dz
+            
+            for _ in range(max_dist):
+                if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
+                    break
+                
+                idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
+                occupant = flattened[idx]
+                
+                if occupant == 0:
+                    count += 1
+                else:
+                    if ignore_occupancy:
+                        count += 1
+                    else:
+                        if occupant != color:
+                            count += 1
+                        break
+                
+                current_x += dx
+                current_y += dy
+                current_z += dz
+        
+        counts[i] = count
+        
+        # DEBUG PRINT
+        # if i == 0:
+        #     print(f"Slider Batch Debug: pos={positions[i]}, count={count}")
+        
+    # Pass 2: Calculate offsets
+    total_moves = np.sum(counts)
+    offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
     for i in range(n_pos):
+        offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill moves
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in prange(n_pos):
+        write_idx = offsets[i]
         px, py, pz = positions[i]
         max_dist = max_distances[i]
         
         for d in range(n_dirs):
             dx, dy, dz = directions[d]
             
-            # Skip zero vectors
             if dx == 0 and dy == 0 and dz == 0:
                 continue
-            
+                
             current_x = px + dx
             current_y = py + dy
             current_z = pz + dz
             
             for _ in range(max_dist):
-                # Bounds check
                 if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
                     break
                 
-                # Check occupancy
                 idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
                 occupant = flattened[idx]
                 
+                should_write = False
                 if occupant == 0:
-                    # Empty square - quiet move
+                    should_write = True
+                else:
+                    if ignore_occupancy:
+                        should_write = True
+                    else:
+                        if occupant != color:
+                            should_write = True
+                        # Break comes after writing
+                
+                if should_write:
                     moves[write_idx, 0] = px
                     moves[write_idx, 1] = py
                     moves[write_idx, 2] = pz
@@ -149,35 +212,16 @@ def _generate_all_slider_moves_batch(
                     moves[write_idx, 4] = current_y
                     moves[write_idx, 5] = current_z
                     write_idx += 1
-                else:
-                    # Blocked
-                    if ignore_occupancy:
-                        moves[write_idx, 0] = px
-                        moves[write_idx, 1] = py
-                        moves[write_idx, 2] = pz
-                        moves[write_idx, 3] = current_x
-                        moves[write_idx, 4] = current_y
-                        moves[write_idx, 5] = current_z
-                        write_idx += 1
-                        # CONTINUE RAY
-                    else:
-                        if occupant != color:
-                            # Capture move
-                            moves[write_idx, 0] = px
-                            moves[write_idx, 1] = py
-                            moves[write_idx, 2] = pz
-                            moves[write_idx, 3] = current_x
-                            moves[write_idx, 4] = current_y
-                            moves[write_idx, 5] = current_z
-                            write_idx += 1
-                        break  # Stop ray
                 
-                # Step forward
+                if occupant != 0:
+                    if not ignore_occupancy:
+                        break
+                
                 current_x += dx
                 current_y += dy
                 current_z += dz
                 
-    return moves[:write_idx], np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
+    return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
 
 
 

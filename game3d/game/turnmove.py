@@ -485,8 +485,9 @@ def _apply_move_filters(game_state: 'GameState', moves: np.ndarray) -> np.ndarra
         if np.any(hive_mask):
             can_move = ~hive_mask
             for i in np.where(hive_mask)[0]:
-                coord_key = moves[i, 0] | (moves[i, 1] << 9) | (moves[i, 2] << 18)
-                if coord_key not in game_state._moved_hive_positions:
+                # Fix: _moved_hive_positions stores tuples, not int keys
+                pos_tuple = (int(moves[i, 0]), int(moves[i, 1]), int(moves[i, 2]))
+                if pos_tuple not in game_state._moved_hive_positions:
                     can_move[i] = True
             moves = moves[can_move]
 

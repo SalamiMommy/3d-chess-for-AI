@@ -111,31 +111,36 @@ def block_candidates_numpy(
 
 @njit(cache=True, fastmath=True)
 def _generate_geomancy_moves_kernel(
-    start: np.ndarray,
+    starts: np.ndarray,
     flattened_occ: np.ndarray,
     offsets: np.ndarray
 ) -> np.ndarray:
-    """Fused kernel for geomancy moves (radius 2/3 placement)."""
+    """Fused kernel for geomancy moves (radius 2/3 placement) for a batch of pieces."""
+    n_starts = starts.shape[0]
     n_offsets = offsets.shape[0]
-    moves = np.empty((n_offsets, 6), dtype=COORD_DTYPE)
+    
+    # Max moves = n_starts * n_offsets
+    max_moves = n_starts * n_offsets
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
     count = 0
     
-    sx, sy, sz = start[0], start[1], start[2]
-    
-    for i in range(n_offsets):
-        dx, dy, dz = offsets[i]
-        tx, ty, tz = sx + dx, sy + dy, sz + dz
+    for i in range(n_starts):
+        sx, sy, sz = starts[i]
         
-        if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-            idx = tx + SIZE * ty + SIZE_SQUARED * tz
-            if flattened_occ[idx] == 0:
-                moves[count, 0] = sx
-                moves[count, 1] = sy
-                moves[count, 2] = sz
-                moves[count, 3] = tx
-                moves[count, 4] = ty
-                moves[count, 5] = tz
-                count += 1
+        for j in range(n_offsets):
+            dx, dy, dz = offsets[j]
+            tx, ty, tz = sx + dx, sy + dy, sz + dz
+            
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                idx = tx + SIZE * ty + SIZE_SQUARED * tz
+                if flattened_occ[idx] == 0:
+                    moves[count, 0] = sx
+                    moves[count, 1] = sy
+                    moves[count, 2] = sz
+                    moves[count, 3] = tx
+                    moves[count, 4] = ty
+                    moves[count, 5] = tz
+                    count += 1
                 
     return moves[:count]
 
@@ -146,6 +151,10 @@ def generate_geomancer_moves(
 ) -> np.ndarray:
     """Generate geomancer moves: radius-1 king moves + radius-2/3 geomancy placement moves."""
     start = pos.astype(COORD_DTYPE)
+    
+    # Handle single input
+    if start.ndim == 1:
+        start = start.reshape(1, 3)
 
     # Generate king moves for piece movement within radius 1
     king_moves = generate_king_moves(cache_manager, color, start, piece_type=PieceType.GEOMANCER)

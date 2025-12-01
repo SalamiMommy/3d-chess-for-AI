@@ -215,16 +215,19 @@ def is_game_over(game_state) -> bool:
 
     if is_repetition_draw(game_state):
         # Always log when game-ending condition is met
-        logger.warning("Game over: repetition draw")
+        turn = getattr(game_state, 'turn_number', 'Unknown')
+        logger.warning(f"Game over: repetition draw (Turn: {turn})")
         return True
 
     if is_move_rule_draw(game_state):
-        logger.warning("Game over: move rule draw")
+        turn = getattr(game_state, 'turn_number', 'Unknown')
+        logger.warning(f"Game over: move rule draw (Turn: {turn})")
         return True
 
     if is_insufficient_material(game_state):
         # Always log when game-ending condition is met
-        logger.warning("Game over: insufficient material")
+        turn = getattr(game_state, 'turn_number', 'Unknown')
+        logger.warning(f"Game over: insufficient material (Turn: {turn})")
         return True
 
     legal_moves = game_state.legal_moves
@@ -243,6 +246,7 @@ def is_game_over(game_state) -> bool:
             current_color = game_state.color
             opponent_color = Color(current_color).opposite()
             cache_manager = getattr(game_state, 'cache_manager', None)
+            turn = getattr(game_state, 'turn_number', 'Unknown')
             
             white_priests = 0
             black_priests = 0
@@ -287,20 +291,22 @@ def is_game_over(game_state) -> bool:
             
             attackers_str = ", ".join(attackers_info) if attackers_info else "Unknown"
 
-            logger.warning(f"Game over: Checkmate (Winner: {opponent_color.name})")
+            logger.warning(f"Game over: Checkmate (Winner: {opponent_color.name}, Turn: {turn})")
             logger.warning(f"  - White: Priests={white_priests}, King={fmt_pos(white_king)}")
             logger.warning(f"  - Black: Priests={black_priests}, King={fmt_pos(black_king)}")
             logger.warning(f"  - Attackers: {attackers_str}")
 
         except Exception as e:
             logger.error(f"Error logging game over details: {e}")
-            logger.warning(f"Game over: Checkmate (Winner: {Color(game_state.color).opposite().name})")
+            turn = getattr(game_state, 'turn_number', 'Unknown')
+            logger.warning(f"Game over: Checkmate (Winner: {Color(game_state.color).opposite().name}, Turn: {turn})")
     else:
         # STALEMATE DIAGNOSIS
         # Determine 'kind' of stalemate by checking if player has pieces other than King
         try:
             current_color = game_state.color
             color_name = Color(current_color).name
+            turn = getattr(game_state, 'turn_number', 'Unknown')
 
             # Access cache to count remaining pieces for the immobilized player
             cache_manager = getattr(game_state, 'cache_manager', None)
@@ -323,15 +329,16 @@ def is_game_over(game_state) -> bool:
                 extra_info = f" | Priests: W={white_priests}, B={black_priests} | Kings: W={fmt_pos(white_king)}, B={fmt_pos(black_king)}"
 
                 if piece_count <= 1:
-                    logger.warning(f"Game over: Stalemate - King Trapped (Player: {color_name}, Reason: King isolated with no safe squares){extra_info}")
+                    logger.warning(f"Game over: Stalemate - King Trapped (Player: {color_name}, Reason: King isolated with no safe squares, Turn: {turn}){extra_info}")
                 else:
-                    logger.warning(f"Game over: Stalemate - Material Blocked (Player: {color_name}, Reason: {piece_count} pieces completely immobilized){extra_info}")
+                    logger.warning(f"Game over: Stalemate - Material Blocked (Player: {color_name}, Reason: {piece_count} pieces completely immobilized, Turn: {turn}){extra_info}")
             else:
                 # Fallback if cache unavailable
-                logger.warning(f"Game over: Stalemate (Player: {color_name}, Reason: No legal moves)")
+                logger.warning(f"Game over: Stalemate (Player: {color_name}, Reason: No legal moves, Turn: {turn})")
         except Exception as e:
             # Safe fallback in case of introspection error
-            logger.warning(f"Game over: Stalemate (Error diagnosing type: {e})")
+            turn = getattr(game_state, 'turn_number', 'Unknown')
+            logger.warning(f"Game over: Stalemate (Error diagnosing type: {e}, Turn: {turn})")
 
     return True
 

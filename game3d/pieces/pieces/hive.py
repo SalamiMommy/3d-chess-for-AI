@@ -85,9 +85,10 @@ def apply_multi_hive_move(state: 'GameState', move: Move) -> 'GameState':
     new_state = state.make_move_vectorized(move_array)
     
     # Track this hive as having moved AFTER successful execution
-    from_pos_tuple = tuple(move.from_coord.tolist())
+    # We track the DESTINATION because that is where the hive is now located
+    to_pos_tuple = tuple(move.to_coord.tolist())
     new_state._moved_hive_positions = state._moved_hive_positions.copy()
-    new_state._moved_hive_positions.add(from_pos_tuple)
+    new_state._moved_hive_positions.add(to_pos_tuple)
     new_state._pending_hive_moves = state._pending_hive_moves.copy()
     new_state._pending_hive_moves.append(move)
     

@@ -115,12 +115,8 @@ def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> Union[int, n
         -1 if debuffed (Slower)
         0 otherwise
     """
-    # Find ConsolidatedAuraCache
-    aura_cache = None
-    for cache in game_state.cache_manager._effect_cache_instances:
-        if isinstance(cache, ConsolidatedAuraCache):
-            aura_cache = cache
-            break
+    # Direct access to ConsolidatedAuraCache
+    aura_cache = game_state.cache_manager.consolidated_aura_cache
             
     if aura_cache is None:
         return 0 if pos.ndim == 1 else np.zeros(pos.shape[0], dtype=np.int8)

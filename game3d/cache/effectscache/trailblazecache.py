@@ -191,6 +191,20 @@ class TrailblazeCache(CacheListener):
             
         return np.any(_batch_trail_squares_check_numba(all_trails, path_coords))
 
+    def batch_check_trail_intersection(self, path_coords: np.ndarray, avoider_color: Optional[int] = None) -> np.ndarray:
+        """
+        Check intersection for a batch of coordinates.
+        Returns a boolean mask (N,) where True indicates intersection.
+        """
+        if path_coords.size == 0:
+            return np.array([], dtype=BOOL_DTYPE)
+            
+        all_trails = self._get_all_active_trail_squares(avoider_color)
+        if all_trails.size == 0:
+            return np.zeros(path_coords.shape[0], dtype=BOOL_DTYPE)
+            
+        return _batch_trail_squares_check_numba(all_trails, path_coords)
+
     def get_intersecting_squares(self, path_coords: np.ndarray, avoider_color: Optional[int] = None) -> np.ndarray:
         """
         Get subset of path_coords that intersect with trails.

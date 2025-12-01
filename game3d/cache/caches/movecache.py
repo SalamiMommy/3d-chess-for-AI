@@ -327,6 +327,32 @@ class MoveCache:
             self._affected_coord_keys_list.append(int_key)
             self._affected_color_idx_list.append(color_idx)
 
+    def mark_pieces_invalid_batch(self, color_indices: np.ndarray, keys: np.ndarray) -> None:
+        """Batch mark pieces for regeneration."""
+        if keys.size == 0:
+            return
+            
+        with self._lock:
+            # Convert to list and extend
+            # Assuming keys are already integers (from _coords_to_keys)
+            self._affected_coord_keys_list.extend(keys.tolist())
+            self._affected_color_idx_list.extend(color_indices.tolist())
+
+    def invalidate_targeting_pieces(self, coord_keys: np.ndarray) -> None:
+        """Invalidate all pieces targeting the given coordinates."""
+        if coord_keys.size == 0:
+            return
+
+        with self._lock:
+            # We must iterate because _reverse_map is a dict
+            # But we avoid returning a list and looping again in manager
+            for key in coord_keys:
+                key_int = int(key)
+                if key_int in self._reverse_map:
+                    for (c_idx, p_key) in self._reverse_map[key_int]:
+                        self._affected_color_idx_list.append(c_idx)
+                        self._affected_coord_keys_list.append(p_key)
+
     def has_piece_moves(self, color: int, coord_key: Union[int, bytes]) -> bool:
         """Check if piece moves are cached."""
         color_idx = 0 if color == Color.WHITE else 1
@@ -401,12 +427,12 @@ class MoveCache:
             unique_targets = np.unique(target_keys)
 
             new_targets = set()
-            for t_key in unique_targets:
-                t_key_int = int(t_key)
-                if t_key_int not in self._reverse_map:
-                    self._reverse_map[t_key_int] = set()
-                self._reverse_map[t_key_int].add(piece_id)
-                new_targets.add(t_key_int)
+            # Optimize: Convert to list to avoid numpy scalar overhead in loop
+            for t_key in unique_targets.tolist():
+                if t_key not in self._reverse_map:
+                    self._reverse_map[t_key] = set()
+                self._reverse_map[t_key].add(piece_id)
+                new_targets.add(t_key)
 
             self._piece_targets[piece_id] = new_targets
         else:
@@ -595,10 +621,16 @@ class MoveCache:
         if moves_to_remove.size == 0:
             return
         
-        for move in moves_to_remove:
-            tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
-            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-                attack_mask[tx, ty, tz] = False
+        # Vectorized implementation
+        tx = moves_to_remove[:, 3].astype(np.int64)
+        ty = moves_to_remove[:, 4].astype(np.int64)
+        tz = moves_to_remove[:, 5].astype(np.int64)
+        
+        # Bounds check (vectorized)
+        valid_mask = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
+        
+        if np.any(valid_mask):
+            attack_mask[tx[valid_mask], ty[valid_mask], tz[valid_mask]] = False
 
     def add_moves_to_mask(
         self,
@@ -615,10 +647,16 @@ class MoveCache:
         if moves_to_add.size == 0:
             return
         
-        for move in moves_to_add:
-            tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
-            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
-                attack_mask[tx, ty, tz] = True
+        # Vectorized implementation
+        tx = moves_to_add[:, 3].astype(np.int64)
+        ty = moves_to_add[:, 4].astype(np.int64)
+        tz = moves_to_add[:, 5].astype(np.int64)
+        
+        # Bounds check (vectorized)
+        valid_mask = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
+        
+        if np.any(valid_mask):
+            attack_mask[tx[valid_mask], ty[valid_mask], tz[valid_mask]] = True
 
     def _prune_piece_cache(self) -> None:
         """Prune oldest 20% of entries when cache exceeds limit."""

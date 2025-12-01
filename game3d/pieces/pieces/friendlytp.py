@@ -33,15 +33,12 @@ _KING_DIRECTIONS = np.array([
 ], dtype=COORD_DTYPE)
 
 @njit(cache=True, fastmath=True)
-def _build_network_directions_numba(
-    start: np.ndarray,
+def _get_network_squares(
     friendly_coords: np.ndarray,
     flattened_occ: np.ndarray
 ) -> np.ndarray:
     """
-    Fused kernel to find teleport directions.
-    Generates neighbors of all friendly pieces, filters bounds/occupancy,
-    deduplicates, and calculates direction vectors from start.
+    Fused kernel to find ALL valid teleport destinations (empty neighbors of friendly pieces).
     """
     n_friendly = friendly_coords.shape[0]
     n_dirs = _KING_DIRECTIONS.shape[0]
@@ -49,16 +46,9 @@ def _build_network_directions_numba(
     # Use boolean mask for deduplication
     mask = np.zeros(SIZE * SIZE_SQUARED, dtype=BOOL_DTYPE)
     
-    # Start index to exclude self-teleport
-    start_idx = start[0] + SIZE * start[1] + SIZE_SQUARED * start[2]
-    
     for i in range(n_friendly):
         fx, fy, fz = friendly_coords[i]
         
-        # Skip if friendly piece is the teleporter itself (optional, but cleaner)
-        if fx == start[0] and fy == start[1] and fz == start[2]:
-            continue
-            
         for j in range(n_dirs):
             dx, dy, dz = _KING_DIRECTIONS[j]
             tx, ty, tz = fx + dx, fy + dy, fz + dz
@@ -66,8 +56,8 @@ def _build_network_directions_numba(
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
                 idx = tx + SIZE * ty + SIZE_SQUARED * tz
                 
-                # Must be empty and not the start square
-                if idx != start_idx and flattened_occ[idx] == 0:
+                # Must be empty
+                if flattened_occ[idx] == 0:
                     mask[idx] = True
                     
     # Collect results
@@ -79,8 +69,7 @@ def _build_network_directions_numba(
     if count == 0:
         return np.empty((0, 3), dtype=COORD_DTYPE)
         
-    # We return DIRECTIONS from start, not absolute coords
-    out_dirs = np.empty((count, 3), dtype=COORD_DTYPE)
+    out = np.empty((count, 3), dtype=COORD_DTYPE)
     idx_out = 0
     
     for i in range(SIZE * SIZE_SQUARED):
@@ -91,13 +80,48 @@ def _build_network_directions_numba(
             y = rem // SIZE
             x = rem % SIZE
             
-            # Calculate direction vector
-            out_dirs[idx_out, 0] = x - start[0]
-            out_dirs[idx_out, 1] = y - start[1]
-            out_dirs[idx_out, 2] = z - start[2]
+            out[idx_out, 0] = x
+            out[idx_out, 1] = y
+            out[idx_out, 2] = z
             idx_out += 1
             
-    return out_dirs
+    return out
+
+@njit(cache=True)
+def _generate_teleport_moves_kernel(
+    teleporter_positions: np.ndarray,
+    network_squares: np.ndarray
+) -> np.ndarray:
+    """
+    Generate teleport moves: Cartesian product of teleporters x network_squares.
+    Excludes self-teleport.
+    """
+    n_tps = teleporter_positions.shape[0]
+    n_targets = network_squares.shape[0]
+    
+    max_moves = n_tps * n_targets
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
+    
+    count = 0
+    for i in range(n_tps):
+        sx, sy, sz = teleporter_positions[i]
+        
+        for j in range(n_targets):
+            tx, ty, tz = network_squares[j]
+            
+            # Skip self-teleport
+            if sx == tx and sy == ty and sz == tz:
+                continue
+                
+            moves[count, 0] = sx
+            moves[count, 1] = sy
+            moves[count, 2] = sz
+            moves[count, 3] = tx
+            moves[count, 4] = ty
+            moves[count, 5] = tz
+            count += 1
+            
+    return moves[:count]
 
 def generate_friendlytp_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -107,65 +131,43 @@ def generate_friendlytp_moves(
     """Generate friendly teleporter moves: king walks + network teleports."""
     pos_arr = pos.astype(COORD_DTYPE)
     
+    # Handle single input by reshaping
+    if pos_arr.ndim == 1:
+        pos_arr = pos_arr.reshape(1, 3)
+    
+    moves_list = []
+    
+    # 1. King walks (using jump engine)
     jump_engine = get_jump_movement_generator()
-    
-    # Handle batch input
-    if pos_arr.ndim == 2:
-        moves_list = []
-        friendly_coords = cache_manager.occupancy_cache.get_positions(color)
-        flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
-        
-        for i in range(pos_arr.shape[0]):
-            start = pos_arr[i]
-            teleport_dirs = _build_network_directions_numba(start, friendly_coords, flattened_occ)
-            
-            if teleport_dirs.shape[0] > 0:
-                all_dirs = np.vstack((_KING_DIRECTIONS, teleport_dirs))
-            else:
-                all_dirs = _KING_DIRECTIONS
-                
-            moves = jump_engine.generate_jump_moves(
-                cache_manager=cache_manager,
-                color=color,
-                pos=start,
-                directions=all_dirs,
-                allow_capture=True,
-                piece_type=PieceType.FRIENDLYTELEPORTER
-            )
-            if moves.shape[0] > 0:
-                moves_list.append(moves)
-                
-        if not moves_list:
-            return np.empty((0, 6), dtype=COORD_DTYPE)
-        return np.concatenate(moves_list, axis=0)
-
-    # Single input path
-    start = pos_arr
-
-    # Get all friendly pieces
-    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
-    
-    # Build network directions using fused kernel
-    flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
-    teleport_dirs = _build_network_directions_numba(start, friendly_coords, flattened_occ)
-
-    # Combine with normal King moves
-    if teleport_dirs.shape[0] > 0:
-        all_dirs = np.vstack((_KING_DIRECTIONS, teleport_dirs))
-    else:
-        all_dirs = _KING_DIRECTIONS
-
-    # Generate all moves
-    moves = jump_engine.generate_jump_moves(
+    king_moves = jump_engine.generate_jump_moves(
         cache_manager=cache_manager,
         color=color,
-        pos=start,
-        directions=all_dirs,
+        pos=pos_arr,
+        directions=_KING_DIRECTIONS,
         allow_capture=True,
         piece_type=PieceType.FRIENDLYTELEPORTER
     )
-
-    return moves
+    if king_moves.size > 0:
+        moves_list.append(king_moves)
+        
+    # 2. Network Teleports
+    # Get all friendly pieces
+    friendly_coords = cache_manager.occupancy_cache.get_positions(color)
+    flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
+    
+    # Find all valid teleport destinations (empty neighbors of friendly pieces)
+    network_squares = _get_network_squares(friendly_coords, flattened_occ)
+    
+    if network_squares.shape[0] > 0:
+        # Generate moves for all teleporters to all network squares
+        teleport_moves = _generate_teleport_moves_kernel(pos_arr, network_squares)
+        if teleport_moves.size > 0:
+            moves_list.append(teleport_moves)
+            
+    if not moves_list:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+        
+    return np.concatenate(moves_list, axis=0)
 
 @register(PieceType.FRIENDLYTELEPORTER)
 def friendlytp_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
