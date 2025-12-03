@@ -439,7 +439,9 @@ class OccupancyCache:
         
         # Convert coords to keys for uniqueness check (much faster than row-wise unique)
         # Use simple integer packing: x | (y << 9) | (z << 18)
-        keys = coords[:, 0] | (coords[:, 1] << 9) | (coords[:, 2] << 18)
+        # CRITICAL FIX: Cast to INDEX_DTYPE (int32) to prevent overflow during shift
+        # COORD_DTYPE is int16, so << 18 would overflow/wrap to 0
+        keys = coords[:, 0].astype(INDEX_DTYPE) | (coords[:, 1].astype(INDEX_DTYPE) << 9) | (coords[:, 2].astype(INDEX_DTYPE) << 18)
         
         # ✅ OPTIMIZATION: Use boolean mask for deduplication if batch size is large enough
         # and keys are within range (which they are for 9x9x9)
@@ -509,20 +511,27 @@ class OccupancyCache:
         # No need to maintain a separate king position cache
 
 
-        # ✅ CRITICAL FIX: Update priest count for removed/added priests
-        # Decrement count for old priests being removed/replaced
-        old_priest_mask = (old_types == PieceType.PRIEST.value)
-        if np.any(old_priest_mask):
-            for i in np.where(old_priest_mask)[0]:
-                color_idx = 0 if old_colors[i] == Color.WHITE else 1
-                self._priest_count[color_idx] -= 1
-        
-        # Increment count for new priests being added
-        new_priest_mask = (pieces[:, 0] == PieceType.PRIEST.value)
-        if np.any(new_priest_mask):
-            for i in np.where(new_priest_mask)[0]:
-                color_idx = 0 if pieces[i, 1] == Color.WHITE else 1
-                self._priest_count[color_idx] += 1
+
+        # ✅ OPTIMIZATION (#6): Lazy Priest Validation
+        # Skip expensive priest counting if no priests exist on board
+        if self._priest_count.sum() == 0 and not np.any(pieces[:, 0] == PieceType.PRIEST.value):
+            # Fast path: no priests to track
+            pass
+        else:
+            # ✅ CRITICAL FIX: Update priest count for removed/added priests
+            # Decrement count for old priests being removed/replaced
+            old_priest_mask = (old_types == PieceType.PRIEST.value)
+            if np.any(old_priest_mask):
+                for i in np.where(old_priest_mask)[0]:
+                    color_idx = 0 if old_colors[i] == Color.WHITE else 1
+                    self._priest_count[color_idx] -= 1
+            
+            # Increment count for new priests being added
+            new_priest_mask = (pieces[:, 0] == PieceType.PRIEST.value)
+            if np.any(new_priest_mask):
+                for i in np.where(new_priest_mask)[0]:
+                    color_idx = 0 if pieces[i, 1] == Color.WHITE else 1
+                    self._priest_count[color_idx] += 1
 
         # Invalidate cached views
         self._flat_occ_view = None
@@ -772,8 +781,9 @@ class OccupancyCache:
                 color_idx = 0 if piece[1] == Color.WHITE else 1
                 self._king_positions[color_idx] = coord[0].copy()
 
+        # ✅ OPTIMIZATION (#4): Only invalidate flat view, not  entire indices cache
+        # King cache is already selectively invalidated above when needed
         self._flat_occ_view = None
-        self._flat_indices_cache.clear()
 
     def set_position_fast(self, coord: np.ndarray, piece_type: int, color: int) -> None:
         """Fast path set: updates arrays directly.
@@ -792,16 +802,10 @@ class OccupancyCache:
 
     def get_flattened_occupancy(self) -> np.ndarray:
         """
-        Return a read-only flattened view of color occupancy.
+        Return cached flattened view of color occupancy (O(1), thread-safe).
         0 = empty, Color.WHITE.value = white, Color.BLACK.value = black
-        This is O(1) and extremely cheap.
-        """
-        # ravel('F') matches the indexing used in compute_board_index: x + SIZE*y + SIZE*SIZE*z
-        return self._occ.ravel(order='F')
-
-    def get_cached_flattened(self) -> np.ndarray:
-        """Return cached flattened occupancy (0 = empty, 1 = white, 2 = black).
         
+        ✅ OPTIMIZATION: Uses cached view to eliminate redundant ravel() calls.
         ✅ THREAD-SAFE: Uses double-checked locking pattern.
         """
         # Fast path: no lock needed if already cached
@@ -809,6 +813,7 @@ class OccupancyCache:
             with self._flat_view_lock:
                 # Double-check pattern: another thread might have created it
                 if self._flat_occ_view is None:
+                    # ravel('F') matches indexing: x + SIZE*y + SIZE*SIZE*z
                     self._flat_occ_view = self._occ.ravel(order='F')
         return self._flat_occ_view
 

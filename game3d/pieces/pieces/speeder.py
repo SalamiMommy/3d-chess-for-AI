@@ -1,11 +1,11 @@
-"""Speeder – king-like mover + 2-sphere friendly buff."""
+"""Speeder – king-like mover + 1-sphere friendly buff."""
 
 from __future__ import annotations
 from typing import List, Set, TYPE_CHECKING
 import numpy as np
 
 from game3d.common.shared_types import (
-    COORD_DTYPE, COLOR_DTYPE, RADIUS_2_OFFSETS,
+    COORD_DTYPE, COLOR_DTYPE, RADIUS_1_OFFSETS,
     SPEEDER, SLOWER, Color, PieceType, Result
 )
 from game3d.common.registry import register
@@ -17,14 +17,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Piece-specific movement vectors - same as king (26 directions)
-# Converted to numpy-native using meshgrid for better performance
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
-origin_mask = np.any(all_coords != 0, axis=1)
-_SPEEDER_DIRECTIONS = all_coords[origin_mask].astype(COORD_DTYPE)
+
 
 
 def generate_speeder_moves(
@@ -41,7 +34,7 @@ def buffed_squares(
     cache_manager: 'OptimizedCacheManager',
     effect_color: int,
 ) -> Set[bytes]:
-    """Get coordinates within 2-sphere of friendly Speeder pieces."""
+    """Get coordinates within 1-sphere of friendly Speeder pieces."""
     # Get all friendly pieces
     all_coords = cache_manager.occupancy_cache.get_positions(effect_color)
     if all_coords.size == 0:
@@ -56,8 +49,8 @@ def buffed_squares(
     if speeder_coords.shape[0] == 0:
         return set()
 
-    # Broadcast all Speeder positions with RADIUS_2_OFFSETS
-    aura_coords = speeder_coords[:, np.newaxis, :] + RADIUS_2_OFFSETS
+    # Broadcast all Speeder positions with RADIUS_1_OFFSETS
+    aura_coords = speeder_coords[:, np.newaxis, :] + RADIUS_1_OFFSETS
     aura_coords = aura_coords.reshape(-1, 3)
 
     # Vectorized bounds check
@@ -85,4 +78,4 @@ def speeder_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_speeder_moves(state.cache_manager, state.color, pos)
 
 
-__all__ = ['_SPEEDER_DIRECTIONS', 'generate_speeder_moves', 'buffed_squares']
+__all__ = ['generate_speeder_moves', 'buffed_squares']

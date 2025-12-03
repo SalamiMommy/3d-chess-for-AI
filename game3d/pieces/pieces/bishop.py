@@ -48,13 +48,7 @@ def generate_bishop_moves(
 @register(PieceType.BISHOP)
 def bishop_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for bishop moves - receives numpy array position."""
-    modifier = get_range_modifier(state, pos)
-    
-    if isinstance(modifier, np.ndarray):
-        max_steps = np.maximum(1, MAX_STEPS_SLIDER + modifier)
-    else:
-        max_steps = max(1, MAX_STEPS_SLIDER + modifier)
-        
-    return generate_bishop_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
+    """Dispatcher for bishop moves - receives numpy array position."""
+    return generate_bishop_moves(state.cache_manager, state.color, pos, MAX_STEPS_SLIDER, ignore_occupancy)
 
 __all__ = ['BISHOP_MOVEMENT_VECTORS', 'generate_bishop_moves']

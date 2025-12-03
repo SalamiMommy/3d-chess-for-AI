@@ -19,18 +19,18 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Pawn push directions - white moves +Y, black moves -Y
+# Pawn push directions - white moves +Z, black moves -Z
 PAWN_PUSH_DIRECTIONS = np.array([
-    [0, 1, 0],   # White pawn push
-    [0, -1, 0],  # Black pawn push
+    [0, 0, 1],   # White pawn push
+    [0, 0, -1],  # Black pawn push
 ], dtype=COORD_DTYPE)
 
-# Pawn attack directions - 4 trigonal attacks
-# White (+Y): (±1, 1, ±1)
-# Black (-Y): (±1, -1, ±1)
+# Pawn attack directions - 4 trigonal attacks (forward in Z, diagonal in XY)
+# White (+Z): (±1, ±1, 1)
+# Black (-Z): (±1, ±1, -1)
 PAWN_ATTACK_DIRECTIONS = np.array([
-    [1, 1, 1], [-1, 1, 1], [1, 1, -1], [-1, 1, -1],  # White attacks
-    [1, -1, 1], [-1, -1, 1], [1, -1, -1], [-1, -1, -1],  # Black attacks
+    [1, 1, 1], [-1, 1, 1], [1, -1, 1], [-1, -1, 1],  # White attacks
+    [1, 1, -1], [-1, 1, -1], [1, -1, -1], [-1, -1, -1],  # Black attacks
 ], dtype=COORD_DTYPE)
 
 # ✅ OPTIMIZATION: Pre-compute attack direction slices
@@ -45,7 +45,7 @@ def _generate_pawn_moves_batch_kernel(
     ptype: np.ndarray,
     color: int,
     start_rank: int,
-    dy: int,
+    dz: int,
     attack_dirs: np.ndarray,
     armour_type: int
 ) -> np.ndarray:
@@ -60,35 +60,35 @@ def _generate_pawn_moves_batch_kernel(
         x, y, z = positions[i]
         
         # 1. Single Push
-        py = y + dy
-        if 0 <= py < SIZE:
-            if occ[x, py, z] == 0:
+        pz = z + dz
+        if 0 <= pz < SIZE:
+            if occ[x, y, pz] == 0:
                 # Add push
                 moves[count, 0] = x
                 moves[count, 1] = y
                 moves[count, 2] = z
                 moves[count, 3] = x
-                moves[count, 4] = py
-                moves[count, 5] = z
+                moves[count, 4] = y
+                moves[count, 5] = pz
                 count += 1
                 
                 # 2. Double Push (only if single push valid and empty)
-                if y == start_rank:
-                    ppy = y + 2 * dy
-                    if 0 <= ppy < SIZE:
-                        if occ[x, ppy, z] == 0:
+                if z == start_rank:
+                    ppz = z + 2 * dz
+                    if 0 <= ppz < SIZE:
+                        if occ[x, y, ppz] == 0:
                             moves[count, 0] = x
                             moves[count, 1] = y
                             moves[count, 2] = z
                             moves[count, 3] = x
-                            moves[count, 4] = ppy
-                            moves[count, 5] = z
+                            moves[count, 4] = y
+                            moves[count, 5] = ppz
                             count += 1
                             
         # 3. Captures
         for j in range(4):
-            dx, dy_attack, dz = attack_dirs[j]
-            tx, ty, tz = x + dx, y + dy_attack, z + dz
+            dx, dy, dz_attack = attack_dirs[j]
+            tx, ty, tz = x + dx, y + dy, z + dz_attack
             
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
                 target_color = occ[tx, ty, tz]
@@ -128,7 +128,7 @@ def generate_pawn_moves(
     colour = Color(color)
     
     # Select appropriate parameters
-    dy = 1 if colour == Color.WHITE else -1
+    dz = 1 if colour == Color.WHITE else -1
     start_rank = PAWN_START_RANK_WHITE if colour == Color.WHITE else PAWN_START_RANK_BLACK
     attack_dirs = PAWN_ATTACK_DIRECTIONS_WHITE if colour == Color.WHITE else PAWN_ATTACK_DIRECTIONS_BLACK
     
@@ -144,7 +144,7 @@ def generate_pawn_moves(
         ptype,
         color,
         start_rank,
-        dy,
+        dz,
         attack_dirs,
         armour_type
     )

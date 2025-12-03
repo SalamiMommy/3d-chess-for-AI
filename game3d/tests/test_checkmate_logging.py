@@ -29,47 +29,66 @@ class TestCheckmateLogging(unittest.TestCase):
         # Easiest checkmate: Fool's mate style or just surround the king.
         # Let's try to construct a state where White is checkmated.
         
-        board = Board(SIZE)
-        # Clear board
-        board.clear()
-        
-        # Place White King at (0,0,0)
-        board.add_piece(PieceType.KING, Color.WHITE, (0,0,0))
-        
-        # Place Black Rook at (0,0,5) - attacks (0,0,0)
-        board.add_piece(PieceType.ROOK, Color.BLACK, (0,0,5))
-        
-        # Place Black Rook at (0,5,0) - attacks (0,0,0) and cuts off y-axis
-        board.add_piece(PieceType.ROOK, Color.BLACK, (0,5,0))
-        
-        # Place Black Rook at (5,0,0) - attacks (0,0,0) and cuts off x-axis
-        board.add_piece(PieceType.ROOK, Color.BLACK, (5,0,0))
-        
-        # This might not be enough to cover diagonal escapes (1,1,1) etc.
-        # Let's just surround the king with Black Queens.
-        
-        # White King at (0,0,0)
-        # Black Queen at (0,0,2) -> attacks (0,0,0) and (0,0,1)
-        # Black Queen at (0,2,0) -> attacks (0,0,0) and (0,1,0)
-        # Black Queen at (2,0,0) -> attacks (0,0,0) and (1,0,0)
-        # Black Queen at (2,2,2) -> attacks (0,0,0) and (1,1,1)
-        
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (0,0,2))
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (0,2,0))
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (2,0,0))
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (2,2,2))
-        
-        # Also need to block (1,1,0), (1,0,1), (0,1,1)
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (2,2,0))
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (2,0,2))
-        board.add_piece(PieceType.QUEEN, Color.BLACK, (0,2,2))
-        
-        # Initialize GameState
+        # Initialize GameState with empty board
+        board = Board()
         game_state = GameState(board, Color.WHITE)
         
-        # Ensure cache is built
+        # Define pieces for checkmate scenario
+        # White King at (0,0,0)
+        # Black pieces surrounding it
+        coords = [
+            [0,0,0], # White King
+            [0,0,5], # Black Rook
+            [0,5,0], # Black Rook
+            [5,0,0], # Black Rook
+            [0,0,2], # Black Queen
+            [0,2,0], # Black Queen
+            [2,0,0], # Black Queen
+            [2,2,2], # Black Queen
+            [2,2,0], # Black Queen
+            [2,0,2], # Black Queen
+            [0,2,2], # Black Queen
+            [1,1,5]  # Black Rook (Attacks [1,1,1])
+        ]
+        
+        types = [
+            PieceType.KING,
+            PieceType.ROOK,
+            PieceType.ROOK,
+            PieceType.ROOK,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.QUEEN,
+            PieceType.ROOK
+        ]
+        
+        colors = [
+            Color.WHITE,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK,
+            Color.BLACK
+        ]
+        
+        # Convert to numpy arrays
+        coords_arr = np.array(coords, dtype=np.int32) # COORD_DTYPE is usually int32 or int8
+        types_arr = np.array([t.value for t in types], dtype=np.int8)
+        colors_arr = np.array(colors, dtype=np.int8)
+        
+        # Rebuild cache with this state
         if game_state.cache_manager:
-            game_state.cache_manager.rebuild(board)
+            game_state.cache_manager.occupancy_cache.rebuild(coords_arr, types_arr, colors_arr)
             
         # Check if game over
         result = is_game_over(game_state)
@@ -79,7 +98,7 @@ class TestCheckmateLogging(unittest.TestCase):
         print("Captured Logs:\n", logs)
         
         self.assertTrue(result, "Game should be over")
-        self.assertIn("Game over: Checkmate (Winner: BLACK)", logs)
+        self.assertIn("Game over: Checkmate (Winner: BLACK, Turn: 1)", logs)
         self.assertIn("White: Priests=0, King=(0,0,0)", logs)
         self.assertIn("Attackers:", logs)
         self.assertIn("QUEEN at", logs)

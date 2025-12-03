@@ -101,6 +101,47 @@ def extract_piece_moves_from_batch(
     return result
 
 
+@njit(cache=True, fastmath=True)
+def group_indices_by_type(types: np.ndarray, indices: np.ndarray, max_type: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Group indices by type using counting sort (O(N)).
+    
+    Args:
+        types: (N,) array of piece types
+        indices: (N,) array of original indices
+        max_type: Maximum piece type value
+        
+    Returns:
+        sorted_indices: (N,) array of indices sorted by type
+        offsets: (max_type + 1,) array of start offsets for each type
+        counts: (max_type + 1,) array of counts for each type
+    """
+    n = types.shape[0]
+    
+    # Count per type
+    counts = np.zeros(max_type + 1, dtype=np.int32)
+    for i in range(n):
+        counts[types[i]] += 1
+        
+    # Offsets
+    offsets = np.zeros(max_type + 1, dtype=np.int32)
+    current = 0
+    for i in range(max_type + 1):
+        offsets[i] = current
+        current += counts[i]
+        
+    # Fill
+    sorted_indices = np.empty(n, dtype=np.int32)
+    current_offsets = offsets.copy()
+    
+    for i in range(n):
+        t = types[i]
+        pos = current_offsets[t]
+        sorted_indices[pos] = indices[i]
+        current_offsets[t] += 1
+        
+    return sorted_indices, offsets, counts
+
 # =============================================================================
 # RAW MOVE GENERATION - NO VALIDATION
 # =============================================================================
@@ -150,8 +191,9 @@ def generate_pseudolegal_moves_batch(
     # ✅ OPTIMIZATION 2: Pre-compute coord keys for all coordinates
     coord_keys = coord_to_key(batch_coords)
     
-    # ✅ OPTIMIZATION 3: Group pieces by type to amortize dispatcher lookups
-    # This reduces get_piece_dispatcher calls from N to unique_types
+    # ✅ OPTIMIZATION 3: Group pieces by type using Numba counting sort
+    # This replaces argsort (O(N log N)) with counting sort (O(N))
+    # and avoids allocating intermediate arrays.
     
     # Filter valid pieces (not empty)
     valid_mask = colors_batch != 0
@@ -170,25 +212,25 @@ def generate_pseudolegal_moves_batch(
         is_debuffed = np.isin(valid_keys, debuffed_keys_arr)
         
         # Update types to PAWN where debuffed
-        # valid_types is a copy, so we can modify it
         valid_types[is_debuffed] = PieceType.PAWN.value
         
-    # Sort by type to group them
-    sort_idx = np.argsort(valid_types)
-    sorted_indices = valid_indices[sort_idx]
-    sorted_types = valid_types[sort_idx]
-    
-    # Find unique types and their start indices
-    unique_types, start_indices = np.unique(sorted_types, return_index=True)
+    # Use Numba counting sort to group indices by type
+    # Max piece type is around 40, so this is very efficient
+    from game3d.common.shared_types import N_PIECE_TYPES
+    sorted_indices, offsets, counts = group_indices_by_type(valid_types, valid_indices, N_PIECE_TYPES)
     
     # ✅ OPTIMIZATION 4: Process each piece type directly
-    # Inlined logic to avoid helper function overhead and list construction
     from game3d.common.registry import get_piece_dispatcher_fast
     
-    for i in range(len(unique_types)):
-        piece_type = unique_types[i]
-        start = start_indices[i]
-        end = start_indices[i+1] if i + 1 < len(unique_types) else len(sorted_indices)
+    # Iterate only over types that are present
+    present_types = np.flatnonzero(counts)
+    
+    for piece_type in present_types:
+        count = counts[piece_type]
+        if count == 0: continue
+            
+        start = offsets[piece_type]
+        end = start + count
         indices = sorted_indices[start:end]
         
         # Get dispatcher
@@ -205,10 +247,17 @@ def generate_pseudolegal_moves_batch(
         
         # Try batch dispatch
         try:
-             # Try to pass ignore_occupancy
-             try:
-                 raw_moves = dispatcher(state, coords, ignore_occupancy=ignore_occupancy)
-             except TypeError:
+             # OPTIMIZATION: Avoid try-except overhead if ignore_occupancy is False (default)
+             if ignore_occupancy:
+                 try:
+                     raw_moves = dispatcher(state, coords, ignore_occupancy=True)
+                 except TypeError:
+                     # Dispatcher doesn't accept ignore_occupancy (e.g. Jump pieces)
+                     # Just call without it
+                     raw_moves = dispatcher(state, coords)
+             else:
+                 # If False, just call without argument (assumes default is False or not needed)
+                 # This avoids TypeError for pieces that don't accept the argument (Knights, etc.)
                  raw_moves = dispatcher(state, coords)
                  
              # Assume valid numpy array return (skip checks for speed)
@@ -219,8 +268,15 @@ def generate_pseudolegal_moves_batch(
              # Fallback to sequential if batch fails
              for coord in coords:
                  try:
-                     r = dispatcher(state, coord, ignore_occupancy=ignore_occupancy)
+                     if ignore_occupancy:
+                         try:
+                             r = dispatcher(state, coord, ignore_occupancy=True)
+                         except TypeError:
+                             r = dispatcher(state, coord)
+                     else:
+                         r = dispatcher(state, coord)
                  except TypeError:
+                     # Last resort fallback
                      r = dispatcher(state, coord)
                  
                  if r.size > 0:

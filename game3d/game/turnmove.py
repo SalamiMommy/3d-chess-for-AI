@@ -110,6 +110,7 @@ def validate_move_integrated(game_state: 'GameState', move: Move) -> Optional[st
         # Check if destination anchor allows for the full 2x2 block
         to_x, to_y, _ = move.to_coord
         if to_x >= SIZE - 1 or to_y >= SIZE - 1:
+            logger.error(f"CRITICAL: Wall move rejected by validation! Move: {move}. Dest: {move.to_coord}. SIZE={SIZE}. Wall requires 2x2 space.")
             return f"Wall move to {move.to_coord} would place part of the wall out of bounds"
 
     # 6. Basic move validation
@@ -155,6 +156,19 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     is_archery = (from_piece["piece_type"] == PieceType.ARCHER and move_distance == 2)
     is_detonation = (from_piece["piece_type"] == PieceType.BOMB and move_distance == 0)
 
+    # Detect Swap (Swapper moving to friendly piece)
+    is_swap = (from_piece["piece_type"] == PieceType.SWAPPER and 
+               captured_piece is not None and 
+               captured_piece["color"] == from_piece["color"])
+    
+    swapped_piece = None
+    if is_swap:
+        swapped_piece = captured_piece
+        captured_piece = None  # Not a capture
+
+
+
+
     # --- 3. PREPARE UPDATE DATA (cache-only, no board updates) ---
     # Build update data structure for OccupancyCache
     changed_coords = np.array([mv[:3], mv[3:]], dtype=COORD_DTYPE)
@@ -191,6 +205,19 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         # Update all cleared squares
         changed_coords = coords_to_clear
         pieces_data = np.zeros((len(coords_to_clear), 2), dtype=PIECE_TYPE_DTYPE)
+
+        pieces_data = np.zeros((len(coords_to_clear), 2), dtype=PIECE_TYPE_DTYPE)
+
+
+        pieces_data = np.zeros((len(coords_to_clear), 2), dtype=PIECE_TYPE_DTYPE)
+
+    elif is_swap:
+        # Swapper Swap: Exchange positions
+        changed_coords = np.array([mv[:3], mv[3:]], dtype=COORD_DTYPE)
+        pieces_data = np.array([
+            [swapped_piece["piece_type"], swapped_piece["color"]], # Source gets friendly piece
+            [from_piece["piece_type"], from_piece["color"]]        # Dest gets Swapper
+        ], dtype=PIECE_TYPE_DTYPE)
 
     elif from_piece["piece_type"] == PieceType.WALL:
         # Wall: Move 2x2 block
@@ -242,6 +269,12 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         game_state._zkey, mv, from_piece, captured_piece
     ))
 
+    # For Swapper swaps, we need a full recompute or manual adjustment because
+    # update_hash_move doesn't handle the "friendly piece moves back to source" part.
+    if is_swap:
+        game_state._zkey = int(cache_manager._compute_initial_zobrist(game_state.color))
+
+
     # --- 7. UPDATE EFFECT CACHES ---
     affected_coords = np.array([mv[:3], mv[3:]], dtype=COORD_DTYPE)
     cache_manager._notify_all_effect_caches(affected_coords,
@@ -261,7 +294,8 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
             game_state._moved_hive_positions.clear()
 
     # Calculate affected squares
-    affected_squares = affected_coords.copy()
+    # ✅ OPTIMIZATION (#5): Use view instead of copy
+    affected_squares = affected_coords
     if captured_piece:
         affected_squares = np.vstack([affected_squares, get_adjacent_squares(mv[3:])])
 
@@ -289,10 +323,11 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
                         del cache_manager.move_cache._reverse_map[target_key]
             del cache_manager.move_cache._piece_targets[from_piece_id]
     
-    # Also remove cache entry for destination if there was a capture
-    if captured_piece:
+    # Also remove cache entry for destination if there was a capture or swap
+    if captured_piece or is_swap:
+        target_piece = captured_piece if captured_piece is not None else swapped_piece
         to_coord_key = int(coords_to_keys(mv[3:].reshape(1, 3))[0])
-        to_color_idx = 0 if captured_piece["color"] == Color.WHITE else 1
+        to_color_idx = 0 if target_piece["color"] == Color.WHITE else 1
         to_piece_id = (to_color_idx, to_coord_key)
         
         if to_piece_id in cache_manager.move_cache._piece_moves_cache:
@@ -672,7 +707,8 @@ def apply_forced_moves(game_state: 'GameState', forced_moves: np.ndarray) -> Non
     king_moves = []
     for i in range(len(types)):
         if types[i] == PieceType.KING.value:
-            king_moves.append((colors[i], to_coords[i].copy()))
+            # ✅ OPTIMIZATION (#5): No copy needed for list append
+            king_moves.append((colors[i], to_coords[i]))
 
     # Prepare update data
     # Source squares become empty
@@ -770,8 +806,8 @@ def _undo_move_fast(game_state: 'GameState') -> 'GameState':
     last_mv_record = game_state.history[-1]
     last_mv = last_mv_record.view(np.ndarray).flatten()
 
-    # Pop history
-    new_history = game_state.history[:-1].copy()
+    # ✅ OPTIMIZATION (#5): Slice creates new array, no explicit copy needed
+    new_history = game_state.history[:-1]
 
     cache_manager = game_state.cache_manager
 

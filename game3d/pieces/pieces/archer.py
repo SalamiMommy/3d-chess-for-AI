@@ -7,6 +7,7 @@ Unified Archer dispatcher
 
 from __future__ import annotations
 import numpy as np
+from numba import njit, prange
 from typing import TYPE_CHECKING
 from game3d.common.shared_types import *
 from game3d.common.registry import register
@@ -18,16 +19,57 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# King directions (1-step moves) - optimized numpy construction
-_KING_DIRECTIONS = np.mgrid[-1:2, -1:2, -1:2].reshape(3, -1).T.astype(COORD_DTYPE)
-# Remove origin
-origin = np.array([0, 0, 0], dtype=COORD_DTYPE)
-_KING_DIRECTIONS = _KING_DIRECTIONS[~np.all(_KING_DIRECTIONS == origin, axis=1)]
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 # Archery directions (2-radius surface only) - optimized numpy construction
 coords = np.mgrid[-2:3, -2:3, -2:3].reshape(3, -1).T
 distances = np.sum(coords * coords, axis=1)
 _ARCHERY_DIRECTIONS = coords[distances == 4].astype(COORD_DTYPE)
+
+@njit(cache=True, fastmath=True)
+def _generate_archer_shots_kernel(
+    starts: np.ndarray,
+    directions: np.ndarray,
+    flattened_occ: np.ndarray,
+    color: int
+) -> np.ndarray:
+    """
+    Numba kernel to generate archer shots.
+    Filters bounds and enemy occupancy inline to avoid large intermediate arrays.
+    """
+    n_starts = starts.shape[0]
+    n_dirs = directions.shape[0]
+    
+    # Pre-calculate max possible moves to allocate once
+    max_moves = n_starts * n_dirs
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
+    
+    count = 0
+    
+    for i in range(n_starts):
+        sx, sy, sz = starts[i]
+        
+        for j in range(n_dirs):
+            dx, dy, dz = directions[j]
+            tx, ty, tz = sx + dx, sy + dy, sz + dz
+            
+            # Bounds check
+            if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
+                # Occupancy check
+                idx = tx + SIZE * ty + SIZE_SQUARED * tz
+                occ = flattened_occ[idx]
+                
+                # Must be enemy
+                if occ != 0 and occ != color:
+                    moves[count, 0] = sx
+                    moves[count, 1] = sy
+                    moves[count, 2] = sz
+                    moves[count, 3] = tx
+                    moves[count, 4] = ty
+                    moves[count, 5] = tz
+                    count += 1
+                    
+    return moves[:count]
 
 def generate_archer_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -45,74 +87,31 @@ def generate_archer_moves(
         cache_manager=cache_manager,
         color=color,
         pos=start,
-        directions=_KING_DIRECTIONS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.ARCHER
+        piece_type=PieceType.ARCHER,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)
 
-    # 2. Archery shots (2-radius surface capture only) - FULLY VECTORIZED
+    # 2. Archery shots (2-radius surface capture only) - NUMBA KERNEL
     
     # Handle batch input for archery shots
-    if start.ndim == 2:
-        # start: (N, 3)
-        # _ARCHERY_DIRECTIONS: (M, 3)
-        # targets: (N, M, 3)
-        targets = start[:, np.newaxis, :] + _ARCHERY_DIRECTIONS[np.newaxis, :, :]
-        N, M, _ = targets.shape
-        flat_targets = targets.reshape(N * M, 3)
+    if start.ndim == 1:
+        start = start.reshape(1, 3)
         
-        # We need to track which archer generated which target
-        # Create corresponding start positions
-        flat_starts = np.repeat(start, M, axis=0)
-        
-        # Vectorized bounds check
-        valid_mask = in_bounds_vectorized(flat_targets)
-        valid_targets = flat_targets[valid_mask]
-        valid_starts = flat_starts[valid_mask]
-        
-        if valid_targets.shape[0] > 0:
-            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
-            idxs = valid_targets[:, 0] + SIZE * valid_targets[:, 1] + SIZE * SIZE * valid_targets[:, 2]
-            occs = flattened[idxs]
-            
-            enemy_mask = (occs != 0) & (occs != color)
-            enemy_targets = valid_targets[enemy_mask]
-            enemy_starts = valid_starts[enemy_mask]
-            
-            if enemy_targets.shape[0] > 0:
-                n_shots = enemy_targets.shape[0]
-                shot_moves = np.empty((n_shots, 6), dtype=COORD_DTYPE)
-                shot_moves[:, 0:3] = enemy_starts
-                shot_moves[:, 3:6] = enemy_targets
-                moves_list.append(shot_moves)
-    else:
-        # Single input path
-        # Generate all possible archery targets at once using broadcasting
-        # _ARCHERY_DIRECTIONS is (N, 3), start is (3,), result is (N, 3)
-        targets = start + _ARCHERY_DIRECTIONS
+    flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
     
-        # Vectorized bounds check - filters out-of-board targets
-        valid_mask = in_bounds_vectorized(targets)
-        valid_targets = targets[valid_mask]
+    shot_moves = _generate_archer_shots_kernel(
+        start,
+        _ARCHERY_DIRECTIONS,
+        flattened,
+        color
+    )
     
-        if valid_targets.shape[0] > 0:
-            # Vectorized occupancy check using flattened cache (same pattern as jump_engine.py)
-            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
-            idxs = valid_targets[:, 0] + SIZE * valid_targets[:, 1] + SIZE * SIZE * valid_targets[:, 2]
-            occs = flattened[idxs]
-    
-            # Filter for enemy pieces only (occupied by opponent)
-            enemy_mask = (occs != 0) & (occs != color)
-            enemy_targets = valid_targets[enemy_mask]
-    
-            if enemy_targets.shape[0] > 0:
-                n_shots = enemy_targets.shape[0]
-                shot_moves = np.empty((n_shots, 6), dtype=COORD_DTYPE)
-                shot_moves[:, 0:3] = start
-                shot_moves[:, 3:6] = enemy_targets
-                moves_list.append(shot_moves)
+    if shot_moves.size > 0:
+        moves_list.append(shot_moves)
 
     if not moves_list:
         return np.empty((0, 6), dtype=COORD_DTYPE)

@@ -115,27 +115,33 @@ def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> Union[int, n
         -1 if debuffed (Slower)
         0 otherwise
     """
-    # Direct access to ConsolidatedAuraCache
+    # Direct access to ConsolidatedAuraCache - assume it exists for speed
+    # This removes the try/except overhead which is significant in hot paths
     aura_cache = game_state.cache_manager.consolidated_aura_cache
             
-    if aura_cache is None:
-        return 0 if pos.ndim == 1 else np.zeros(pos.shape[0], dtype=np.int8)
-        
     # Handle batch input
     if pos.ndim == 2:
-        is_buffed = aura_cache.batch_is_buffed(pos, game_state.color)
-        is_debuffed = aura_cache.batch_is_debuffed(pos, game_state.color)
+        # Direct access to boolean arrays for speed
+        # pos is (N, 3), arrays are [x, y, z]
+        x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+        
+        is_buffed = aura_cache._buffed_squares[x, y, z]
+        is_debuffed = aura_cache._debuffed_squares[x, y, z]
         
         modifiers = np.zeros(pos.shape[0], dtype=np.int8)
-        modifiers[is_buffed] += 1
-        modifiers[is_debuffed] -= 1
+        # Use boolean indexing for faster addition/subtraction
+        if np.any(is_buffed):
+            modifiers[is_buffed] += 1
+        if np.any(is_debuffed):
+            modifiers[is_debuffed] -= 1
         return modifiers
 
     # Handle single input
-    pos_arr = pos.reshape(1, 3)
+    x, y, z = pos[0], pos[1], pos[2]
     
-    is_buffed = aura_cache.batch_is_buffed(pos_arr, game_state.color)[0]
-    is_debuffed = aura_cache.batch_is_debuffed(pos_arr, game_state.color)[0]
+    # Direct array access
+    is_buffed = aura_cache._buffed_squares[x, y, z]
+    is_debuffed = aura_cache._debuffed_squares[x, y, z]
     
     modifier = 0
     if is_buffed:

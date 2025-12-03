@@ -16,8 +16,18 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Piece-specific movement vectors - Knight31 (3,1,1) leap pattern
+# Piece-specific movement vectors - Knight31 (3,1,0) leap pattern
 KNIGHT31_MOVEMENT_VECTORS = np.array([
+    (3, 1, 0), (3, -1, 0), (-3, 1, 0), (-3, -1, 0),
+    (1, 3, 0), (1, -3, 0), (-1, 3, 0), (-1, -3, 0),
+    (3, 0, 1), (3, 0, -1), (-3, 0, 1), (-3, 0, -1),
+    (0, 3, 1), (0, 3, -1), (0, -3, 1), (0, -3, -1),
+    (1, 0, 3), (1, 0, -3), (-1, 0, 3), (-1, 0, -3),
+    (0, 1, 3), (0, 1, -3), (0, -1, 3), (0, -1, -3),
+], dtype=COORD_DTYPE)
+
+# Buffed Knight31 (3,1,1) leap pattern
+BUFFED_KNIGHT31_MOVEMENT_VECTORS = np.array([
     (3, 1, 1), (3, 1, -1), (3, -1, 1), (3, -1, -1),
     (-3, 1, 1), (-3, 1, -1), (-3, -1, 1), (-3, -1, -1),
     (1, 3, 1), (1, 3, -1), (1, -3, 1), (1, -3, -1),
@@ -26,14 +36,30 @@ KNIGHT31_MOVEMENT_VECTORS = np.array([
     (-1, 1, 3), (-1, 1, -3), (-1, -1, 3), (-1, -1, -3),
 ], dtype=COORD_DTYPE)
 
-# Piece-specific movement vectors - Knight32 (3,2,2) leap pattern
+# Piece-specific movement vectors - Knight32 (3,2,0) leap pattern
 KNIGHT32_MOVEMENT_VECTORS = np.array([
-    (3, 2, 2), (3, 2, -2), (3, -2, 2), (3, -2, -2),
-    (-3, 2, 2), (-3, 2, -2), (-3, -2, 2), (-3, -2, -2),
-    (2, 3, 2), (2, 3, -2), (2, -3, 2), (2, -3, -2),
-    (-2, 3, 2), (-2, 3, -2), (-2, -3, 2), (-2, -3, -2),
-    (2, 2, 3), (2, 2, -3), (2, -2, 3), (2, -2, -3),
-    (-2, 2, 3), (-2, 2, -3), (-2, -2, 3), (-2, -2, -3),
+    (3, 2, 0), (3, -2, 0), (-3, 2, 0), (-3, -2, 0),
+    (2, 3, 0), (2, -3, 0), (-2, 3, 0), (-2, -3, 0),
+    (3, 0, 2), (3, 0, -2), (-3, 0, 2), (-3, 0, -2),
+    (0, 3, 2), (0, 3, -2), (0, -3, 2), (0, -3, -2),
+    (2, 0, 3), (2, 0, -3), (-2, 0, 3), (-2, 0, -3),
+    (0, 2, 3), (0, 2, -3), (0, -2, 3), (0, -2, -3),
+], dtype=COORD_DTYPE)
+
+# Buffed Knight32 (3,2,1) leap pattern
+BUFFED_KNIGHT32_MOVEMENT_VECTORS = np.array([
+    (3, 2, 1), (3, 2, -1), (3, -2, 1), (3, -2, -1),
+    (-3, 2, 1), (-3, 2, -1), (-3, -2, 1), (-3, -2, -1),
+    (2, 3, 1), (2, 3, -1), (2, -3, 1), (2, -3, -1),
+    (-2, 3, 1), (-2, 3, -1), (-2, -3, 1), (-2, -3, -1),
+    (2, 1, 3), (2, 1, -3), (2, -1, 3), (2, -1, -3),
+    (-2, 1, 3), (-2, 1, -3), (-2, -1, 3), (-2, -1, -3),
+    (1, 2, 3), (1, 2, -3), (1, -2, 3), (1, -2, -3),
+    (-1, 2, 3), (-1, 2, -3), (-1, -2, 3), (-1, -2, -3),
+    (1, 3, 2), (1, 3, -2), (1, -3, 2), (1, -3, -2),
+    (-1, 3, 2), (-1, 3, -2), (-1, -3, 2), (-1, -3, -2),
+    (3, 1, 2), (3, 1, -2), (3, -1, 2), (3, -1, -2),
+    (-3, 1, 2), (-3, 1, -2), (-3, -1, 2), (-3, -1, -2),
 ], dtype=COORD_DTYPE)
 
 def generate_knight31_moves(
@@ -57,7 +83,8 @@ def generate_knight31_moves(
         pos=pos_arr,
         directions=KNIGHT31_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.KNIGHT31
+        piece_type=PieceType.KNIGHT31,
+        buffed_directions=BUFFED_KNIGHT31_MOVEMENT_VECTORS
     )
 
 def generate_knight32_moves(
@@ -80,7 +107,8 @@ def generate_knight32_moves(
         pos=pos_arr,
         directions=KNIGHT32_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.KNIGHT32
+        piece_type=PieceType.KNIGHT32,
+        buffed_directions=BUFFED_KNIGHT32_MOVEMENT_VECTORS
     )
 
 @register(PieceType.KNIGHT31)
@@ -93,7 +121,9 @@ def knight32_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
 
 __all__ = [
     'KNIGHT31_MOVEMENT_VECTORS',
+    'BUFFED_KNIGHT31_MOVEMENT_VECTORS',
     'KNIGHT32_MOVEMENT_VECTORS',
+    'BUFFED_KNIGHT32_MOVEMENT_VECTORS',
     'generate_knight31_moves',
     'generate_knight32_moves'
 ]

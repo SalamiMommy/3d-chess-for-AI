@@ -17,14 +17,7 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# Precomputed hive movement vectors - all 26 3D king-like directions
-# Converted to numpy-native using meshgrid for better performance
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
-origin_mask = np.any(all_coords != 0, axis=1)
-HIVE_DIRECTIONS_3D = all_coords[origin_mask].astype(COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 def generate_hive_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -36,9 +29,10 @@ def generate_hive_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos.astype(COORD_DTYPE),
-        directions=HIVE_DIRECTIONS_3D,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.HIVE
+        piece_type=PieceType.HIVE,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
 
 @register(PieceType.HIVE)
@@ -110,5 +104,4 @@ __all__ = [
     "generate_hive_moves",
     "get_movable_hives",
     "apply_multi_hive_move",
-    "HIVE_DIRECTIONS_3D"
 ]

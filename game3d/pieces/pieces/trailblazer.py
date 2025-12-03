@@ -140,14 +140,19 @@ def _any_priest_alive(board, color: Color) -> bool:
 
 @register(PieceType.TRAILBLAZER)
 def trailblazer_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
-    """Registered dispatcher for Trailblazer moves."""
-    modifier = get_range_modifier(state, pos)
+    """Registered dispatcher for Trailblazer moves (max 3 steps unbuffed, 4 buffed)."""
+    # Check if buffed
+    pos_arr = pos.astype(COORD_DTYPE)
+    if pos_arr.ndim == 1:
+        pos_arr = pos_arr.reshape(1, 3)
     
-    if isinstance(modifier, np.ndarray):
-        max_dist = np.maximum(1, MAX_TRAILBLAZER_DISTANCE + modifier)
-    else:
-        max_dist = max(1, MAX_TRAILBLAZER_DISTANCE + modifier)
-        
+    x, y, z = pos_arr[0]
+    buffed_squares = state.cache_manager.consolidated_aura_cache._buffed_squares
+    is_buffed = buffed_squares[x, y, z]
+    
+    # Use max distance 4 if buffed, 3 otherwise
+    max_dist = 4 if is_buffed else MAX_TRAILBLAZER_DISTANCE
+    
     return generate_trailblazer_moves(state.cache_manager, state.color, pos, max_dist, ignore_occupancy)
 
 __all__ = [

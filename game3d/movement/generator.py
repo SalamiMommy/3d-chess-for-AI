@@ -74,6 +74,38 @@ def filter_safe_moves_optimized(game_state: 'GameState', moves: np.ndarray) -> n
         return np.empty((0, 6), dtype=moves.dtype)
 
     # 1. Determine Global Check State
+    # ✅ OPTIMIZATION: Ensure opponent's moves are cached for efficient check detection
+    # If we don't do this, check detection falls back to the slow path (generating moves on the fly)
+    opponent_color = Color(color).opposite().value
+    if game_state.cache_manager.move_cache.get_pseudolegal_moves(opponent_color) is None:
+        # Generate and cache opponent's pseudolegal moves
+        opp_coords = occ_cache.get_positions(opponent_color)
+        if opp_coords.size > 0:
+            # Create temporary state for opponent
+            from game3d.game.gamestate import GameState
+            opp_state = GameState(game_state.board, opponent_color, game_state.cache_manager)
+            
+            # Get debuffed squares for opponent
+            debuffed = game_state.cache_manager.consolidated_aura_cache.get_debuffed_squares(opponent_color)
+            
+            # Generate all pseudolegal moves
+            opp_moves = generate_pseudolegal_moves_batch(
+                opp_state, opp_coords, debuffed, ignore_occupancy=False
+            )
+            
+            # Store in cache
+            game_state.cache_manager.move_cache.store_pseudolegal_moves(opponent_color, opp_moves)
+            
+            # Also cache piece moves for incremental updates
+            # We access the generator instance to use its helper
+            global _generator
+            if _generator is None:
+                _generator = LegalMoveGenerator()
+            _generator._cache_piece_moves(game_state.cache_manager, opp_coords, opp_moves, opponent_color)
+        else:
+             # No opponent pieces, store empty moves
+             game_state.cache_manager.move_cache.store_pseudolegal_moves(opponent_color, np.empty((0, 6), dtype=MOVE_DTYPE))
+
     is_in_check = king_in_check(game_state.board, color, color, cache=game_state.cache_manager)
 
     # Pre-calculate keys and masks

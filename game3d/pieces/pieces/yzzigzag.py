@@ -69,14 +69,6 @@ def generate_yz_zigzag_moves(
 @register(PieceType.YZZIGZAG)
 def yz_zigzag_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for YZ-ZigZag moves."""
-    from game3d.movement.movementmodifiers import get_range_modifier
-    modifier = get_range_modifier(state, pos)
-    
-    if isinstance(modifier, np.ndarray):
-        max_steps = np.maximum(1, 16 + modifier)
-    else:
-        max_steps = max(1, 16 + modifier)
-        
-    return generate_yz_zigzag_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
+    return generate_yz_zigzag_moves(state.cache_manager, state.color, pos, 16, ignore_occupancy)
 
 __all__ = ['YZ_ZIGZAG_DIRECTIONS', 'generate_yz_zigzag_moves']

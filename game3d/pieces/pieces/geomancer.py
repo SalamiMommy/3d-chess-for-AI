@@ -18,11 +18,24 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Pre-compute geomancy offsets (Radius 2 and 3)
-_OFFSETS = np.asarray(RADIUS_3_OFFSETS, dtype=COORD_DTYPE)
-_CHEB_DIST = np.max(np.abs(_OFFSETS), axis=1)
-_GEOMANCY_MASK = _CHEB_DIST >= 2
-GEOMANCY_OFFSETS = _OFFSETS[_GEOMANCY_MASK]
+# Pre-compute geomancy offsets - Radius 3 (unbuffed, Cheb dist >= 2)
+_OFFSETS_R3 = np.asarray(RADIUS_3_OFFSETS, dtype=COORD_DTYPE)
+_CHEB_DIST_R3 = np.max(np.abs(_OFFSETS_R3), axis=1)
+_GEOMANCY_MASK_R3 = _CHEB_DIST_R3 >= 2
+GEOMANCY_OFFSETS = _OFFSETS_R3[_GEOMANCY_MASK_R3]
+
+# Pre-compute geomancy offsets - Radius 4 (buffed, Cheb dist >= 2)
+# Generate radius 4 offsets manually since RADIUS_4_OFFSETS doesn't exist
+_OFFSETS_R4 = np.array([
+    (dx, dy, dz)
+    for dx in range(-4, 5)
+    for dy in range(-4, 5)
+    for dz in range(-4, 5)
+    if max(abs(dx), abs(dy), abs(dz)) <= 4
+], dtype=COORD_DTYPE)
+_CHEB_DIST_R4 = np.max(np.abs(_OFFSETS_R4), axis=1)
+_GEOMANCY_MASK_R4 = _CHEB_DIST_R4 >= 2
+BUFFED_GEOMANCY_OFFSETS = _OFFSETS_R4[_GEOMANCY_MASK_R4]
 
 @njit(cache=True, fastmath=True)
 def _block_candidates_numba(
@@ -149,7 +162,7 @@ def generate_geomancer_moves(
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate geomancer moves: radius-1 king moves + radius-2/3 geomancy placement moves."""
+    """Generate geomancer moves: radius-1 king moves + radius-2/3 (unbuffed) or radius-2/4 (buffed) geomancy placement moves."""
     start = pos.astype(COORD_DTYPE)
     
     # Handle single input
@@ -159,9 +172,17 @@ def generate_geomancer_moves(
     # Generate king moves for piece movement within radius 1
     king_moves = generate_king_moves(cache_manager, color, start, piece_type=PieceType.GEOMANCER)
     
-    # Generate geomancy moves (radius 2/3)
+    # Check if buffed
+    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
+    x, y, z = start[0]
+    is_buffed = buffed_squares[x, y, z]
+    
+    # Use appropriate offsets based on buff status
+    offsets = BUFFED_GEOMANCY_OFFSETS if is_buffed else GEOMANCY_OFFSETS
+    
+    # Generate geomancy moves (radius 2/3 unbuffed, or 2/4 buffed)
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
-    geom_moves = _generate_geomancy_moves_kernel(start, flattened_occ, GEOMANCY_OFFSETS)
+    geom_moves = _generate_geomancy_moves_kernel(start, flattened_occ, offsets)
     
     if geom_moves.shape[0] == 0:
         return king_moves

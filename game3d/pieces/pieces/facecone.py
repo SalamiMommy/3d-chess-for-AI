@@ -105,19 +105,12 @@ def generate_face_cone_slider_moves(
 @register(PieceType.CONESLIDER)
 def face_cone_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Dispatcher for face-cone slider moves - receives numpy array position."""
-    from game3d.movement.movementmodifiers import get_range_modifier
-    modifier = get_range_modifier(state, pos)
-    
-    if isinstance(modifier, np.ndarray):
-        max_steps = np.maximum(1, SIZE_MINUS_1 + modifier)
-    else:
-        max_steps = max(1, SIZE_MINUS_1 + modifier)
-
+    """Dispatcher for face-cone slider moves - receives numpy array position."""
     return generate_face_cone_slider_moves(
         cache_manager=state.cache_manager,
         color=state.color,
         pos=pos,
-        max_steps=max_steps,
+        max_steps=SIZE_MINUS_1,
         ignore_occupancy=ignore_occupancy
     )
 

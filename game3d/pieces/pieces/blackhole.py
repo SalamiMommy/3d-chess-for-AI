@@ -19,16 +19,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Black-hole movement vectors (same as king - 26 directions)
-BLACKHOLE_MOVEMENT_VECTORS = np.array([
-    [0, 1, 1], [0, 1, -1], [0, -1, 1], [0, -1, -1],  # YZ plane
-    [1, 0, 1], [1, 0, -1], [-1, 0, 1], [-1, 0, -1],  # XZ plane
-    [1, 1, 0], [1, -1, 0], [-1, 1, 0], [-1, -1, 0],  # XY plane
-    [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],  # 3D corners (+X)
-    [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1],  # 3D corners (-X)
-    [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0],  # Z and Y axes
-    [1, 0, 0], [-1, 0, 0]  # X axis
-], dtype=COORD_DTYPE)
+
 
 
 def generate_blackhole_moves(
@@ -192,4 +183,4 @@ def blackhole_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray
     return generate_blackhole_moves(state.cache_manager, state.color, pos)
 
 
-__all__ = ["generate_blackhole_moves", "suck_candidates_vectorized", "BLACKHOLE_MOVEMENT_VECTORS"]
+__all__ = ["generate_blackhole_moves", "suck_candidates_vectorized"]

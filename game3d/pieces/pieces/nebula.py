@@ -1,11 +1,11 @@
 """
-Nebula piece implementation - teleport to any position within radius-3 sphere.
+Nebula piece implementation - teleport within radius-2 sphere (unbuffed) or radius-3 sphere (buffed).
 """
 
 from __future__ import annotations
 import numpy as np
 from typing import List, TYPE_CHECKING
-from game3d.common.shared_types import COORD_DTYPE, COLOR_DTYPE, PieceType
+from game3d.common.shared_types import COORD_DTYPE, COLOR_DTYPE, PieceType, RADIUS_2_OFFSETS, RADIUS_3_OFFSETS
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.jump_engine import get_jump_movement_generator
@@ -14,39 +14,36 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
+# Unbuffed: All positions within radius 2 (excluding origin)
+_NEBULA_DIRECTIONS = np.array([
+    offset for offset in RADIUS_2_OFFSETS
+    if not (offset[0] == 0 and offset[1] == 0 and offset[2] == 0)
+], dtype=COORD_DTYPE)
+
+# Buffed: All positions within radius 3 (excluding origin)
+_BUFFED_NEBULA_DIRECTIONS = np.array([
+    offset for offset in RADIUS_3_OFFSETS
+    if not (offset[0] == 0 and offset[1] == 0 and offset[2] == 0)
+], dtype=COORD_DTYPE)
+
 def generate_nebula_moves(
     cache_manager: 'OptimizedCacheManager',
     color: COLOR_DTYPE,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate teleport moves within radius-3 sphere."""
+    """Generate teleport moves within radius-2 sphere (unbuffed) or radius-3 sphere (buffed)."""
 
     # Get jump movement generator from cache
     jump_engine = get_jump_movement_generator()
-
-    # All positions at Manhattan distance 3 (simplified from original)
-    directions = np.array([
-        # Axial movements
-        (-3, 0, 0), (3, 0, 0), (0, -3, 0), (0, 3, 0), (0, 0, -3), (0, 0, 3),
-        # L-shaped movements (Manhattan distance 3)
-        (-2, -1, 0), (-2, 0, -1), (-2, 0, 1), (-2, 1, 0),
-        (2, -1, 0), (2, 0, -1), (2, 0, 1), (2, 1, 0),
-        (-1, -2, 0), (-1, 0, -2), (-1, 0, 2), (-1, 2, 0),
-        (1, -2, 0), (1, 0, -2), (1, 0, 2), (1, 2, 0),
-        (0, -2, -1), (0, -2, 1), (0, -1, -2), (0, -1, 2),
-        (0, 1, -2), (0, 1, 2), (0, 2, -1), (0, 2, 1),
-        # 3D diagonal-ish movements
-        (-1, -1, -1), (-1, -1, 1), (-1, 1, -1), (-1, 1, 1),
-        (1, -1, -1), (1, -1, 1), (1, 1, -1), (1, 1, 1),
-    ], dtype=COORD_DTYPE)
 
     return jump_engine.generate_jump_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos.astype(COORD_DTYPE),
-        directions=directions,
+        directions=_NEBULA_DIRECTIONS,
         allow_capture=True,
-        piece_type=PieceType.NEBULA
+        piece_type=PieceType.NEBULA,
+        buffed_directions=_BUFFED_NEBULA_DIRECTIONS
     )
 
 @register(PieceType.NEBULA)

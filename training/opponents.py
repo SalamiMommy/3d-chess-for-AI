@@ -665,8 +665,8 @@ class OpponentBase:
     
     def _apply_capture_rewards(self, rewards: np.ndarray, to_coords: np.ndarray,
                                 captured_colors: np.ndarray, captured_types: np.ndarray,
-                                halfmove_clock: int, priest_bonus: float = 10.0, 
-                                freezer_bonus: float = 8.0) -> None:
+                                halfmove_clock: int, priest_bonus: float = 5.0, 
+                                freezer_bonus: float = 3.0) -> None:
         """Apply capture rewards with priest/freezer priority and halfmove clock scaling.
         
         Args:
@@ -997,7 +997,7 @@ class PriestHunterOpponent(OpponentBase):
         self._apply_capture_rewards(
             rewards, to_coords, captured_colors, captured_types, 
             halfmove_clock=0,  # Don't apply additional clock scaling (we handle it manually)
-            priest_bonus=10.0 * clock_multiplier,
+            priest_bonus=5.0 * clock_multiplier,
             freezer_bonus=0.1 * clock_multiplier
         )
 

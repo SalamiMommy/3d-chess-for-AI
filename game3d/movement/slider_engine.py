@@ -23,7 +23,7 @@ def _generate_all_slider_moves(
     pos: np.ndarray,
     directions: np.ndarray,
     max_distance: int,
-    flattened: np.ndarray,
+    occ: np.ndarray,
     ignore_occupancy: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba-compiled slider move generation for all directions."""
@@ -59,8 +59,7 @@ def _generate_all_slider_moves(
                 break
 
             # Check occupancy
-            idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
-            occupant = flattened[idx]
+            occupant = occ[current_x, current_y, current_z]
 
             if occupant == 0:
                 # Empty square - quiet move
@@ -108,7 +107,7 @@ def _generate_all_slider_moves_batch(
     positions: np.ndarray,
     directions: np.ndarray,
     max_distances: np.ndarray,
-    flattened: np.ndarray,
+    occ: np.ndarray,
     ignore_occupancy: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numba-compiled slider move generation for BATCH of positions."""
@@ -137,8 +136,7 @@ def _generate_all_slider_moves_batch(
                 if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
                     break
                 
-                idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
-                occupant = flattened[idx]
+                occupant = occ[current_x, current_y, current_z]
                 
                 if occupant == 0:
                     count += 1
@@ -190,8 +188,7 @@ def _generate_all_slider_moves_batch(
                 if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
                     break
                 
-                idx = current_x + SIZE * current_y + SIZE_SQUARED * current_z
-                occupant = flattened[idx]
+                occupant = occ[current_x, current_y, current_z]
                 
                 should_write = False
                 if occupant == 0:
@@ -224,6 +221,121 @@ def _generate_all_slider_moves_batch(
     return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
 
 
+@njit(cache=True, fastmath=True, parallel=False)
+def _generate_all_slider_moves_batch_serial(
+    color: int,
+    positions: np.ndarray,
+    directions: np.ndarray,
+    max_distances: np.ndarray,
+    occ: np.ndarray,
+    ignore_occupancy: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """Serial version of slider move generation for BATCH of positions."""
+    n_pos = positions.shape[0]
+    n_dirs = directions.shape[0]
+    
+    # Pass 1: Count moves per piece
+    counts = np.zeros(n_pos, dtype=np.int32)
+    
+    for i in range(n_pos):
+        px, py, pz = positions[i]
+        max_dist = max_distances[i]
+        count = 0
+        
+        for d in range(n_dirs):
+            dx, dy, dz = directions[d]
+            
+            if dx == 0 and dy == 0 and dz == 0:
+                continue
+                
+            current_x = px + dx
+            current_y = py + dy
+            current_z = pz + dz
+            
+            for _ in range(max_dist):
+                if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
+                    break
+                
+                occupant = occ[current_x, current_y, current_z]
+                
+                if occupant == 0:
+                    count += 1
+                else:
+                    if ignore_occupancy:
+                        count += 1
+                    else:
+                        if occupant != color:
+                            count += 1
+                        break
+                
+                current_x += dx
+                current_y += dy
+                current_z += dz
+        
+        counts[i] = count
+        
+    # Pass 2: Calculate offsets
+    total_moves = np.sum(counts)
+    offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
+    for i in range(n_pos):
+        offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill moves
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in range(n_pos):
+        write_idx = offsets[i]
+        px, py, pz = positions[i]
+        max_dist = max_distances[i]
+        
+        for d in range(n_dirs):
+            dx, dy, dz = directions[d]
+            
+            if dx == 0 and dy == 0 and dz == 0:
+                continue
+                
+            current_x = px + dx
+            current_y = py + dy
+            current_z = pz + dz
+            
+            for _ in range(max_dist):
+                if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
+                    break
+                
+                occupant = occ[current_x, current_y, current_z]
+                
+                should_write = False
+                if occupant == 0:
+                    should_write = True
+                else:
+                    if ignore_occupancy:
+                        should_write = True
+                    else:
+                        if occupant != color:
+                            should_write = True
+                        # Break comes after writing
+                
+                if should_write:
+                    moves[write_idx, 0] = px
+                    moves[write_idx, 1] = py
+                    moves[write_idx, 2] = pz
+                    moves[write_idx, 3] = current_x
+                    moves[write_idx, 4] = current_y
+                    moves[write_idx, 5] = current_z
+                    write_idx += 1
+                
+                if occupant != 0:
+                    if not ignore_occupancy:
+                        break
+                
+                current_x += dx
+                current_y += dy
+                current_z += dz
+                
+    return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
+
 
 class SliderMovementEngine:
     """
@@ -247,10 +359,10 @@ class SliderMovementEngine:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Generate slider moves using Numba-accelerated kernel."""
         pos_arr = np.asarray(pos, dtype=COORD_DTYPE).reshape(3)
-        flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
+        occ = cache_manager.occupancy_cache._occ
 
         return _generate_all_slider_moves(
-            color, pos_arr, directions, max_distance, flattened, ignore_occupancy
+            color, pos_arr, directions, max_distance, occ, ignore_occupancy
         )
 
     def generate_slider_moves(
@@ -282,17 +394,24 @@ class SliderMovementEngine:
         """Generate slider moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
         # Check for batch input
         if pos.ndim == 2:
-            flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
+            occ = cache_manager.occupancy_cache._occ
             
             # Ensure max_distances is an array
             if isinstance(max_distance, (int, np.integer)):
                 max_dists = np.full(pos.shape[0], max_distance, dtype=np.int32)
             else:
                 max_dists = max_distance.astype(np.int32)
-                
-            moves, _ = _generate_all_slider_moves_batch(
-                color, pos, directions, max_dists, flattened, ignore_occupancy
-            )
+            
+            # Threshold for parallel execution
+            # Based on benchmark, serial is faster for < 250 items
+            if pos.shape[0] < 250:
+                moves, _ = _generate_all_slider_moves_batch_serial(
+                    color, pos, directions, max_dists, occ, ignore_occupancy
+                )
+            else:
+                moves, _ = _generate_all_slider_moves_batch(
+                    color, pos, directions, max_dists, occ, ignore_occupancy
+                )
             return moves
 
         # Legacy single position path

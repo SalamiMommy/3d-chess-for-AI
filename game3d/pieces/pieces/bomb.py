@@ -17,14 +17,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Bomb-specific movement vectors - king-like movement (26 directions excluding center)
-# Converted to numpy-native using meshgrid for better performance
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
-origin_mask = np.any(all_coords != 0, axis=1)
-BOMB_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 @njit(cache=True)
 def _check_explosion_numba(
@@ -76,10 +69,10 @@ def generate_bomb_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
-        directions=BOMB_MOVEMENT_VECTORS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        allow_zero_direction=True,  # BOMB needs this for self-detonation
-        piece_type=PieceType.KING # Use King precomputed moves for movement
+        piece_type=PieceType.KING, # Use King precomputed moves for movement
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
 
     # 2. Self-detonation if it would affect enemy pieces
@@ -107,4 +100,4 @@ def bomb_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     """Generate all bomb moves for given position."""
     return generate_bomb_moves(state.cache_manager, state.color, pos)
 
-__all__ = ["generate_bomb_moves", "BOMB_MOVEMENT_VECTORS"]
+__all__ = ["generate_bomb_moves"]

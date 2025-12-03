@@ -13,34 +13,34 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Piece-specific movement vectors - teleport along same x/y/z plane + king moves
-# Converted to numpy-native using meshgrid and arange for better performance
+# Piece-specific movement vectors - 3x3 panels at distance 2 (unbuffed) and 3 (buffed)
 
-# X-axis lines (y,z constant) - teleport moves
-x_range = np.arange(-SIZE_MINUS_1, SIZE, dtype=COORD_DTYPE)
-x_range = x_range[x_range != 0]  # Remove 0
-x_moves = np.column_stack([x_range, np.zeros_like(x_range), np.zeros_like(x_range)])
+def _create_panel_vectors(distance):
+    vectors = []
+    r = [-1, 0, 1]
+    
+    # X faces
+    for x in [-distance, distance]:
+        for y in r:
+            for z in r:
+                vectors.append([x, y, z])
+                
+    # Y faces
+    for y in [-distance, distance]:
+        for x in r:
+            for z in r:
+                vectors.append([x, y, z])
+                
+    # Z faces
+    for z in [-distance, distance]:
+        for x in r:
+            for y in r:
+                vectors.append([x, y, z])
+                
+    return np.array(vectors, dtype=COORD_DTYPE)
 
-# Y-axis lines (x,z constant) - teleport moves
-y_range = np.arange(-SIZE_MINUS_1, SIZE, dtype=COORD_DTYPE)
-y_range = y_range[y_range != 0]  # Remove 0
-y_moves = np.column_stack([np.zeros_like(y_range), y_range, np.zeros_like(y_range)])
-
-# Z-axis lines (x,y constant) - teleport moves
-z_range = np.arange(-SIZE_MINUS_1, SIZE, dtype=COORD_DTYPE)
-z_range = z_range[z_range != 0]  # Remove 0
-z_moves = np.column_stack([np.zeros_like(z_range), np.zeros_like(z_range), z_range])
-
-# King moves (1-step) - converted to numpy-native using meshgrid
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
-origin_mask = np.any(all_coords != 0, axis=1)
-king_moves = all_coords[origin_mask].astype(COORD_DTYPE)
-
-# Combine all movement vectors
-PANEL_MOVEMENT_VECTORS = np.vstack([x_moves, y_moves, z_moves, king_moves])
+PANEL_MOVEMENT_VECTORS = _create_panel_vectors(2)
+BUFFED_PANEL_MOVEMENT_VECTORS = _create_panel_vectors(3)
 
 def generate_panel_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -62,7 +62,8 @@ def generate_panel_moves(
         pos=pos_arr,
         directions=PANEL_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.PANEL
+        piece_type=None,
+        buffed_directions=BUFFED_PANEL_MOVEMENT_VECTORS
     )
 
 @register(PieceType.PANEL)

@@ -3,18 +3,20 @@ import numpy as np
 import sys
 import os
 import unittest
+from unittest.mock import MagicMock
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from game3d.common.shared_types import COORD_DTYPE, SIZE, SIZE_SQUARED, Color
-from game3d.movement.slider_engine import _generate_all_slider_moves_batch
-from game3d.movement.jump_engine import _generate_and_filter_jump_moves_batch
+from game3d.movement.slider_engine import SliderMovementEngine
+from game3d.movement.jump_engine import JumpMovementEngine
 
 class TestParallelMoveGeneration(unittest.TestCase):
     def setUp(self):
         self.flattened = np.zeros(SIZE**3, dtype=np.int8)
         self.occ = np.zeros((SIZE, SIZE, SIZE), dtype=np.int8)
+        self.buffed = np.zeros((SIZE, SIZE, SIZE), dtype=np.bool_)
         
         # Add some obstacles
         self.obstacles = [
@@ -25,15 +27,23 @@ class TestParallelMoveGeneration(unittest.TestCase):
             self.flattened[idx] = Color.BLACK
             self.occ[x, y, z] = Color.BLACK
 
-    def test_slider_parallel_vs_serial_logic(self):
+        # Mock Cache Manager
+        self.cache_manager = MagicMock()
+        self.cache_manager.occupancy_cache.get_flattened_occupancy.return_value = self.flattened
+        self.cache_manager.occupancy_cache._occ = self.occ
+        self.cache_manager.consolidated_aura_cache._buffed_squares = self.buffed
+
+    def test_slider_adaptive_logic(self):
         # Setup
         positions = np.array([[1, 1, 1], [5, 5, 5]], dtype=COORD_DTYPE)
         directions = np.array([[1, 1, 1], [-1, -1, -1]], dtype=COORD_DTYPE)
         max_dists = np.array([7, 7], dtype=np.int32)
         
-        # Run parallel kernel
-        moves, _ = _generate_all_slider_moves_batch(
-            Color.WHITE, positions, directions, max_dists, self.flattened, False
+        engine = SliderMovementEngine()
+        
+        # Run adaptive engine (should use serial for N=2)
+        moves = engine.generate_slider_moves_array(
+            self.cache_manager, Color.WHITE, positions, directions, max_dists, False
         )
         
         # Verify manually
@@ -70,14 +80,16 @@ class TestParallelMoveGeneration(unittest.TestCase):
             
         np.testing.assert_array_equal(moves, expected_arr)
 
-    def test_jump_parallel_vs_serial_logic(self):
+    def test_jump_adaptive_logic(self):
         # Setup
         positions = np.array([[1, 1, 1], [3, 3, 3]], dtype=COORD_DTYPE)
         directions = np.array([[1, 2, 0], [2, 1, 0]], dtype=COORD_DTYPE)
         
-        # Run parallel kernel
-        moves = _generate_and_filter_jump_moves_batch(
-            positions, directions, self.occ, True, Color.WHITE
+        engine = JumpMovementEngine()
+        
+        # Run adaptive engine (should use serial for N=2)
+        moves = engine.generate_jump_moves(
+            self.cache_manager, Color.WHITE, positions, directions
         )
         
         # Verify manually

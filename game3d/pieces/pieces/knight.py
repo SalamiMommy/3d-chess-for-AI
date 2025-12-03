@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Piece-specific movement vectors - 24 knight movement patterns
+# Piece-specific movement vectors - 24 knight movement patterns (2,1,0)
 KNIGHT_MOVEMENT_VECTORS = np.array([
     [1, 2, 0], [2, 1, 0], [-1, 2, 0], [-2, 1, 0],
     [1, -2, 0], [2, -1, 0], [-1, -2, 0], [-2, -1, 0],
@@ -20,6 +20,16 @@ KNIGHT_MOVEMENT_VECTORS = np.array([
     [0, 1, -2], [0, 2, -1], [0, -1, -2], [0, -2, -1],
     [1, 0, 2], [2, 0, 1], [-1, 0, 2], [-2, 0, 1],
     [1, 0, -2], [2, 0, -1], [-1, 0, -2], [-2, 0, -1]
+], dtype=COORD_DTYPE)
+
+# Buffed knight movement vectors (2,1,1) - 48 directions
+BUFFED_KNIGHT_MOVEMENT_VECTORS = np.array([
+    [2, 1, 1], [2, 1, -1], [2, -1, 1], [2, -1, -1],
+    [-2, 1, 1], [-2, 1, -1], [-2, -1, 1], [-2, -1, -1],
+    [1, 2, 1], [1, 2, -1], [1, -2, 1], [1, -2, -1],
+    [-1, 2, 1], [-1, 2, -1], [-1, -2, 1], [-1, -2, -1],
+    [1, 1, 2], [1, 1, -2], [1, -1, 2], [1, -1, -2],
+    [-1, 1, 2], [-1, 1, -2], [-1, -1, 2], [-1, -1, -2],
 ], dtype=COORD_DTYPE)
 
 def generate_knight_moves(
@@ -42,11 +52,12 @@ def generate_knight_moves(
         pos=pos_arr,
         directions=KNIGHT_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.KNIGHT
+        piece_type=PieceType.KNIGHT,
+        buffed_directions=BUFFED_KNIGHT_MOVEMENT_VECTORS
     )
 
 @register(PieceType.KNIGHT)
 def knight_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_knight_moves(state.cache_manager, state.color, pos)
 
-__all__ = ['KNIGHT_MOVEMENT_VECTORS', 'generate_knight_moves']
+__all__ = ['KNIGHT_MOVEMENT_VECTORS', 'BUFFED_KNIGHT_MOVEMENT_VECTORS', 'generate_knight_moves']

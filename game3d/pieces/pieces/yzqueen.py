@@ -84,14 +84,6 @@ def generate_yz_queen_moves(
 @register(PieceType.YZQUEEN)
 def yz_queen_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for YZ-Queen moves."""
-    from game3d.movement.movementmodifiers import get_range_modifier
-    modifier = get_range_modifier(state, pos)
-    
-    if isinstance(modifier, np.ndarray):
-        max_steps = np.maximum(1, 8 + modifier)
-    else:
-        max_steps = max(1, 8 + modifier)
-        
-    return generate_yz_queen_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
+    return generate_yz_queen_moves(state.cache_manager, state.color, pos, 8, ignore_occupancy)
 
 __all__ = ['_YZ_SLIDER_DIRS', '_KING_3D_DIRS', 'generate_yz_queen_moves']

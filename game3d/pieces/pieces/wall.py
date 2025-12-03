@@ -12,17 +12,15 @@ from game3d.common.shared_types import Color, PieceType, Result, WALL, COORD_DTY
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds_vectorized
+import logging
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# Wall-specific movement vectors - orthogonal movement (6 directions)
-WALL_MOVEMENT_VECTORS = np.array([
-    [1, 0, 0], [-1, 0, 0],
-    [0, 1, 0], [0, -1, 0],
-    [0, 0, 1], [0, 0, -1]
-], dtype=COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 # Wall block offsets (constant)
 WALL_BLOCK_OFFSETS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=COORD_DTYPE)
@@ -64,7 +62,7 @@ def _build_behind_mask_numba(anchor: np.ndarray) -> np.ndarray:
     count = 0
     
     for d in range(6):
-        dx, dy, dz = WALL_MOVEMENT_VECTORS[d]
+        dx, dy, dz = KING_MOVEMENT_VECTORS[d]
         
         # Start from 1 step away
         curr_x = anchor[0] + dx
@@ -173,7 +171,9 @@ def is_wall_anchor(pos: np.ndarray, cache_manager: 'OptimizedCacheManager') -> b
 def _generate_wall_moves_batch_kernel(
     anchors: np.ndarray, 
     occ: np.ndarray,
-    my_color: int
+    my_color: int,
+    board_size: int,
+    directions: np.ndarray
 ) -> np.ndarray:
     """
     Fused kernel for wall move generation for a batch of walls.
@@ -181,11 +181,14 @@ def _generate_wall_moves_batch_kernel(
         anchors: (N, 3)
         occ: (SIZE, SIZE, SIZE) - occupancy grid
         my_color: int
+        board_size: int - board dimension (usually 9)
+        directions: (D, 3) - movement vectors
     Returns:
         (M, 6) moves
     """
     n_walls = anchors.shape[0]
-    max_moves = n_walls * 6
+    n_dirs = directions.shape[0]
+    max_moves = n_walls * n_dirs
     moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
     count = 0
     
@@ -196,9 +199,9 @@ def _generate_wall_moves_batch_kernel(
         anchor = anchors[w]
         
         # Bounds check for anchor itself (must be valid anchor)
-        if not (0 <= anchor[0] < SIZE - 1 and 
-                0 <= anchor[1] < SIZE - 1 and 
-                0 <= anchor[2] < SIZE):
+        if not (0 <= anchor[0] < board_size - 1 and 
+                0 <= anchor[1] < board_size - 1 and 
+                0 <= anchor[2] < board_size):
             continue
             
         # Compute current squares for this wall
@@ -207,14 +210,14 @@ def _generate_wall_moves_batch_kernel(
             current_squares[k, 1] = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
             current_squares[k, 2] = anchor[2] + WALL_BLOCK_OFFSETS[k, 2]
         
-        for i in range(6):
+        for i in range(n_dirs):
             # Target anchor for this direction
-            tax = anchor[0] + WALL_MOVEMENT_VECTORS[i, 0]
-            tay = anchor[1] + WALL_MOVEMENT_VECTORS[i, 1]
-            taz = anchor[2] + WALL_MOVEMENT_VECTORS[i, 2]
+            tax = anchor[0] + directions[i, 0]
+            tay = anchor[1] + directions[i, 1]
+            taz = anchor[2] + directions[i, 2]
             
             # Bounds check for target anchor
-            if not (0 <= tax < SIZE - 1 and 0 <= tay < SIZE - 1 and 0 <= taz < SIZE):
+            if not (0 <= tax < board_size - 1 and 0 <= tay < board_size - 1 and 0 <= taz < board_size):
                 continue
                 
             # Check the 4 squares of the target wall
@@ -227,7 +230,7 @@ def _generate_wall_moves_batch_kernel(
                 tz = taz + WALL_BLOCK_OFFSETS[j, 2]
                 
                 # Bounds check before array access
-                if not (0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE):
+                if not (0 <= tx < board_size and 0 <= ty < board_size and 0 <= tz < board_size):
                     is_blocked = True
                     break
                 
@@ -306,16 +309,99 @@ def generate_wall_moves(
     if valid_anchors.shape[0] == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
     
-    # Run kernel with direct occupancy access
-    # We pass the raw 3D occupancy array
-    return _generate_wall_moves_batch_kernel(
-        valid_anchors, 
-        cache_manager.occupancy_cache._occ, 
-        color
-    )
+    # Split into buffed and unbuffed
+    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
+    
+    buffed_indices = []
+    unbuffed_indices = []
+    
+    for i in range(valid_anchors.shape[0]):
+        x, y, z = valid_anchors[i]
+        if buffed_squares[x, y, z]:
+            buffed_indices.append(i)
+        else:
+            unbuffed_indices.append(i)
+            
+    moves_list = []
+    
+    # Process unbuffed
+    if unbuffed_indices:
+        unbuffed_anchors = valid_anchors[unbuffed_indices]
+        moves = _generate_wall_moves_batch_kernel(
+            unbuffed_anchors, 
+            cache_manager.occupancy_cache._occ, 
+            color,
+            SIZE,
+            KING_MOVEMENT_VECTORS
+        )
+        if moves.size > 0:
+            moves_list.append(moves)
+            
+    # Process buffed
+    if buffed_indices:
+        buffed_anchors = valid_anchors[buffed_indices]
+        moves = _generate_wall_moves_batch_kernel(
+            buffed_anchors, 
+            cache_manager.occupancy_cache._occ, 
+            color,
+            SIZE,
+            BUFFED_KING_MOVEMENT_VECTORS
+        )
+        if moves.size > 0:
+            moves_list.append(moves)
+            
+    if not moves_list:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+        
+    moves = np.concatenate(moves_list)
+    
+    # ✅ CRITICAL: Multi-layer defensive bounds validation for Wall moves
+    # Wall is 2x2, so anchor at (x,y,z) occupies (x,y), (x+1,y), (x,y+1), (x+1,y+1)
+    # Therefore: BOTH x and y must be < SIZE-1 (so x+1 and y+1 are in bounds)
+    if moves.size > 0:
+        # Validate BOTH source and destination anchors
+        # This catches any edge cases that slipped through kernel checks
+        source_valid = (
+            (moves[:, 0] >= 0) & (moves[:, 0] < SIZE - 1) &
+            (moves[:, 1] >= 0) & (moves[:, 1] < SIZE - 1) &
+            (moves[:, 2] >= 0) & (moves[:, 2] < SIZE)
+        )
+        
+        dest_valid = (
+            (moves[:, 3] >= 0) & (moves[:, 3] < SIZE - 1) &
+            (moves[:, 4] >= 0) & (moves[:, 4] < SIZE - 1) &
+            (moves[:, 5] >= 0) & (moves[:, 5] < SIZE)
+        )
+        
+        all_valid = source_valid & dest_valid
+        
+        if not np.all(all_valid):
+            n_invalid = np.sum(~all_valid)
+            invalid_moves = moves[~all_valid]
+            
+            # Enhanced logging for OOB detection
+            if n_invalid > 0:
+                first_invalid = invalid_moves[0]
+                logger.error(
+                    f"CRITICAL: Wall move generator produced {n_invalid} OOB moves! "
+                    f"SIZE={SIZE}. First invalid move: {first_invalid}. "
+                    f"Source: {first_invalid[:3]}, Dest: {first_invalid[3:]}. "
+                    f"Valid Range: [0, {SIZE-2}] for x,y."
+                )
+            
+            import warnings
+            warnings.warn(
+                f"Wall move generator filtered {n_invalid} out-of-bounds moves. "\
+                f"First invalid: {invalid_moves[0] if len(invalid_moves) > 0 else 'none'}. "\
+                f"Source anchors must be in [0, {SIZE-2}] for x,y to allow 2x2 block.",
+                RuntimeWarning
+            )
+            moves = moves[all_valid]
+            
+    return moves
 
 @register(PieceType.WALL)
 def wall_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_wall_moves(state.cache_manager, state.color, pos)
 
-__all__ = ["WALL_MOVEMENT_VECTORS", "generate_wall_moves", "can_capture_wall_vectorized"]
+__all__ = ["generate_wall_moves", "can_capture_wall_vectorized"]

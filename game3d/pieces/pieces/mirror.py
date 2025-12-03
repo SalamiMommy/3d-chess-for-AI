@@ -21,10 +21,17 @@ if TYPE_CHECKING:
 def _generate_mirror_moves_kernel(
     positions: np.ndarray,
     flattened_occ: np.ndarray,
-    color: int
+    color: int,
+    mirror_all_axes: bool
 ) -> np.ndarray:
     """
     Generate mirror moves for a batch of positions.
+    
+    Args:
+        positions: Starting positions
+        flattened_occ: Flattened occupancy array
+        color: Piece color
+        mirror_all_axes: If True, mirror x,y,z. If False, only mirror z.
     """
     n = positions.shape[0]
     moves = np.empty((n, 6), dtype=COORD_DTYPE)
@@ -33,12 +40,19 @@ def _generate_mirror_moves_kernel(
     for i in range(n):
         sx, sy, sz = positions[i]
         
-        # Calculate mirrored target
-        tx = SIZE_MINUS_1 - sx
-        ty = SIZE_MINUS_1 - sy
-        tz = SIZE_MINUS_1 - sz
+        # Calculate mirrored target based on buff status
+        if mirror_all_axes:
+            # Buffed: mirror all three axes
+            tx = SIZE_MINUS_1 - sx
+            ty = SIZE_MINUS_1 - sy
+            tz = SIZE_MINUS_1 - sz
+        else:
+            # Unbuffed: only mirror z axis
+            tx = sx
+            ty = sy
+            tz = SIZE_MINUS_1 - sz
         
-        # Skip if target is same as start (center of board)
+        # Skip if target is same as start
         if sx == tx and sy == ty and sz == tz:
             continue
             
@@ -59,23 +73,45 @@ def _generate_mirror_moves_kernel(
                 
     return moves[:count]
 
+from game3d.pieces.pieces.kinglike import generate_king_moves
+
 def generate_mirror_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate mirror teleport moves to mirrored position."""
+    """Generate mirror moves: King-like moves + Teleport (z-mirror unbuffed, xyz-mirror buffed)."""
     pos_arr = pos.astype(COORD_DTYPE)
     
     # Handle single input
     if pos_arr.ndim == 1:
         pos_arr = pos_arr.reshape(1, 3)
         
+    moves_list = []
+
+    # 1. King-like movement (handles buffs)
+    king_moves = generate_king_moves(cache_manager, color, pos_arr, piece_type=PieceType.MIRROR)
+    if king_moves.size > 0:
+        moves_list.append(king_moves)
+
+    # 2. Mirror Teleport
+    # Check if buffed
+    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
+    x, y, z = pos_arr[0]
+    is_buffed = buffed_squares[x, y, z]
+    
     # Get flattened occupancy
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
     
-    # Generate moves using kernel
-    return _generate_mirror_moves_kernel(pos_arr, flattened_occ, color)
+    # Generate moves using kernel (mirror all axes if buffed, only z if not)
+    teleport_moves = _generate_mirror_moves_kernel(pos_arr, flattened_occ, color, is_buffed)
+    if teleport_moves.size > 0:
+        moves_list.append(teleport_moves)
+
+    if not moves_list:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+
+    return np.concatenate(moves_list, axis=0)
 
 @register(PieceType.MIRROR)
 def mirror_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

@@ -50,13 +50,7 @@ def generate_rook_moves(
 @register(PieceType.ROOK)
 def rook_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
     """Registered dispatcher for Rook moves."""
-    modifier = get_range_modifier(state, pos)
-    
-    if isinstance(modifier, np.ndarray):
-        max_steps = np.maximum(1, 8 + modifier)
-    else:
-        max_steps = max(1, 8 + modifier)
-        
-    return generate_rook_moves(state.cache_manager, state.color, pos, max_steps, ignore_occupancy)
+    """Registered dispatcher for Rook moves."""
+    return generate_rook_moves(state.cache_manager, state.color, pos, 8, ignore_occupancy)
 
 __all__ = ['ROOK_MOVEMENT_VECTORS', 'generate_rook_moves', 'rook_move_dispatcher']

@@ -190,7 +190,7 @@ def generate_edgerook_moves(cache_manager, color: int, pos: np.ndarray) -> np.nd
     # so BFS will just terminate immediately. No need for explicit filter.
 
     # Get cached flattened occupancy (O(1) access)
-    flattened = cache_manager.occupancy_cache.get_cached_flattened()
+    flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
 
     # Run Numba BFS
     return _edgerook_bfs_batch_numba(pos_arr, _EDGE_NEIGHBORS, flattened, color)

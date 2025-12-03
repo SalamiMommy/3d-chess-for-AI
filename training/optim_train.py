@@ -288,6 +288,11 @@ class ChessTrainer:
             # Lazy dataset path (ReplayBuffer)
             total_len = len(examples)
             train_len = int(total_len * self.config.train_split)
+            
+            # Ensure at least one training example if we have data
+            if train_len == 0 and total_len > 0:
+                train_len = 1
+                
             val_len = total_len - train_len
             # Use random_split for datasets
             return torch.utils.data.random_split(examples, [train_len, val_len])

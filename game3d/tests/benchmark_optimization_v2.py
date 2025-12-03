@@ -18,6 +18,16 @@ from game3d.cache.manager import OptimizedCacheManager
 class MockAuraCache:
     def __init__(self):
         self._buffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=bool)
+        self._debuffed_squares = np.zeros((SIZE, SIZE, SIZE), dtype=bool)
+
+    def batch_is_buffed(self, positions, color):
+        # Return False for all
+        return np.zeros(len(positions), dtype=bool)
+
+    def batch_is_debuffed(self, positions, color):
+        # Return False for all
+        return np.zeros(len(positions), dtype=bool)
+
 
 class MockCacheManager:
     def __init__(self):

@@ -23,6 +23,17 @@ all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=
 origin_mask = np.any(all_coords != 0, axis=1)
 KING_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
 
+# Buffed King: 5x5x5 cube (Chebyshev distance 2)
+dx_vals_b, dy_vals_b, dz_vals_b = np.meshgrid(
+    [-2, -1, 0, 1, 2], 
+    [-2, -1, 0, 1, 2], 
+    [-2, -1, 0, 1, 2], 
+    indexing='ij'
+)
+all_coords_b = np.stack([dx_vals_b.ravel(), dy_vals_b.ravel(), dz_vals_b.ravel()], axis=1)
+origin_mask_b = np.any(all_coords_b != 0, axis=1)
+BUFFED_KING_MOVEMENT_VECTORS = all_coords_b[origin_mask_b].astype(COORD_DTYPE)
+
 def generate_king_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
@@ -45,7 +56,8 @@ def generate_king_moves(
         pos=pos_arr,
         directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=piece_type
+        piece_type=piece_type,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
 
 # Dispatchers for king and priest (same movement pattern)

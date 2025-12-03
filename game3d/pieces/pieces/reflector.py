@@ -13,11 +13,10 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# 8 pure-diagonal directions using consistent coordinate dtype
-_REFLECTOR_DIRS = np.array(
-    [[dx, dy, dz] for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)],
-    dtype=COORD_DTYPE,
-)
+from game3d.pieces.pieces.bishop import BISHOP_MOVEMENT_VECTORS
+
+# 12 diagonal directions (same as Bishop)
+_REFLECTOR_DIRS = BISHOP_MOVEMENT_VECTORS
 
 @njit(cache=True, fastmath=True, boundscheck=False)
 def _trace_reflector_rays_batch(
@@ -121,7 +120,7 @@ def generate_reflecting_bishop_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray,
-    max_bounces: int = 3,
+    max_bounces: int = 2,
     ignore_occupancy: bool = False
 ) -> np.ndarray:
     """
@@ -164,7 +163,7 @@ def reflector_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupa
         cache_manager=state.cache_manager,
         color=state.color,
         pos=pos,
-        max_bounces=3,
+        max_bounces=2,
         ignore_occupancy=ignore_occupancy
     )
 

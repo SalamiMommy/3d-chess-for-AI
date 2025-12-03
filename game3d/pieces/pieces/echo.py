@@ -21,18 +21,28 @@ if TYPE_CHECKING:
     from game3d.movement.movepiece import Move
 
 # Echo piece-specific movement vectors (numpy arrays)
-# 6 cardinal anchors at offset 2
+# 6 cardinal anchors at offset 2 (unbuffed)
 _ANCHORS = np.array([
     [-2, 0, 0], [2, 0, 0],
     [0, -2, 0], [0, 2, 0],
     [0, 0, -2], [0, 0, 2]
 ], dtype=COORD_DTYPE)
 
+# 6 cardinal anchors at offset 3 (buffed - 1 space further)
+_BUFFED_ANCHORS = np.array([
+    [-3, 0, 0], [3, 0, 0],
+    [0, -3, 0], [0, 3, 0],
+    [0, 0, -3], [0, 0, 3]
+], dtype=COORD_DTYPE)
+
 # 26 radius-1 bubble offsets
 _BUBBLE = RADIUS_1_OFFSETS.copy()
 
-# 156 raw jump vectors (anchors + bubbles)
+# 156 raw jump vectors (anchors + bubbles) - unbuffed
 _ECHO_DIRECTIONS = (_ANCHORS[:, None, :] + _BUBBLE[None, :, :]).reshape(-1, 3)
+
+# 156 raw jump vectors (buffed anchors + bubbles) - buffed
+_BUFFED_ECHO_DIRECTIONS = (_BUFFED_ANCHORS[:, None, :] + _BUBBLE[None, :, :]).reshape(-1, 3)
 
 def generate_echo_moves(
     cache_manager: 'OptimizedCacheManager',
@@ -42,7 +52,7 @@ def generate_echo_moves(
     """Generate echo piece movement vectors using vectorized operations.
 
     The Echo moves along a 1-sphere surface by projecting from 6 cardinal anchor points
-    (offset by 2) and adding radius-1 bubble offsets for complex movement patterns.
+    (offset by 2 unbuffed, 3 when buffed) and adding radius-1 bubble offsets for complex movement patterns.
 
     Args:
         cache_manager: Cache manager for board state access
@@ -66,7 +76,8 @@ def generate_echo_moves(
         pos=start,
         directions=_ECHO_DIRECTIONS,
         allow_capture=True,
-        piece_type=PieceType.ECHO
+        piece_type=PieceType.ECHO,
+        buffed_directions=_BUFFED_ECHO_DIRECTIONS
     )
 
 @register(PieceType.ECHO)

@@ -20,12 +20,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# King directions (1-step moves) - converted to numpy-native using meshgrid
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-origin_mask = np.any(all_coords != 0, axis=1)
-_KING_DIRECTIONS = all_coords[origin_mask].astype(COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 @njit(cache=True)
 def _generate_infiltrator_teleport_moves(
@@ -68,7 +63,7 @@ def generate_infiltrator_moves(
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate infiltrator moves: king walks + pawn-front teleports."""
+    """Generate infiltrator moves: king walks + pawn teleports (front unbuffed, behind buffed)."""
     start = pos.astype(COORD_DTYPE)
     
     # Handle single input
@@ -83,19 +78,25 @@ def generate_infiltrator_moves(
         cache_manager=cache_manager,
         color=color,
         pos=start,
-        directions=_KING_DIRECTIONS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.INFILTRATOR
+        piece_type=PieceType.INFILTRATOR,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)
         
-    # 2. Pawn-front teleports
-    # Get all valid pawn front squares
-    pawn_fronts = _get_valid_pawn_fronts(cache_manager, color)
+    # 2. Pawn teleports
+    # Check if buffed to determine if we teleport behind or in front
+    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
+    x, y, z = start[0]
+    is_buffed = buffed_squares[x, y, z]
     
-    if pawn_fronts.shape[0] > 0:
-        teleport_moves = _generate_infiltrator_teleport_moves(start, pawn_fronts)
+    # Get valid pawn squares (front if unbuffed, behind if buffed)
+    pawn_targets = _get_valid_pawn_targets(cache_manager, color, teleport_behind=is_buffed)
+    
+    if pawn_targets.shape[0] > 0:
+        teleport_moves = _generate_infiltrator_teleport_moves(start, pawn_targets)
         if teleport_moves.size > 0:
             moves_list.append(teleport_moves)
             
@@ -104,11 +105,18 @@ def generate_infiltrator_moves(
         
     return np.concatenate(moves_list, axis=0)
 
-def _get_valid_pawn_fronts(
+def _get_valid_pawn_targets(
     cache_manager: 'OptimizedCacheManager',
-    color: int
+    color: int,
+    teleport_behind: bool = False
 ) -> np.ndarray:
-    """Get all empty squares in front of enemy pawns."""
+    """Get empty squares in front of (or behind) enemy pawns.
+    
+    Args:
+        cache_manager: Cache manager
+        color: Infiltrator's color
+        teleport_behind: If True, get squares behind pawns. If False, get squares in front.
+    """
     enemy_color = Color(color).opposite()
 
     # Get all enemy piece positions
@@ -127,24 +135,32 @@ def _get_valid_pawn_fronts(
     if pawn_coords.shape[0] == 0:
         return get_empty_coord_batch()
 
-    # Front direction depends on enemy color
-    dz = 1 if enemy_color == Color.BLACK else -1
+    # Direction depends on enemy color and whether we want front or behind
+    # If enemy is Black, they move -Z, so front is -1, behind is +1
+    # If enemy is White, they move +Z, so front is +1, behind is -1
+    if teleport_behind:
+        # Behind is opposite of pawn's forward direction
+        dz = 1 if enemy_color == Color.BLACK else -1
+    else:
+        # Front is same as pawn's forward direction
+        dz = -1 if enemy_color == Color.BLACK else 1
+        
     # Vectorized addition
-    front_squares = pawn_coords.copy()
-    front_squares[:, 2] += dz
+    target_squares = pawn_coords.copy()
+    target_squares[:, 2] += dz
 
     # Check bounds
-    valid_mask = in_bounds_vectorized(front_squares)
-    valid_front_squares = front_squares[valid_mask]
+    valid_mask = in_bounds_vectorized(target_squares)
+    valid_target_squares = target_squares[valid_mask]
 
-    if valid_front_squares.shape[0] == 0:
+    if valid_target_squares.shape[0] == 0:
         return get_empty_coord_batch()
 
     # Filter to empty squares
-    empty_mask = ~cache_manager.occupancy_cache.batch_is_occupied_unsafe(valid_front_squares)
-    empty_front_squares = valid_front_squares[empty_mask]
+    empty_mask = ~cache_manager.occupancy_cache.batch_is_occupied_unsafe(valid_target_squares)
+    empty_target_squares = valid_target_squares[empty_mask]
 
-    return empty_front_squares
+    return empty_target_squares
 
 @register(PieceType.INFILTRATOR)
 def infiltrator_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

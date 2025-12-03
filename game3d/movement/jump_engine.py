@@ -18,12 +18,17 @@ from game3d.movement.movepiece import Move
 if TYPE_CHECKING:
     from game3d.cache.manager import UnifiedCacheManager
 
-# Module-level cache for precomputed moves
-_PRECOMPUTED_MOVES: Dict[int, np.ndarray] = {}
+# Module-level cache for precomputed moves (piece_type -> variant -> data)
+# Variants are 'unbuffed' and 'buffed'
+_PRECOMPUTED_MOVES: Dict[int, Dict[str, np.ndarray]] = {}
+# Flattened arrays for Numba (piece_type -> variant -> flat_moves_array)
+_PRECOMPUTED_MOVES_FLAT: Dict[int, Dict[str, np.ndarray]] = {}
+# Offsets for Numba (piece_type -> variant -> offsets_array of size SIZE^3 + 1)
+_PRECOMPUTED_OFFSETS: Dict[int, Dict[str, np.ndarray]] = {}
 _PRECOMPUTED_LOADED = False
 
 def _load_precomputed_moves():
-    """Load precomputed move tables from disk."""
+    """Load precomputed move tables from disk for both buffed and unbuffed variants."""
     global _PRECOMPUTED_LOADED
     if _PRECOMPUTED_LOADED:
         return
@@ -38,20 +43,40 @@ def _load_precomputed_moves():
         _PRECOMPUTED_LOADED = True
         return
 
-    # Map PieceType name to file suffix
-    # We iterate through PieceType members
+    # Iterate through PieceType members and load both buffed and unbuffed variants
     for piece_type in PieceType:
         name = piece_type.name
-        filename = f"moves_{name}.npy"
-        path = os.path.join(precomputed_dir, filename)
+        pt_val = piece_type.value
         
-        if os.path.exists(path):
-            try:
-                # Load the object array (jagged array of moves)
-                moves_array = np.load(path, allow_pickle=True)
-                _PRECOMPUTED_MOVES[piece_type.value] = moves_array
-            except Exception as e:
-                print(f"Failed to load precomputed moves for {name}: {e}")
+        # Initialize nested dictionaries for this piece type
+        _PRECOMPUTED_MOVES[pt_val] = {}
+        _PRECOMPUTED_MOVES_FLAT[pt_val] = {}
+        _PRECOMPUTED_OFFSETS[pt_val] = {}
+        
+        # Load both variants: 'unbuffed' and 'buffed'
+        for variant in ['unbuffed', 'buffed']:
+            # Try loading flat arrays first (preferred for Numba)
+            flat_filename = f"moves_{name}_{variant}_flat.npy"
+            offsets_filename = f"moves_{name}_{variant}_offsets.npy"
+            flat_path = os.path.join(precomputed_dir, flat_filename)
+            offsets_path = os.path.join(precomputed_dir, offsets_filename)
+            
+            if os.path.exists(flat_path) and os.path.exists(offsets_path):
+                try:
+                    flat_moves = np.load(flat_path)
+                    offsets = np.load(offsets_path)
+                    
+                    _PRECOMPUTED_MOVES_FLAT[pt_val][variant] = flat_moves
+                    _PRECOMPUTED_OFFSETS[pt_val][variant] = offsets
+                    
+                    # Also load the object array for single-piece path compatibility
+                    legacy_filename = f"moves_{name}_{variant}.npy"
+                    legacy_path = os.path.join(precomputed_dir, legacy_filename)
+                    if os.path.exists(legacy_path):
+                        _PRECOMPUTED_MOVES[pt_val][variant] = np.load(legacy_path, allow_pickle=True)
+                    
+                except Exception as e:
+                    print(f"Failed to load {variant} precomputed moves for {name}: {e}")
     
     _PRECOMPUTED_LOADED = True
 
@@ -233,27 +258,20 @@ def _generate_and_filter_jump_moves_batch(
 
 
 @njit(cache=True, fastmath=True, parallel=True)
-def _generate_jump_moves_batch_unified(
+def _generate_jump_moves_batch_precomputed(
     positions: np.ndarray,
-    directions: np.ndarray,
-    buffed_squares: np.ndarray,
+    flat_moves: np.ndarray,
+    offsets: np.ndarray,
     occ: np.ndarray,
     allow_capture: bool,
     player_color: int
 ) -> np.ndarray:
-    """Generate moves for a batch with integrated buff handling.
-    
-    Fuses:
-    1. Buff check per piece
-    2. Direction calculation (normal vs buffed)
-    3. Target calculation
-    4. Bounds checking
-    5. Occupancy/Capture filtering
+    """Generate jump moves using precomputed tables.
     
     Args:
         positions: (N, 3) array of piece positions
-        directions: (M, 3) array of base jump offsets
-        buffed_squares: (SIZE, SIZE, SIZE) boolean array of buffed status
+        flat_moves: (TotalMoves, 3) array of all precomputed targets
+        offsets: (SIZE^3 + 1,) array of offsets into flat_moves
         occ: (SIZE, SIZE, SIZE) occupancy array
         allow_capture: Whether capturing is allowed
         player_color: Color of the moving player
@@ -262,31 +280,102 @@ def _generate_jump_moves_batch_unified(
         (K, 6) array of moves [fx, fy, fz, tx, ty, tz]
     """
     n_pos = positions.shape[0]
+    
+    # Pass 1: Count valid moves
+    counts = np.zeros(n_pos, dtype=np.int32)
+    
+    for i in prange(n_pos):
+        px, py, pz = positions[i]
+        
+        # Calculate flat index for precomputed lookup
+        # Note: This assumes standard packing: x + y*SIZE + z*SIZE^2
+        flat_idx = px + SIZE * py + SIZE_SQUARED * pz
+        
+        start = offsets[flat_idx]
+        end = offsets[flat_idx + 1]
+        
+        count = 0
+        for k in range(start, end):
+            tx, ty, tz = flat_moves[k, 0], flat_moves[k, 1], flat_moves[k, 2]
+            
+            # Bounds are guaranteed by precomputed table
+            occ_val = occ[tx, ty, tz]
+            
+            is_valid = False
+            if occ_val == 0:
+                is_valid = True
+            elif allow_capture:
+                if occ_val != player_color:
+                    is_valid = True
+            
+            if is_valid:
+                count += 1
+        counts[i] = count
+        
+    # Pass 2: Offsets
+    total_moves = np.sum(counts)
+    write_offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
+    for i in range(n_pos):
+        write_offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in prange(n_pos):
+        write_idx = write_offsets[i]
+        px, py, pz = positions[i]
+        flat_idx = px + SIZE * py + SIZE_SQUARED * pz
+        
+        start = offsets[flat_idx]
+        end = offsets[flat_idx + 1]
+        
+        for k in range(start, end):
+            tx, ty, tz = flat_moves[k, 0], flat_moves[k, 1], flat_moves[k, 2]
+            
+            occ_val = occ[tx, ty, tz]
+            
+            is_valid = False
+            if occ_val == 0:
+                is_valid = True
+            elif allow_capture:
+                if occ_val != player_color:
+                    is_valid = True
+            
+            if is_valid:
+                moves[write_idx, 0] = px
+                moves[write_idx, 1] = py
+                moves[write_idx, 2] = pz
+                moves[write_idx, 3] = tx
+                moves[write_idx, 4] = ty
+                moves[write_idx, 5] = tz
+                write_idx += 1
+                
+    return moves
+
+
+@njit(cache=True, fastmath=True, parallel=False)
+def _generate_and_filter_jump_moves_batch_serial(
+    positions: np.ndarray,
+    directions: np.ndarray,
+    occ: np.ndarray,
+    allow_capture: bool,
+    player_color: int
+) -> np.ndarray:
+    """Serial version of _generate_and_filter_jump_moves_batch."""
+    n_pos = positions.shape[0]
     n_dirs = directions.shape[0]
     
     # Pass 1: Count
     counts = np.zeros(n_pos, dtype=np.int32)
     
-    for i in prange(n_pos):
+    for i in range(n_pos):
         px, py, pz = positions[i]
-        is_buffed = buffed_squares[px, py, pz]
         count = 0
         
         for j in range(n_dirs):
             dx, dy, dz = directions[j]
-            
-            if is_buffed:
-                adx, ady, adz = abs(dx), abs(dy), abs(dz)
-                max_val = max(adx, max(ady, adz))
-                
-                sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
-                sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
-                sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
-                
-                dx = dx + (sx if adx == max_val else 0)
-                dy = dy + (sy if ady == max_val else 0)
-                dz = dz + (sz if adz == max_val else 0)
-            
             tx, ty, tz = px + dx, py + dy, pz + dz
             
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
@@ -313,26 +402,12 @@ def _generate_jump_moves_batch_unified(
     # Pass 3: Fill
     moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
     
-    for i in prange(n_pos):
+    for i in range(n_pos):
         write_idx = offsets[i]
         px, py, pz = positions[i]
-        is_buffed = buffed_squares[px, py, pz]
         
         for j in range(n_dirs):
             dx, dy, dz = directions[j]
-            
-            if is_buffed:
-                adx, ady, adz = abs(dx), abs(dy), abs(dz)
-                max_val = max(adx, max(ady, adz))
-                
-                sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
-                sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
-                sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
-                
-                dx = dx + (sx if adx == max_val else 0)
-                dy = dy + (sy if ady == max_val else 0)
-                dz = dz + (sz if adz == max_val else 0)
-            
             tx, ty, tz = px + dx, py + dy, pz + dz
             
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
@@ -356,6 +431,87 @@ def _generate_jump_moves_batch_unified(
     return moves
 
 
+@njit(cache=True, fastmath=True, parallel=False)
+def _generate_jump_moves_batch_precomputed_serial(
+    positions: np.ndarray,
+    flat_moves: np.ndarray,
+    offsets: np.ndarray,
+    occ: np.ndarray,
+    allow_capture: bool,
+    player_color: int
+) -> np.ndarray:
+    """Serial version of _generate_jump_moves_batch_precomputed."""
+    n_pos = positions.shape[0]
+    
+    # Pass 1: Count valid moves
+    counts = np.zeros(n_pos, dtype=np.int32)
+    
+    for i in range(n_pos):
+        px, py, pz = positions[i]
+        # Calculate flat index for precomputed lookup
+        flat_idx = px + SIZE * py + SIZE_SQUARED * pz
+        
+        start = offsets[flat_idx]
+        end = offsets[flat_idx + 1]
+        
+        count = 0
+        for k in range(start, end):
+            tx, ty, tz = flat_moves[k, 0], flat_moves[k, 1], flat_moves[k, 2]
+            occ_val = occ[tx, ty, tz]
+            
+            is_valid = False
+            if occ_val == 0:
+                is_valid = True
+            elif allow_capture:
+                if occ_val != player_color:
+                    is_valid = True
+            
+            if is_valid:
+                count += 1
+        counts[i] = count
+        
+    # Pass 2: Offsets
+    total_moves = np.sum(counts)
+    write_offsets = np.zeros(n_pos, dtype=np.int32)
+    current_offset = 0
+    for i in range(n_pos):
+        write_offsets[i] = current_offset
+        current_offset += counts[i]
+        
+    # Pass 3: Fill
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in range(n_pos):
+        write_idx = write_offsets[i]
+        px, py, pz = positions[i]
+        flat_idx = px + SIZE * py + SIZE_SQUARED * pz
+        
+        start = offsets[flat_idx]
+        end = offsets[flat_idx + 1]
+        
+        for k in range(start, end):
+            tx, ty, tz = flat_moves[k, 0], flat_moves[k, 1], flat_moves[k, 2]
+            occ_val = occ[tx, ty, tz]
+            
+            is_valid = False
+            if occ_val == 0:
+                is_valid = True
+            elif allow_capture:
+                if occ_val != player_color:
+                    is_valid = True
+            
+            if is_valid:
+                moves[write_idx, 0] = px
+                moves[write_idx, 1] = py
+                moves[write_idx, 2] = pz
+                moves[write_idx, 3] = tx
+                moves[write_idx, 4] = ty
+                moves[write_idx, 5] = tz
+                write_idx += 1
+                
+    return moves
+
+
 class JumpMovementEngine:
     """
     Raw jump move generation (Knight, King, etc.).
@@ -373,106 +529,246 @@ class JumpMovementEngine:
 
 
     def generate_jump_moves(
-            self,
-            cache_manager: 'UnifiedCacheManager',
-            color: COLOR_DTYPE,
-            pos: np.ndarray,
-            directions: np.ndarray,          # (N,3) jump offsets
-            allow_capture: bool = True,
-            allow_zero_direction: bool = False,  # Allow (0,0,0) self-targeting moves
-            piece_type: Optional[PieceType] = None # Optional piece type for precomputed lookup
-        ) -> np.ndarray:
-            """Generate jump moves as numpy array [from_x, from_y, from_z, to_x, to_y, to_z]."""
+        self,
+        cache_manager: 'UnifiedCacheManager',
+        color: int,
+        pos: np.ndarray,
+        directions: np.ndarray,
+        allow_capture: bool = True,
+        piece_type: Optional[PieceType] = None,
+        buffed_directions: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Generate jump moves for a piece or batch of pieces.
+        
+        Args:
+            cache_manager: The cache manager instance
+            color: The color of the piece(s)
+            pos: (3,) or (N, 3) array of positions
+            directions: (M, 3) array of jump directions (unbuffed)
+            allow_capture: Whether capturing is allowed
+            piece_type: Optional PieceType for precomputed optimization
+            buffed_directions: Optional (K, 3) array of jump directions when buffed.
+                               If None, buffed pieces use standard directions (no buff effect).
+        """
+        # Handle single piece input
+        if pos.ndim == 1:
+            # Check for buff
+            is_buffed = False
+            # OPTIMIZATION: Direct access, try/except is faster than hasattr for likely attribute
+            try:
+                # Direct access to boolean array
+                x, y, z = pos[0], pos[1], pos[2]
+                is_buffed = cache_manager.consolidated_aura_cache._buffed_squares[x, y, z]
+            except AttributeError:
+                pass
             
-            # Filter out zero-direction vectors unless explicitly allowed
-            if not allow_zero_direction:
-                zero_mask = ~((directions[:, 0] == 0) & (directions[:, 1] == 0) & (directions[:, 2] == 0))
-                directions = directions[zero_mask]
-                
-                if directions.shape[0] == 0:
-                    return np.empty((0, 6), dtype=COORD_DTYPE)
+            # Select directions and variant
+            dirs_to_use = directions
+            variant = 'unbuffed'
+            if is_buffed:
+                variant = 'buffed'
+                if buffed_directions is not None:
+                    dirs_to_use = buffed_directions
+            
+            # Use precomputed if available for the appropriate variant
+            if piece_type is not None:
+                pt_val = piece_type.value
+                # OPTIMIZATION: Check dict directly without 'in' first if possible, but dict lookup is fast
+                if pt_val in _PRECOMPUTED_MOVES:
+                    moves_map = _PRECOMPUTED_MOVES[pt_val]
+                    if variant in moves_map:
+                        # Legacy object array path - fast for single piece
+                        moves_list = moves_map[variant]
+                        idx = compute_board_index(pos[0], pos[1], pos[2])
+                        candidates = moves_list[idx]
+                        
+                        if candidates is None or len(candidates) == 0:
+                            return np.empty((0, 6), dtype=COORD_DTYPE)
+                            
+                        # Filter by occupancy
+                        occ = cache_manager.occupancy_cache._occ
+                        
+                        valid_targets = _filter_jump_targets_by_occupancy(
+                            candidates, occ, allow_capture, color
+                        )
+                        
+                        if valid_targets.shape[0] == 0:
+                            return np.empty((0, 6), dtype=COORD_DTYPE)
+                            
+                        # Construct result
+                        n = valid_targets.shape[0]
+                        result = np.empty((n, 6), dtype=COORD_DTYPE)
+                        result[:, 0] = pos[0]
+                        result[:, 1] = pos[1]
+                        result[:, 2] = pos[2]
+                        result[:, 3:] = valid_targets
+                        return result
 
-            # ✅ BATCH PROCESSING PATH
-            if pos.ndim == 2:
-                if pos.shape[0] == 0:
-                    return np.empty((0, 6), dtype=COORD_DTYPE)
-                
-                # Check buffs
-                aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
-                # Use 3D occupancy directly to avoid copy
-                occ = cache_manager.occupancy_cache._occ
-                
-                if aura_cache is not None:
-                    # Use unified kernel that handles buffs per-piece
-                    # This avoids Python-side "any" checks and array allocations
-                    buffed_squares = aura_cache._buffed_squares
-                    return _generate_jump_moves_batch_unified(
-                        pos, directions, buffed_squares, 
-                        occ, allow_capture, color
-                    )
+            # Fallback to runtime generation
+            occ = cache_manager.occupancy_cache._occ
+            return _generate_and_filter_jump_moves(
+                pos, dirs_to_use, occ, allow_capture, color
+            )
 
-                # Fast path: No buffs, use standard batch kernel
+        # Batch input
+        n_pos = pos.shape[0]
+        if n_pos == 0:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+
+        occ = cache_manager.occupancy_cache._occ
+        
+        # Get buff status for all positions
+        # OPTIMIZATION: Assume consolidated_aura_cache exists or handle gracefully
+        try:
+            # (N,) boolean array
+            x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+            is_buffed_batch = cache_manager.consolidated_aura_cache._buffed_squares[x, y, z]
+            has_buffs = np.any(is_buffed_batch)
+        except AttributeError:
+            is_buffed_batch = None
+            has_buffs = False
+            
+        # OPTIMIZATION: Fast path for all unbuffed (very common)
+        if not has_buffs:
+            # All unbuffed
+            # Try precomputed optimization for unbuffed variant
+            if piece_type is not None:
+                pt_val = piece_type.value
+                if pt_val in _PRECOMPUTED_MOVES_FLAT:
+                    flat_map = _PRECOMPUTED_MOVES_FLAT[pt_val]
+                    if 'unbuffed' in flat_map:
+                        flat_moves = flat_map['unbuffed']
+                        offsets = _PRECOMPUTED_OFFSETS[pt_val]['unbuffed']
+                        
+                        # Use serial for small batches, parallel for large
+                        if n_pos < 300:
+                            return _generate_jump_moves_batch_precomputed_serial(
+                                pos, flat_moves, offsets, occ, allow_capture, color
+                            )
+                        else:
+                            return _generate_jump_moves_batch_precomputed(
+                                pos, flat_moves, offsets, occ, allow_capture, color
+                            )
+            
+            # Standard runtime generation
+            if n_pos < 300:
+                return _generate_and_filter_jump_moves_batch_serial(
+                    pos, directions, occ, allow_capture, color
+                )
+            else:
                 return _generate_and_filter_jump_moves_batch(
                     pos, directions, occ, allow_capture, color
                 )
 
-            # ✅ SINGLE PIECE PATH (Legacy/Single)
-            # ---------------------------------------------------------
+        # Mixed buffed/unbuffed
+        buffed_indices = np.flatnonzero(is_buffed_batch)
+        unbuffed_indices = np.flatnonzero(~is_buffed_batch)
+        
+        results = []
+        
+        # 1. Process Unbuffed Pieces
+        if unbuffed_indices.size > 0:
+            unbuffed_pos = pos[unbuffed_indices]
             
-            # Direct buff check
-            is_buffed = False
-            aura_cache = getattr(cache_manager, 'consolidated_aura_cache', None)
+            # Try precomputed optimization for unbuffed variant
+            used_precomputed = False
+            if piece_type is not None:
+                pt_val = piece_type.value
+                if pt_val in _PRECOMPUTED_MOVES_FLAT and 'unbuffed' in _PRECOMPUTED_MOVES_FLAT[pt_val]:
+                    flat_moves = _PRECOMPUTED_MOVES_FLAT[pt_val]['unbuffed']
+                    offsets = _PRECOMPUTED_OFFSETS[pt_val]['unbuffed']
+                    
+                    # Use serial for small batches, parallel for large
+                    if unbuffed_indices.size < 300:
+                        moves = _generate_jump_moves_batch_precomputed_serial(
+                            unbuffed_pos, flat_moves, offsets, occ, allow_capture, color
+                        )
+                    else:
+                        moves = _generate_jump_moves_batch_precomputed(
+                            unbuffed_pos, flat_moves, offsets, occ, allow_capture, color
+                        )
+                    results.append(moves)
+                    used_precomputed = True
             
-            if aura_cache is not None:
-                x, y, z = pos[0], pos[1], pos[2]
-                is_buffed = aura_cache._buffed_squares[x, y, z]
-            
-            targets = None
-            
-            # Try to use precomputed moves if available and not buffed
-            if not is_buffed and piece_type is not None and piece_type.value in _PRECOMPUTED_MOVES:
-                flat_idx = pos[0] + SIZE * pos[1] + SIZE_SQUARED * pos[2]
+            if not used_precomputed:
+                # Standard runtime generation
+                if unbuffed_indices.size < 300:
+                    moves = _generate_and_filter_jump_moves_batch_serial(
+                        unbuffed_pos, directions, occ, allow_capture, color
+                    )
+                else:
+                    moves = _generate_and_filter_jump_moves_batch(
+                        unbuffed_pos, directions, occ, allow_capture, color
+                    )
+                results.append(moves)
                 
-                try:
-                    targets = _PRECOMPUTED_MOVES[piece_type.value][flat_idx]
-                except IndexError:
-                    pass
-
-            # Fallback to vector calculation if no precomputed moves or buffed
-            occ = cache_manager.occupancy_cache._occ
+        # 2. Process Buffed Pieces
+        if buffed_indices.size > 0:
+            buffed_pos = pos[buffed_indices]
             
-            if targets is None:
-                current_directions = directions
-                if is_buffed:
-                    # For single piece, just calculating here is fine, or we could use the unified kernel too.
-                    # But let's keep it simple and consistent with legacy for now unless we want to unify everything.
-                    # Actually, calculating buffed directions in Python for single piece is fast enough.
-                    current_directions = directions.copy()
-                    abs_dirs = np.abs(current_directions)
-                    max_vals = np.max(abs_dirs, axis=1, keepdims=True)
-                    mask = (abs_dirs == max_vals)
-                    sign = np.sign(current_directions)
-                    current_directions = current_directions + (sign * mask).astype(COORD_DTYPE)
-
-                return _generate_and_filter_jump_moves(
-                    pos, current_directions, occ, allow_capture, color
-                )
-
-            # Use optimized batch_is_occupied_unsafe for precomputed targets
-            valid_targets = _filter_jump_targets_by_occupancy(
-                targets, occ, allow_capture, color
+            # Determine directions to use
+            dirs_to_use = directions
+            if buffed_directions is not None:
+                dirs_to_use = buffed_directions
+            
+            # Try precomputed optimization for buffed variant
+            used_precomputed = False
+            if piece_type is not None and buffed_directions is None:
+                pt_val = piece_type.value
+                if pt_val in _PRECOMPUTED_MOVES_FLAT and 'buffed' in _PRECOMPUTED_MOVES_FLAT[pt_val]:
+                    flat_moves = _PRECOMPUTED_MOVES_FLAT[pt_val]['buffed']
+                    offsets = _PRECOMPUTED_OFFSETS[pt_val]['buffed']
+                    
+                    if buffed_indices.size < 300:
+                        moves = _generate_jump_moves_batch_precomputed_serial(
+                            buffed_pos, flat_moves, offsets, occ, allow_capture, color
+                        )
+                    else:
+                        moves = _generate_jump_moves_batch_precomputed(
+                            buffed_pos, flat_moves, offsets, occ, allow_capture, color
+                        )
+                    results.append(moves)
+                    used_precomputed = True
+            
+            if not used_precomputed:
+                # Runtime generation with buffed directions
+                if buffed_indices.size < 300:
+                    moves = _generate_and_filter_jump_moves_batch_serial(
+                        buffed_pos, dirs_to_use, occ, allow_capture, color
+                    )
+                else:
+                    moves = _generate_and_filter_jump_moves_batch(
+                        buffed_pos, dirs_to_use, occ, allow_capture, color
+                    )
+                results.append(moves)
+            
+        # Combine results
+        if not results:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+        elif len(results) == 1:
+            final_moves = results[0]
+        else:
+            final_moves = np.vstack(results)
+            
+        # ✅ CRITICAL: Defensive bounds validation
+        if final_moves.size > 0:
+            valid_mask = (
+                (final_moves[:, 3] >= 0) & (final_moves[:, 3] < SIZE) &
+                (final_moves[:, 4] >= 0) & (final_moves[:, 4] < SIZE) &
+                (final_moves[:, 5] >= 0) & (final_moves[:, 5] < SIZE)
             )
-            
-            n_moves = valid_targets.shape[0]
-            if n_moves == 0:
-                return np.empty((0, 6), dtype=COORD_DTYPE)
-
-            moves = np.empty((n_moves, 6), dtype=COORD_DTYPE)
-            moves[:, :3] = pos  # Broadcasts pos to all rows
-            moves[:, 3:6] = valid_targets
-            
-            return moves
-
+            if not np.all(valid_mask):
+                import warnings
+                n_invalid = np.sum(~valid_mask)
+                warnings.warn(
+                    f"Jump engine filtered {n_invalid} out-of-bounds moves. "
+                    f"This indicates a bug in move generation.",
+                    RuntimeWarning
+                )
+                final_moves = final_moves[valid_mask]
+                
+        return final_moves
 
 
 def get_jump_movement_generator() -> JumpMovementEngine:

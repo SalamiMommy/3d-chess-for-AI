@@ -17,29 +17,14 @@ if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
     from game3d.cache.manager import OptimizedCacheManager
 
-# ARMOUR movement vectors - orthogonal movement (6 directions) - numpy native
-ARMOUR_MOVEMENT_VECTORS = np.array([
-    [1, 0, 0], [-1, 0, 0],
-    [0, 1, 0], [0, -1, 0],
-    [0, 0, 1], [0, 0, -1]
-], dtype=COORD_DTYPE)
-
-@jit(nopython=True, cache=True)
-def _coords_match(coord1: np.ndarray, coord2: np.ndarray) -> bool:
-    """Fast coordinate comparison."""
-    return np.array_equal(coord1, coord2)
-
-@jit(nopython=True, cache=True)
-def _is_armour_at_coord(coord: np.ndarray, armour_coords: np.ndarray) -> bool:
-    """Check if coordinate matches any armour position using vectorized comparison."""
-    return np.any(np.all(armour_coords == coord, axis=1))
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 def generate_armour_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
-    """Generate legal one-step armour moves."""
+    """Generate legal armour moves (King-like + Buffs)."""
     pos_arr = pos.astype(COORD_DTYPE)
 
     jump_engine = get_jump_movement_generator()
@@ -47,9 +32,10 @@ def generate_armour_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
-        directions=ARMOUR_MOVEMENT_VECTORS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.ARMOUR
+        piece_type=PieceType.ARMOUR,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
 
 def is_armour_protected(sq: np.ndarray, cache_manager: 'OptimizedCacheManager') -> bool:
@@ -146,7 +132,6 @@ def armour_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_armour_moves(state.cache_manager, state.color, pos)
 
 __all__ = [
-    "ARMOUR_MOVEMENT_VECTORS",
     "generate_armour_moves",
     "is_armour_protected",
     "batch_is_armour_protected",

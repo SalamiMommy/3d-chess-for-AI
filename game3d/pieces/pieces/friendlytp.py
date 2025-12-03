@@ -20,107 +20,79 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# King directions (1-step moves)
-# Pre-computed as constant for Numba
-_KING_DIRECTIONS = np.array([
-    [0, 1, 1], [0, 1, -1], [0, -1, 1], [0, -1, -1],
-    [1, 0, 1], [1, 0, -1], [-1, 0, 1], [-1, 0, -1],
-    [1, 1, 0], [1, -1, 0], [-1, 1, 0], [-1, -1, 0],
-    [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],
-    [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1],
-    [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0],
-    [1, 0, 0], [-1, 0, 0]
-], dtype=COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 @njit(cache=True, fastmath=True)
-def _get_network_squares(
+def _generate_friendlytp_moves_fused(
+    teleporter_positions: np.ndarray,
     friendly_coords: np.ndarray,
-    flattened_occ: np.ndarray
+    flattened_occ: np.ndarray,
+    directions: np.ndarray
 ) -> np.ndarray:
     """
-    Fused kernel to find ALL valid teleport destinations (empty neighbors of friendly pieces).
+    Fused kernel:
+    1. Finds all valid network squares (empty neighbors of friendly pieces)
+    2. Generates moves from teleporters to these squares
+    Avoids creating the intermediate network_squares array and iterating twice.
     """
+    n_tps = teleporter_positions.shape[0]
     n_friendly = friendly_coords.shape[0]
-    n_dirs = _KING_DIRECTIONS.shape[0]
+    n_dirs = directions.shape[0]
     
-    # Use boolean mask for deduplication
-    mask = np.zeros(SIZE * SIZE_SQUARED, dtype=BOOL_DTYPE)
+    # 1. Identify network squares using a boolean mask
+    # This is much faster than appending to a list
+    network_mask = np.zeros(SIZE * SIZE_SQUARED, dtype=BOOL_DTYPE)
+    network_count = 0
     
     for i in range(n_friendly):
         fx, fy, fz = friendly_coords[i]
         
         for j in range(n_dirs):
-            dx, dy, dz = _KING_DIRECTIONS[j]
+            dx, dy, dz = directions[j]
             tx, ty, tz = fx + dx, fy + dy, fz + dz
             
             if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
                 idx = tx + SIZE * ty + SIZE_SQUARED * tz
                 
-                # Must be empty
-                if flattened_occ[idx] == 0:
-                    mask[idx] = True
-                    
-    # Collect results
-    count = 0
-    for i in range(SIZE * SIZE_SQUARED):
-        if mask[i]:
-            count += 1
-            
-    if count == 0:
-        return np.empty((0, 3), dtype=COORD_DTYPE)
+                # Must be empty and not already marked
+                if flattened_occ[idx] == 0 and not network_mask[idx]:
+                    network_mask[idx] = True
+                    network_count += 1
+    
+    if network_count == 0:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
         
-    out = np.empty((count, 3), dtype=COORD_DTYPE)
-    idx_out = 0
-    
-    for i in range(SIZE * SIZE_SQUARED):
-        if mask[i]:
-            # Decode index
-            z = i // SIZE_SQUARED
-            rem = i % SIZE_SQUARED
-            y = rem // SIZE
-            x = rem % SIZE
-            
-            out[idx_out, 0] = x
-            out[idx_out, 1] = y
-            out[idx_out, 2] = z
-            idx_out += 1
-            
-    return out
-
-@njit(cache=True)
-def _generate_teleport_moves_kernel(
-    teleporter_positions: np.ndarray,
-    network_squares: np.ndarray
-) -> np.ndarray:
-    """
-    Generate teleport moves: Cartesian product of teleporters x network_squares.
-    Excludes self-teleport.
-    """
-    n_tps = teleporter_positions.shape[0]
-    n_targets = network_squares.shape[0]
-    
-    max_moves = n_tps * n_targets
+    # 2. Generate moves directly
+    max_moves = n_tps * network_count
     moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
     
     count = 0
-    for i in range(n_tps):
-        sx, sy, sz = teleporter_positions[i]
-        
-        for j in range(n_targets):
-            tx, ty, tz = network_squares[j]
+    
+    # Iterate through mask to find targets
+    # This avoids a separate "collect" step
+    for idx in range(SIZE * SIZE_SQUARED):
+        if network_mask[idx]:
+            # Decode index
+            z = idx // SIZE_SQUARED
+            rem = idx % SIZE_SQUARED
+            y = rem // SIZE
+            x = rem % SIZE
             
-            # Skip self-teleport
-            if sx == tx and sy == ty and sz == tz:
-                continue
+            for i in range(n_tps):
+                sx, sy, sz = teleporter_positions[i]
                 
-            moves[count, 0] = sx
-            moves[count, 1] = sy
-            moves[count, 2] = sz
-            moves[count, 3] = tx
-            moves[count, 4] = ty
-            moves[count, 5] = tz
-            count += 1
-            
+                # Skip self-teleport
+                if sx == x and sy == y and sz == z:
+                    continue
+                    
+                moves[count, 0] = sx
+                moves[count, 1] = sy
+                moves[count, 2] = sz
+                moves[count, 3] = x
+                moves[count, 4] = y
+                moves[count, 5] = z
+                count += 1
+                
     return moves[:count]
 
 def generate_friendlytp_moves(
@@ -143,24 +115,26 @@ def generate_friendlytp_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
-        directions=_KING_DIRECTIONS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.FRIENDLYTELEPORTER
+        piece_type=PieceType.FRIENDLYTELEPORTER,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)
         
-    # 2. Network Teleports
+    # 2. Network Teleports - FUSED KERNEL
     # Get all friendly pieces
     friendly_coords = cache_manager.occupancy_cache.get_positions(color)
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
     
-    # Find all valid teleport destinations (empty neighbors of friendly pieces)
-    network_squares = _get_network_squares(friendly_coords, flattened_occ)
-    
-    if network_squares.shape[0] > 0:
-        # Generate moves for all teleporters to all network squares
-        teleport_moves = _generate_teleport_moves_kernel(pos_arr, network_squares)
+    if friendly_coords.size > 0:
+        teleport_moves = _generate_friendlytp_moves_fused(
+            pos_arr, 
+            friendly_coords, 
+            flattened_occ,
+            KING_MOVEMENT_VECTORS
+        )
         if teleport_moves.size > 0:
             moves_list.append(teleport_moves)
             
@@ -173,4 +147,4 @@ def generate_friendlytp_moves(
 def friendlytp_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_friendlytp_moves(state.cache_manager, state.color, pos)
 
-__all__ = ["_KING_DIRECTIONS", "generate_friendlytp_moves"]
+__all__ = ["generate_friendlytp_moves"]

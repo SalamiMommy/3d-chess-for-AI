@@ -17,14 +17,7 @@ if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.game.gamestate import GameState
 
-# Swapper-specific movement vectors - king-like movement for walk and swap
-# Converted to numpy-native using meshgrid for better performance
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-# Remove the (0, 0, 0) origin
-# FIXED: Use np.any to keep rows where AT LEAST ONE coord is non-zero
-origin_mask = np.any(all_coords != 0, axis=1)
-_SWAPPER_MOVEMENT_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 @njit(cache=True)
 def _generate_swap_moves_kernel(
@@ -81,9 +74,10 @@ def generate_swapper_moves(
         cache_manager=cache_manager,
         color=color,
         pos=pos_arr,
-        directions=_SWAPPER_MOVEMENT_VECTORS,
+        directions=KING_MOVEMENT_VECTORS,
         allow_capture=True,
-        piece_type=PieceType.SWAPPER
+        piece_type=PieceType.SWAPPER,
+        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
     )
     if king_moves.size > 0:
         moves_list.append(king_moves)
