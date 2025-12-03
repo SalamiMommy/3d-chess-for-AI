@@ -264,8 +264,10 @@ class ChessTrainer:
         return optim.AdamW(self.model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
     def _create_scheduler(self) -> optim.lr_scheduler._LRScheduler:
+        # Ensure T_max is at least 1 to avoid issues if epochs == warmup_epochs
+        t_max = max(1, self.config.epochs - self.config.warmup_epochs)
         main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=self.config.epochs - self.config.warmup_epochs, eta_min=self.config.learning_rate * 0.01
+            self.optimizer, T_max=t_max, eta_min=self.config.learning_rate * 0.01
         )
         if self.config.warmup_epochs > 0:
             warmup_scheduler = optim.lr_scheduler.LinearLR(
@@ -408,7 +410,7 @@ class ChessTrainer:
             num_batches += 1
         
         pbar.close()
-        return {'loss': total_loss / num_batches}
+        return {'loss': total_loss / num_batches if num_batches > 0 else 0.0}
 
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
         self.model.eval()
@@ -450,7 +452,7 @@ class ChessTrainer:
                 pbar.set_postfix({'loss': f"{total_loss / num_batches:.4f}"})
         
         pbar.close()
-        return {'loss': total_loss / num_batches}
+        return {'loss': total_loss / num_batches if num_batches > 0 else 0.0}
 
     def train(self, examples: Union[List[TrainingExample], Dataset]) -> Dict[str, Any]:
         train_dataset, val_dataset = self.prepare_data(examples)

@@ -212,6 +212,13 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         pieces_data = np.zeros((len(coords_to_clear), 2), dtype=PIECE_TYPE_DTYPE)
 
     elif is_swap:
+        # ✅ CRITICAL FIX: Validate Wall placement during swap
+        if swapped_piece["piece_type"] == PieceType.WALL:
+             # Wall requires 2x2 space at new position (mv[:3])
+             sx, sy, sz = mv[:3]
+             if not (sx < SIZE - 1 and sy < SIZE - 1):
+                 raise ValueError(f"Invalid swap: Wall cannot be placed at {mv[:3]} (too close to edge)")
+
         # Swapper Swap: Exchange positions
         changed_coords = np.array([mv[:3], mv[3:]], dtype=COORD_DTYPE)
         pieces_data = np.array([

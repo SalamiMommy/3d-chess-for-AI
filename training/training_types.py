@@ -188,10 +188,10 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     batch_size: int = 64
     epochs: int = 1
-    warmup_epochs: int = 1  # Reduced proportionally
+    warmup_epochs: int = 0  # Reduced proportionally
     
     # Gradient accumulation for larger effective batch size
-    gradient_accumulation_steps: int = 2  # Effective batch size: 96
+    gradient_accumulation_steps: int = 16  # Effective batch size: 96
     
     # Data loading optimization
     dataloader_workers: int = 4  # Parallel data loading

@@ -8,7 +8,7 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 from numba import njit
 
-from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch, SWAPPER, COORD_DTYPE
+from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch, SWAPPER, COORD_DTYPE, SIZE
 from game3d.common.registry import register
 from game3d.movement.movepiece import Move
 from game3d.movement.jump_engine import get_jump_movement_generator
@@ -22,7 +22,8 @@ from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOV
 @njit(cache=True)
 def _generate_swap_moves_kernel(
     swapper_positions: np.ndarray,
-    friendly_positions: np.ndarray
+    friendly_positions: np.ndarray,
+    friendly_types: np.ndarray
 ) -> np.ndarray:
     """Fused kernel to generate swap moves (swapper -> friendly piece)."""
     n_swappers = swapper_positions.shape[0]
@@ -43,6 +44,12 @@ def _generate_swap_moves_kernel(
             # Skip self (cannot swap with self)
             if sx == fx and sy == fy and sz == fz:
                 continue
+            
+            # ✅ CRITICAL FIX: Prevent swapping with Wall if Swapper's position is invalid for Wall
+            # Wall requires 2x2 space (x < SIZE-1, y < SIZE-1)
+            if friendly_types[j] == PieceType.WALL:
+                if not (sx < SIZE - 1 and sy < SIZE - 1):
+                    continue
                 
             moves[count, 0] = sx
             moves[count, 1] = sy
@@ -87,8 +94,11 @@ def generate_swapper_moves(
     friendly_coords = cache_manager.occupancy_cache.get_positions(color)
     
     if friendly_coords.shape[0] > 0:
+        # Get types to check for Walls
+        friendly_types = cache_manager.occupancy_cache.batch_get_types_only(friendly_coords)
+        
         # Use fused kernel to generate swap moves
-        swap_moves = _generate_swap_moves_kernel(pos_arr, friendly_coords)
+        swap_moves = _generate_swap_moves_kernel(pos_arr, friendly_coords, friendly_types)
         
         if swap_moves.size > 0:
             moves_list.append(swap_moves)
