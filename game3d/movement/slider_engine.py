@@ -12,9 +12,37 @@ from game3d.common.shared_types import (
     COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, SIZE, SIZE_MINUS_1, SIZE_SQUARED
 )
 from game3d.movement.movepiece import Move
+import os
 
 if TYPE_CHECKING:
     from game3d.cache.manager import UnifiedCacheManager
+
+
+# Global cache for precomputed data
+# Key: piece_name, Value: (rays_flat, ray_offsets, square_offsets)
+_PRECOMPUTED_CACHE = {}
+
+def _load_precomputed_data(piece_name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load precomputed ray data for a piece type."""
+    if piece_name in _PRECOMPUTED_CACHE:
+        return _PRECOMPUTED_CACHE[piece_name]
+    
+    base_dir = os.path.join(os.path.dirname(__file__), "precomputed")
+    flat_path = os.path.join(base_dir, f"rays_{piece_name}_flat.npy")
+    ray_offsets_path = os.path.join(base_dir, f"rays_{piece_name}_ray_offsets.npy")
+    sq_offsets_path = os.path.join(base_dir, f"rays_{piece_name}_sq_offsets.npy")
+    
+    if not os.path.exists(flat_path):
+        # Fallback or error? For now error to ensure we know if something is missing
+        raise FileNotFoundError(f"Precomputed data for {piece_name} not found in {base_dir}")
+        
+    rays_flat = np.load(flat_path)
+    ray_offsets = np.load(ray_offsets_path)
+    sq_offsets = np.load(sq_offsets_path)
+    
+    data = (rays_flat, ray_offsets, sq_offsets)
+    _PRECOMPUTED_CACHE[piece_name] = data
+    return data
 
 
 @njit(cache=True, fastmath=True)
@@ -337,6 +365,101 @@ def _generate_all_slider_moves_batch_serial(
     return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
 
 
+    return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
+
+
+@njit(cache=True, fastmath=True)
+def _generate_precomputed_slider_moves(
+    color: int,
+    pos_flat_idx: int,
+    rays_flat: np.ndarray,
+    ray_offsets: np.ndarray,
+    square_offsets: np.ndarray,
+    occ: np.ndarray,
+    ignore_occupancy: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Generate slider moves using precomputed rays.
+    
+    rays_flat: (N, 3) array of all ray coordinates
+    ray_offsets: (M+1) array of indices into rays_flat
+    square_offsets: (SIZE^3 + 1) array of indices into ray_offsets
+    """
+    
+    # Get range of rays for this square
+    start_ray_idx = square_offsets[pos_flat_idx]
+    end_ray_idx = square_offsets[pos_flat_idx + 1]
+    
+    # Pass 1: Count valid moves to allocate arrays
+    count = 0
+    
+    for r_idx in range(start_ray_idx, end_ray_idx):
+        start_coord_idx = ray_offsets[r_idx]
+        end_coord_idx = ray_offsets[r_idx + 1]
+        
+        for c_idx in range(start_coord_idx, end_coord_idx):
+            cx = rays_flat[c_idx, 0]
+            cy = rays_flat[c_idx, 1]
+            cz = rays_flat[c_idx, 2]
+            
+            occupant = occ[cx, cy, cz]
+            
+            if occupant == 0:
+                count += 1
+            else:
+                if ignore_occupancy:
+                    count += 1
+                else:
+                    if occupant != color:
+                        count += 1
+                    break # Stop ray
+    
+    # Allocate
+    moves = np.empty((count, 3), dtype=COORD_DTYPE)
+    captures = np.empty(count, dtype=BOOL_DTYPE)
+    write_idx = 0
+    
+    # Pass 2: Fill moves
+    for r_idx in range(start_ray_idx, end_ray_idx):
+        start_coord_idx = ray_offsets[r_idx]
+        end_coord_idx = ray_offsets[r_idx + 1]
+        
+        for c_idx in range(start_coord_idx, end_coord_idx):
+            cx = rays_flat[c_idx, 0]
+            cy = rays_flat[c_idx, 1]
+            cz = rays_flat[c_idx, 2]
+            
+            occupant = occ[cx, cy, cz]
+            
+            should_write = False
+            stop_ray = False
+            
+            if occupant == 0:
+                should_write = True
+            else:
+                if ignore_occupancy:
+                    should_write = True
+                else:
+                    if occupant != color:
+                        should_write = True
+                    stop_ray = True
+            
+            if should_write:
+                moves[write_idx, 0] = cx
+                moves[write_idx, 1] = cy
+                moves[write_idx, 2] = cz
+                if occupant != 0 and occupant != color:
+                    captures[write_idx] = True
+                else:
+                    captures[write_idx] = False
+                write_idx += 1
+            
+            if stop_ray:
+                break
+                
+    return moves, captures
+
+
 class SliderMovementEngine:
     """
     Raw slider move generation.
@@ -432,6 +555,68 @@ class SliderMovementEngine:
         
         # Fill to_coord
         moves[:, 3:6] = destinations
+        
+        return moves
+
+
+    def generate_slider_moves_precomputed(
+        self,
+        cache_manager: 'UnifiedCacheManager',
+        color: int,
+        pos: np.ndarray,
+        piece_name: str,
+        ignore_occupancy: bool = False
+    ) -> np.ndarray:
+        """
+        Generate slider moves using precomputed rays for the given piece type.
+        Returns array of [from_x, from_y, from_z, to_x, to_y, to_z].
+        """
+        # Ensure data is loaded
+        rays_flat, ray_offsets, sq_offsets = _load_precomputed_data(piece_name)
+        
+        occ = cache_manager.occupancy_cache._occ
+        
+        # Handle batch input
+        if pos.ndim == 2:
+            move_lists = []
+            
+            for i in range(pos.shape[0]):
+                p = pos[i]
+                flat_idx = p[0] + p[1] * SIZE + p[2] * SIZE_SQUARED
+                
+                dests, _ = _generate_precomputed_slider_moves(
+                    color, flat_idx, rays_flat, ray_offsets, sq_offsets, occ, ignore_occupancy
+                )
+                
+                if dests.size > 0:
+                    n = dests.shape[0]
+                    m = np.empty((n, 6), dtype=COORD_DTYPE)
+                    m[:, 0:3] = p
+                    m[:, 3:6] = dests
+                    move_lists.append(m)
+            
+            if not move_lists:
+                return np.empty((0, 6), dtype=COORD_DTYPE)
+            return np.concatenate(move_lists)
+
+        # Single position
+        pos_arr = pos.astype(COORD_DTYPE).reshape(3)
+        flat_idx = pos_arr[0] + pos_arr[1] * SIZE + pos_arr[2] * SIZE_SQUARED
+        
+        dests, _ = _generate_precomputed_slider_moves(
+            color, flat_idx, rays_flat, ray_offsets, sq_offsets, occ, ignore_occupancy
+        )
+        
+        if dests.size == 0:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+            
+        n_moves = dests.shape[0]
+        moves = np.empty((n_moves, 6), dtype=COORD_DTYPE)
+        
+        moves[:, 0] = pos_arr[0]
+        moves[:, 1] = pos_arr[1]
+        moves[:, 2] = pos_arr[2]
+        moves[:, 3:6] = dests
         
         return moves
 

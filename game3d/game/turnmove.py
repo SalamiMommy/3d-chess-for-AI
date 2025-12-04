@@ -17,7 +17,7 @@ from game3d.common.shared_types import (
     SIZE, GEOMANCER_BLOCK_DURATION, RADIUS_2_OFFSETS,
     get_empty_coord_batch, get_empty_bool_array, PIECE_TYPE_DTYPE, N_PIECE_TYPES
 )
-from game3d.common.coord_utils import ensure_coords, get_adjacent_squares, coords_to_keys
+from game3d.common.coord_utils import ensure_coords, get_adjacent_squares, coords_to_keys, in_bounds_vectorized
 from game3d.common.performance_utils import _safe_increment_counter
 from game3d.common.debug_utils import UndoSnapshot
 from game3d.pieces.pieces.hive import get_movable_hives, apply_multi_hive_move
@@ -42,24 +42,9 @@ def legal_moves(game_state: 'GameState') -> np.ndarray:
         game_state._metrics = PerformanceMetrics()
     _safe_increment_counter(game_state._metrics, 'legal_moves_calls')
 
-    # Check optimization cache
-    cache_key = game_state.cache_manager.get_move_cache_key(game_state.color)
-    cache_manager = game_state.cache_manager
-
-    if (game_state._legal_moves_cache is not None and
-        game_state._legal_moves_cache_key == cache_key):
-        return game_state._legal_moves_cache
-
-    # Generate moves
-    structured_moves = generate_legal_moves(game_state)
-
-    # Store result in state cache
-    if structured_moves.size > 0:
-        game_state._legal_moves_cache = structured_moves
-        game_state._legal_moves_cache_key = cache_key
-        # cache_manager.move_cache._board_generation check removed as Board is stateless
-
-    return structured_moves
+    # Check optimization cache (Delegated to generator via cache_manager)
+    # We just call generate_legal_moves, which handles caching internally now.
+    return generate_legal_moves(game_state)
 
 def legal_moves_for_piece(game_state: 'GameState', coord: np.ndarray) -> np.ndarray:
     """Return legal moves for a specific piece (delegates to generator)."""
@@ -85,39 +70,58 @@ def validate_move_integrated(game_state: 'GameState', move: Move) -> Optional[st
         validate_move
     )
 
+    # 0. Check Legal Move Cache (Fast Path & Correctness)
+    # We prefer to validate against the generated legal moves because they include ALL rules (checks, pins, etc.)
+    # which manual validation might miss or duplicate inefficiently.
+    
+    # Ensure legal moves are generated and cached
+    # This handles both cache hit (fast) and cache miss (generates once, then fast)
+    legal_moves_list = legal_moves(game_state)
+    
+    # Check if move is in legal moves
+    move_arr = np.concatenate([move.from_coord, move.to_coord])
+    
+    # Vectorized check
+    # legal_moves_list is (N, 6)
+    matches = np.all(legal_moves_list[:, :6] == move_arr, axis=1)
+    
+    if np.any(matches):
+        return None # Valid
+        
+    # If not in legal moves, it's invalid.
+    # We can try to give a specific reason by falling back to manual validation checks,
+    # but for now, generic error is fine, or we can run the manual checks just to generate the error message.
+    
+    # Run manual checks to give a better error message
+    
     # 1. Bounds validation
     error = validate_move_bounds_with_error(move.from_coord, move.to_coord)
-    if error:
-        return error
+    if error: return error
 
     # 2. Ownership validation
     error = validate_move_ownership_with_error(game_state, move.from_coord, game_state.color)
-    if error:
-        return error
+    if error: return error
 
-    # 3. Get piece info for special validations
+    # 3. Get piece info
     from_coord_batch = move.from_coord.reshape(1, 3)
     _, types = game_state.cache_manager.occupancy_cache.batch_get_attributes(from_coord_batch)
 
     # 4. Hive-specific validation
     error = validate_hive_move_allowed(game_state, move.from_coord, types[0])
-    if error:
-        return error
-
-    # 5. Wall-specific bounds validation (2x2 footprint)
+    if error: return error
+    
+    # 5. Wall-specific bounds validation
     if types[0] == PieceType.WALL:
-        # Wall occupies (x,y), (x+1,y), (x,y+1), (x+1,y+1) relative to anchor
-        # Check if destination anchor allows for the full 2x2 block
         to_x, to_y, _ = move.to_coord
         if to_x >= SIZE - 1 or to_y >= SIZE - 1:
-            logger.error(f"CRITICAL: Wall move rejected by validation! Move: {move}. Dest: {move.to_coord}. SIZE={SIZE}. Wall requires 2x2 space.")
             return f"Wall move to {move.to_coord} would place part of the wall out of bounds"
 
     # 6. Basic move validation
     if not validate_move(game_state, move):
         return "Move violates piece movement rules"
-
-    return None
+        
+    # If it passed all manual checks but wasn't in legal moves, it must be due to King Safety (Check/Pin)
+    return "Move is illegal (King Safety or Game Rule violation)"
 # =============================================================================
 # MOVE EXECUTION - INCREMENTAL UPDATES
 # =============================================================================
@@ -184,10 +188,8 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
 
     elif is_detonation:
         # Bomb: Clear explosion area
-        # NOTE: in_bounds_vectorized is an implied dependency/helper function not provided in the original code,
-        # but needed for correct execution logic. Assuming it exists.
-        from game3d.common.coord_utils import in_bounds_vectorized
-
+        # NOTE: Using in_bounds_vectorized from top-level imports
+        
         explosion_offsets = mv[:3] + RADIUS_2_OFFSETS
         valid_mask = in_bounds_vectorized(explosion_offsets)
         valid_coords = explosion_offsets[valid_mask]
@@ -237,6 +239,24 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         
         # Destination squares (to be set)
         dest_squares = mv[3:] + block_offsets
+        
+        # ✅ CRITICAL: Validate all dest_squares are in bounds
+        # This is a defensive check that should never fail if validate_move_integrated worked correctly,
+        # but we add it to prevent catastrophic failures if a bug slips through.
+        if not np.all(in_bounds_vectorized(dest_squares)):
+            invalid_coords = dest_squares[~in_bounds_vectorized(dest_squares)]
+            logger.error(
+                f"CRITICAL BUG: Wall move validation failed! "
+                f"Move: {mv[:3]} -> {mv[3:]}. "
+                f"Invalid dest_squares: {invalid_coords}. "
+                f"This should have been caught by validate_move_integrated."
+            )
+            # Fail gracefully instead of crashing the worker
+            raise ValueError(
+                f"Wall move to {mv[3:]} would place part of the wall out of bounds. "
+                f"Invalid coordinates: {invalid_coords}"
+            )
+        
         dest_data = np.tile(
             np.array([from_piece["piece_type"], from_piece["color"]], dtype=PIECE_TYPE_DTYPE),
             (4, 1)

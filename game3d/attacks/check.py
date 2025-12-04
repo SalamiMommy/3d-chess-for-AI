@@ -218,8 +218,9 @@ def square_attacked_by(board, current_player: Color, square: np.ndarray, attacke
             x, y, z = square[0], square[1], square[2]
             return bool(attacked_mask[x, y, z])
     
-    # Fallback: Slow dynamic check
-    return _square_attacked_by_slow(board, square, attacker_color, cache)
+    # Fallback: Fast inverse check (was slow dynamic check)
+    from game3d.attacks.fast_attack import square_attacked_by_fast
+    return square_attacked_by_fast(board, square, attacker_color, cache)
 
 def square_attacked_by_incremental(
     board,
@@ -260,7 +261,9 @@ def square_attacked_by_incremental(
     """
     if not cache or not hasattr(cache, 'move_cache'):
         # Fallback if cache not available
-        return _square_attacked_by_slow(board, square, attacker_color, cache)
+        # No cached moves, use fast path
+        from game3d.attacks.fast_attack import square_attacked_by_fast
+        return square_attacked_by_fast(board, square, attacker_color, cache)
     
     # Identify pieces affected by the move
     affected_ids, affected_coords, affected_keys = cache.move_cache.get_pieces_affected_by_move(
@@ -302,7 +305,9 @@ def square_attacked_by_incremental(
     
     if base_moves is None:
         # No cached moves, use slow path
-        return _square_attacked_by_slow(board, square, attacker_color, cache)
+        # No cached moves, use fast path
+        from game3d.attacks.fast_attack import square_attacked_by_fast
+        return square_attacked_by_fast(board, square, attacker_color, cache)
     
     # If no affected pieces, just use the cached attack mask directly
     if len(affected_ids) == 0:

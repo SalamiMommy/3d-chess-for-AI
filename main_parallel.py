@@ -252,12 +252,24 @@ if __name__ == "__main__":
             logger.info(f"[OK] Generated {len(moves1)} moves")
 
             # === Test 2: GameState caching (same instance) ===
+            # === Test 2: GameState caching (via MoveCache) ===
             logger.info("Testing GameState caching...")
-            # Clear only the local cache, NOT the MoveCache generation marker
-            game.state._legal_moves_cache = None  # Safe local clear
+            # We don't clear local cache anymore as it's not used.
+            # Instead we verify that subsequent calls return the SAME cached array from MoveCache
+            
+            # First call already populated the cache (moves1)
             moves2 = game.state.legal_moves
-            assert moves2 is game.state._legal_moves_cache, "GameState cache not populated"
-            logger.info("[OK] GameState caching works")
+            
+            # Verify it's fetching from MoveCache
+            cached_moves = game.cache_manager.move_cache.get_legal_moves(game.state.color)
+            assert moves2 is cached_moves, "Legal moves not matching MoveCache"
+            
+            # Verify identity (should be same object if cached correctly)
+            # Note: generate_legal_moves might return a fresh view or the array itself depending on implementation
+            # But the content should be identical
+            assert np.array_equal(moves1, moves2), "Subsequent legal_moves call returned different data"
+            
+            logger.info("[OK] GameState caching works (via MoveCache)")
 
             # === Test 3: MoveCache persistence (different GameState instances) ===
             logger.info("Testing MoveCache persistence...")

@@ -217,8 +217,11 @@ def _generate_wall_moves_batch_kernel(
             taz = anchor[2] + directions[i, 2]
             
             # Bounds check for target anchor
-            if not (0 <= tax < board_size - 1 and 0 <= tay < board_size - 1 and 0 <= taz < board_size):
-                continue
+            # Explicitly check against board_size limits for 2x2 block
+            # Anchor must be in [0, board_size-2] for x and y, and [0, board_size-1] for z
+            if tax < 0 or tax > board_size - 2: continue
+            if tay < 0 or tay > board_size - 2: continue
+            if taz < 0 or taz > board_size - 1: continue
                 
             # Check the 4 squares of the target wall
             is_blocked = False
@@ -268,6 +271,42 @@ def _generate_wall_moves_batch_kernel(
             
     return moves[:count]
 
+
+
+@njit(cache=True, fastmath=True)
+def _filter_anchors_numba(
+    anchors: np.ndarray,
+    ptype: np.ndarray
+) -> np.ndarray:
+    """
+    Filter anchors to ensure they are the top-left of a wall.
+    Returns indices of valid anchors.
+    """
+    n = anchors.shape[0]
+    valid_indices = np.empty(n, dtype=np.int32)
+    count = 0
+    
+    for i in range(n):
+        x, y, z = anchors[i]
+        
+        # Check left neighbor (x-1)
+        is_left_wall = False
+        if x > 0:
+            if ptype[x-1, y, z] == PieceType.WALL:
+                is_left_wall = True
+                
+        # Check up neighbor (y-1)
+        is_up_wall = False
+        if y > 0:
+            if ptype[x, y-1, z] == PieceType.WALL:
+                is_up_wall = True
+                
+        if not is_left_wall and not is_up_wall:
+            valid_indices[count] = i
+            count += 1
+            
+    return valid_indices[:count]
+
 def generate_wall_moves(
     cache_manager: 'OptimizedCacheManager',
     color: int,
@@ -282,29 +321,14 @@ def generate_wall_moves(
     if anchors.shape[0] == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # Filter out non-anchor wall parts
-    # A wall piece is an anchor ONLY if it has no wall to its left (x-1) and no wall above (y-1)
-    # This assumes walls are 2x2 and cannot be placed immediately adjacent to each other
-    # such that a new anchor is adjacent to an existing wall's parts.
+    # Filter out non-anchor wall parts using Numba kernel
+    # This avoids creating neighbor arrays and batch lookups
+    valid_indices = _filter_anchors_numba(anchors, cache_manager.occupancy_cache._ptype)
     
-    # Check left neighbors (x-1)
-    left_coords = anchors.copy()
-    left_coords[:, 0] -= 1
-    
-    # Check up neighbors (y-1)
-    up_coords = anchors.copy()
-    up_coords[:, 1] -= 1
-    
-    # Batch get types (handles out-of-bounds by returning 0/EMPTY)
-    # We use batch_get_attributes because it includes bounds checking (returns 0 for out-of-bounds)
-    # batch_get_types_only is unsafe for negative indices (wraps around)
-    _, left_types = cache_manager.occupancy_cache.batch_get_attributes(left_coords)
-    _, up_types = cache_manager.occupancy_cache.batch_get_attributes(up_coords)
-    
-    # Identify true anchors
-    is_anchor = (left_types != PieceType.WALL) & (up_types != PieceType.WALL)
-    
-    valid_anchors = anchors[is_anchor]
+    if valid_indices.shape[0] == 0:
+        return np.empty((0, 6), dtype=COORD_DTYPE)
+        
+    valid_anchors = anchors[valid_indices]
     
     if valid_anchors.shape[0] == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)

@@ -367,7 +367,7 @@ def create_optimized_model(
                     model,
                     mode='default',
                     fullgraph=False,
-                    dynamic=False,
+                    # dynamic=True,  # Disable dynamic shapes to prevent Inductor crash
                 )
                 print("Model compiled with torch.compile (default mode for ROCm)")
             except Exception as e:

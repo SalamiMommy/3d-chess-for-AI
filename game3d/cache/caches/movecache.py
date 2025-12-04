@@ -100,6 +100,8 @@ class MoveCache:
         
         # Piece-level cache (stores pseudolegal moves by default)
         self._piece_moves_cache = OrderedDict()
+        # Piece-level RAW cache (stores raw moves for incremental updates)
+        self._piece_raw_moves_cache = OrderedDict()
 
         # Reverse Move Map: Square Key -> Set of Piece Keys
         self._reverse_map: Dict[int, set] = {}
@@ -260,10 +262,16 @@ class MoveCache:
     def invalidate(self) -> None:
         """Invalidate ALL caches."""
         with self._lock:
+            print(f"DEBUG: MoveCache.invalidate called. ID: {id(self)}")
             self.invalidate_legal_moves()
             self.invalidate_pseudolegal_moves()
             self.invalidate_raw_moves()
             self._cache_generation += 1
+            self._piece_moves_cache.clear()
+            self._piece_raw_moves_cache.clear()
+            self._reverse_map.clear()
+            self._piece_targets.clear()
+            print(f"DEBUG: MoveCache cleared. Piece cache size: {len(self._piece_moves_cache)}")
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get cache statistics for all cache levels."""
@@ -303,6 +311,7 @@ class MoveCache:
             self.invalidate()
             self._stats.fill(0)
             self._piece_moves_cache.clear()
+            self._piece_raw_moves_cache.clear()
             self._reverse_map.clear()
             self._piece_targets.clear()
             self._affected_coord_keys = np.empty(0, dtype=np.int64)
@@ -407,6 +416,48 @@ class MoveCache:
             self._update_reverse_map(piece_id, moves)
             self._piece_moves_cache[piece_id] = moves
             self._piece_moves_cache.move_to_end(piece_id)
+
+    def has_piece_raw_moves(self, color: int, coord_key: Union[int, bytes]) -> bool:
+        """Check if piece RAW moves are cached."""
+        color_idx = 0 if color == Color.WHITE else 1
+        if isinstance(coord_key, (int, np.integer)):
+            int_key = int(coord_key)
+        else:
+            int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
+        
+        piece_id = (color_idx, int_key)
+        with self._lock:
+            return piece_id in self._piece_raw_moves_cache
+
+    def get_piece_raw_moves(self, color: int, coord_key: Union[int, bytes]) -> np.ndarray:
+        """Retrieve cached RAW moves for a piece."""
+        color_idx = 0 if color == Color.WHITE else 1
+        if isinstance(coord_key, (int, np.integer)):
+            int_key = int(coord_key)
+        else:
+            int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
+        
+        piece_id = (color_idx, int_key)
+        with self._lock:
+            if piece_id in self._piece_raw_moves_cache:
+                self._piece_raw_moves_cache.move_to_end(piece_id)
+                return self._piece_raw_moves_cache[piece_id]
+            return np.empty((0, 6), dtype=MOVE_DTYPE)
+
+    def store_piece_raw_moves(self, color: int, coord_key: Union[int, bytes], moves: np.ndarray) -> None:
+        """Cache RAW moves for a specific piece."""
+        color_idx = 0 if color == Color.WHITE else 1
+        if isinstance(coord_key, (int, np.integer)):
+            int_key = int(coord_key)
+        else:
+            int_key = int.from_bytes(coord_key, 'little') if coord_key else 0
+
+        piece_id = (color_idx, int_key)
+        with self._lock:
+            # Pruning logic shared or separate? Shared limit for simplicity?
+            # For now, just add. Pruning might need to handle both.
+            self._piece_raw_moves_cache[piece_id] = moves
+            self._piece_raw_moves_cache.move_to_end(piece_id)
 
     def _update_reverse_map(self, piece_id: tuple, moves: np.ndarray) -> None:
         """Update the reverse map for a piece."""

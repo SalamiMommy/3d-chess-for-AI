@@ -96,6 +96,7 @@ def _inference_server_loop(
         server_logger.info("Server Ready. Listening...")
 
         # 3. Main Loop
+        first_batch = True
         with inference_ctx:
             while not stop_event.is_set():
                 requests = []
@@ -130,11 +131,18 @@ def _inference_server_loop(
                 states = torch.from_numpy(states_np).float().to(device, non_blocking=True)
 
                 # Inference
+                if first_batch:
+                    server_logger.info("Processing first batch (this may trigger compilation)...")
+
                 if device == 'cuda':
                     with torch.amp.autocast('cuda'):
                         from_logits, to_logits, values = model(states)
                 else:
                     from_logits, to_logits, values = model(states)
+                
+                if first_batch:
+                    server_logger.info("First batch processed.")
+                    first_batch = False
 
                 # Move results to CPU
                 # Use non_blocking=False to ensure synchronization before sending
@@ -178,10 +186,10 @@ def _game_worker_client(args):
     from game3d.common.coord_utils import coord_to_idx
     from game3d.common.shared_types import POLICY_DIM, Color, Result, COORD_DTYPE
     from game3d.movement.movepiece import Move
-    from game3d.game.factory import start_game_state
-    from game3d.game3d import OptimizedGame3D
+    from game3d.game3d import OptimizedGame3D, InvalidMoveError
     from training.opponents import create_opponent, OpponentBase
     from game3d.game.terminal import get_draw_reason, result as get_result
+    from game3d.game.factory import start_game_state
 
     (
         game_id,
@@ -225,8 +233,8 @@ def _game_worker_client(args):
 
             # Wait for response (Blocking)
             try:
-                # 30s timeout to detect server crash/hangs
-                from_probs, to_probs, value_pred_scalar = response_queue.get(timeout=30.0)
+                # 600s timeout to allow for compilation on first batch
+                from_probs, to_probs, value_pred_scalar = response_queue.get(timeout=600.0)
             except Empty:
                 raise RuntimeError("Server response timeout - server likely crashed or is overloaded")
 
@@ -297,7 +305,17 @@ def _game_worker_client(args):
                 chosen_move[3:6].astype(COORD_DTYPE)
             )
 
-            receipt = game.submit_move(submit_move)
+            try:
+                receipt = game.submit_move(submit_move)
+            except (InvalidMoveError, ValueError) as e:
+                worker_logger.warning(f"Worker {worker_id}: Caught invalid move error: {e}. Invalidating cache and retrying.")
+                # Force cache invalidation to clear stale moves
+                game.state.cache_manager.move_cache.invalidate()
+                game.state._legal_moves_cache = None
+                
+                error_count += 1
+                if error_count >= 3: break
+                continue
 
             if not receipt.is_legal:
                 error_count += 1
@@ -358,19 +376,21 @@ def generate_training_data_parallel(
     Orchestrates Client-Server self-play.
     """
     if opponent_types is None:
-        opponent_types = ["random", "random"]
+        opponent_types = ["piece_capture", "piece_capture"]
 
     logger.info(f"Starting Client-Server Self-Play: {num_games} games, {num_parallel} workers")
 
     # 1. Setup Queues
-    manager = mp.Manager()
+    # Use 'spawn' context for CUDA compatibility
+    ctx = mp.get_context('spawn')
+    manager = ctx.Manager()
     request_queue = manager.Queue()
     # Create private response queue for each worker ID (0 to num_parallel-1)
     response_queues = {i: manager.Queue() for i in range(num_parallel)}
-    stop_event = mp.Event()
+    stop_event = ctx.Event()
 
     # 2. Start Inference Server
-    server_process = mp.Process(
+    server_process = ctx.Process(
         target=_inference_server_loop,
         args=(
             model_checkpoint_path,
@@ -438,7 +458,7 @@ def generate_training_data_parallel(
             finally:
                 id_queue.put(w_id) # Release ID
 
-        pool = mp.Pool(processes=num_parallel)
+        pool = ctx.Pool(processes=num_parallel)
 
         game_args = []
         for i in range(num_games):

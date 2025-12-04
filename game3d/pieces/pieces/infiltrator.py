@@ -105,36 +105,51 @@ def generate_infiltrator_moves(
         
     return np.concatenate(moves_list, axis=0)
 
+@njit(cache=True, fastmath=True)
+def _get_pawn_targets_kernel(
+    occ: np.ndarray,
+    ptype: np.ndarray,
+    enemy_color: int,
+    dz: int
+) -> np.ndarray:
+    """
+    Fused kernel to find valid pawn targets.
+    Iterates over the board to find enemy pawns and checks their targets.
+    """
+    # Max possible targets = number of squares (upper bound)
+    # We can use a smaller buffer if needed, but 729 is small.
+    targets = np.empty((SIZE * SIZE * SIZE, 3), dtype=COORD_DTYPE)
+    count = 0
+    
+    # Iterate over all squares
+    # We can iterate linearly for speed
+    for x in range(SIZE):
+        for y in range(SIZE):
+            for z in range(SIZE):
+                # Check if enemy pawn
+                if occ[x, y, z] == enemy_color and ptype[x, y, z] == PieceType.PAWN:
+                    # Calculate target z
+                    tz = z + dz
+                    
+                    # Check bounds
+                    if 0 <= tz < SIZE:
+                        # Check if target is empty
+                        if occ[x, y, tz] == 0:
+                            targets[count, 0] = x
+                            targets[count, 1] = y
+                            targets[count, 2] = tz
+                            count += 1
+                            
+    return targets[:count]
+
 def _get_valid_pawn_targets(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     teleport_behind: bool = False
 ) -> np.ndarray:
-    """Get empty squares in front of (or behind) enemy pawns.
+    """Get empty squares in front of (or behind) enemy pawns using fused kernel."""
+    enemy_color = Color(color).opposite().value
     
-    Args:
-        cache_manager: Cache manager
-        color: Infiltrator's color
-        teleport_behind: If True, get squares behind pawns. If False, get squares in front.
-    """
-    enemy_color = Color(color).opposite()
-
-    # Get all enemy piece positions
-    enemy_coords = cache_manager.occupancy_cache.get_positions(enemy_color)
-
-    if enemy_coords.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    # Get piece types (unsafe is fine as coords are valid)
-    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes_unsafe(enemy_coords)
-
-    # Filter to only pawn coordinates
-    pawn_mask = piece_types == PieceType.PAWN.value
-    pawn_coords = enemy_coords[pawn_mask]
-
-    if pawn_coords.shape[0] == 0:
-        return get_empty_coord_batch()
-
     # Direction depends on enemy color and whether we want front or behind
     # If enemy is Black, they move -Z, so front is -1, behind is +1
     # If enemy is White, they move +Z, so front is +1, behind is -1
@@ -145,22 +160,12 @@ def _get_valid_pawn_targets(
         # Front is same as pawn's forward direction
         dz = -1 if enemy_color == Color.BLACK else 1
         
-    # Vectorized addition
-    target_squares = pawn_coords.copy()
-    target_squares[:, 2] += dz
-
-    # Check bounds
-    valid_mask = in_bounds_vectorized(target_squares)
-    valid_target_squares = target_squares[valid_mask]
-
-    if valid_target_squares.shape[0] == 0:
-        return get_empty_coord_batch()
-
-    # Filter to empty squares
-    empty_mask = ~cache_manager.occupancy_cache.batch_is_occupied_unsafe(valid_target_squares)
-    empty_target_squares = valid_target_squares[empty_mask]
-
-    return empty_target_squares
+    return _get_pawn_targets_kernel(
+        cache_manager.occupancy_cache._occ,
+        cache_manager.occupancy_cache._ptype,
+        enemy_color,
+        dz
+    )
 
 @register(PieceType.INFILTRATOR)
 def infiltrator_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:

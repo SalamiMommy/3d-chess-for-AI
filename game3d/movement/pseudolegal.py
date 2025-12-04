@@ -17,7 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 from numba import njit, prange
 
-from game3d.common.shared_types import COORD_DTYPE, PieceType
+from game3d.common.shared_types import COORD_DTYPE, PieceType, MOVE_DTYPE
 from game3d.common.registry import get_piece_dispatcher
 from game3d.pieces.pieces.pawn import generate_pawn_moves
 
@@ -314,12 +314,147 @@ def generate_pseudolegal_moves_for_piece(
 
 
 # =============================================================================
+# CACHE REFRESH LOGIC
+# =============================================================================
+
+def _cache_piece_moves(cache_manager, batch_coords: np.ndarray, batch_moves: np.ndarray, color: int, is_raw: bool = False) -> None:
+    """
+    Groups batch moves by source coordinate and stores them in piece cache.
+    Sorts moves by key for efficient grouping. Complexity: O(M log M).
+    """
+    if batch_moves.size == 0:
+        # If no moves generated, we still need to mark pieces as having 0 moves
+        # But we need to know WHICH pieces had 0 moves.
+        # This function assumes batch_moves contains moves.
+        # For pieces with 0 moves, we handle them in the caller loop or by checking coverage.
+        return
+
+    move_sources = batch_moves[:, :3]
+    move_keys = coord_to_key(move_sources)
+
+    # Group moves by sorting keys
+    sort_idx = np.argsort(move_keys)
+    sorted_moves = batch_moves[sort_idx]
+    sorted_keys = move_keys[sort_idx]
+
+    unique_keys, start_indices = np.unique(sorted_keys, return_index=True)
+    end_indices = np.append(start_indices[1:], sorted_keys.size)
+
+    for i in range(unique_keys.size):
+        if is_raw:
+            cache_manager.move_cache.store_piece_raw_moves(
+                color, unique_keys[i], sorted_moves[start_indices[i]:end_indices[i]]
+            )
+        else:
+            cache_manager.move_cache.store_piece_moves(
+                color, unique_keys[i], sorted_moves[start_indices[i]:end_indices[i]]
+            )
+
+def refresh_pseudolegal_cache(state: "GameState") -> None:
+    """
+    Refresh the pseudolegal move cache for the current player.
+    
+    1. Identifies pieces that need updates (missing or invalidated).
+    2. Generates RAW and PSEUDOLEGAL moves for them.
+    3. Updates piece-level cache.
+    4. Reconstructs and updates color-level cache.
+    """
+    cache_manager = state.cache_manager
+    color = state.color
+    
+    # 1. Check if color-level cache is already valid
+    if cache_manager.move_cache.get_pseudolegal_moves(color) is not None:
+        return
+
+    # 2. Identify pieces needing regeneration
+    affected_pieces = cache_manager.move_cache.get_affected_pieces(color)
+    all_coords = cache_manager.occupancy_cache.get_positions(color)
+    
+    if all_coords.size == 0:
+        empty_moves = np.empty((0, 6), dtype=COORD_DTYPE)
+        cache_manager.move_cache.store_raw_moves(color, empty_moves)
+        cache_manager.move_cache.store_pseudolegal_moves(color, empty_moves)
+        return
+
+    coord_keys = coord_to_key(all_coords)
+    pieces_to_regenerate = []
+    
+    # Identify pieces that need update
+    for i in range(len(all_coords)):
+        key = coord_keys[i]
+        is_affected = np.any(affected_pieces == key) if affected_pieces.size > 0 else False
+        is_missing_pseudo = not cache_manager.move_cache.has_piece_moves(color, key)
+        is_missing_raw = not cache_manager.move_cache.has_piece_raw_moves(color, key)
+        
+        if is_affected or is_missing_pseudo or is_missing_raw:
+            pieces_to_regenerate.append(all_coords[i])
+            
+    # 3. Regenerate moves for affected pieces
+    if pieces_to_regenerate:
+        regenerate_coords = np.array(pieces_to_regenerate, dtype=COORD_DTYPE)
+        debuffed_coords = cache_manager.consolidated_aura_cache.get_debuffed_squares(color)
+        
+        # A. Generate RAW moves (Ignore Occupancy)
+        raw_moves_batch = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=True)
+        
+        # B. Generate PSEUDOLEGAL moves (Respect Occupancy)
+        pseudo_moves_batch = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=False)
+        
+        # C. Update Piece Caches
+        # First, ensure we clear old entries for these pieces (handled by store overwriting)
+        # But we need to handle pieces that generated 0 moves.
+        # The batch generator returns concatenated moves. Pieces with 0 moves are missing from result.
+        # We must explicitly set empty moves for all regenerated pieces first.
+        
+        regen_keys = coord_to_key(regenerate_coords)
+        empty = np.empty((0, 6), dtype=COORD_DTYPE)
+        
+        for key in regen_keys:
+            cache_manager.move_cache.store_piece_raw_moves(color, key, empty)
+            cache_manager.move_cache.store_piece_moves(color, key, empty)
+            
+        # Now overwrite with actual moves
+        if raw_moves_batch.size > 0:
+            _cache_piece_moves(cache_manager, regenerate_coords, raw_moves_batch, color, is_raw=True)
+            
+        if pseudo_moves_batch.size > 0:
+            _cache_piece_moves(cache_manager, regenerate_coords, pseudo_moves_batch, color, is_raw=False)
+
+    # 4. Reconstruct full Color-level arrays from Piece cache
+    # This ensures consistency and O(N) reconstruction instead of full O(N*M) regeneration
+    
+    all_raw_moves = []
+    all_pseudo_moves = []
+    
+    for key in coord_keys:
+        # Raw
+        p_raw = cache_manager.move_cache.get_piece_raw_moves(color, key)
+        if p_raw.size > 0:
+            all_raw_moves.append(p_raw)
+            
+        # Pseudo
+        p_pseudo = cache_manager.move_cache.get_piece_moves(color, key)
+        if p_pseudo.size > 0:
+            all_pseudo_moves.append(p_pseudo)
+            
+    final_raw = np.concatenate(all_raw_moves, axis=0) if all_raw_moves else np.empty((0, 6), dtype=COORD_DTYPE)
+    final_pseudo = np.concatenate(all_pseudo_moves, axis=0) if all_pseudo_moves else np.empty((0, 6), dtype=COORD_DTYPE)
+    
+    # 5. Store in Color-level cache
+    cache_manager.move_cache.store_raw_moves(color, final_raw)
+    cache_manager.move_cache.store_pseudolegal_moves(color, final_pseudo)
+    
+    # Clear affected status
+    cache_manager.move_cache.clear_affected_pieces(color)
+
+# =============================================================================
 # MODULE EXPORTS
 # =============================================================================
 
 __all__ = [
     'generate_pseudolegal_moves_batch',
     'generate_pseudolegal_moves_for_piece',
+    'refresh_pseudolegal_cache',
     'coord_to_key',
     'extract_piece_moves_from_batch',
     'MoveContractViolation',

@@ -997,7 +997,7 @@ class PriestHunterOpponent(OpponentBase):
         self._apply_capture_rewards(
             rewards, to_coords, captured_colors, captured_types, 
             halfmove_clock=0,  # Don't apply additional clock scaling (we handle it manually)
-            priest_bonus=5.0 * clock_multiplier,
+            priest_bonus=0.8 * clock_multiplier,
             freezer_bonus=0.1 * clock_multiplier
         )
 

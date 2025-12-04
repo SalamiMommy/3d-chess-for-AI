@@ -1,67 +1,50 @@
 
-import sys
-from unittest.mock import MagicMock
-
-# Mock tensorboard
-sys.modules["torch.utils.tensorboard"] = MagicMock()
-sys.modules["tensorboard"] = MagicMock()
-
-# Mock tqdm
-tqdm_mock = MagicMock()
-tqdm_mock.tqdm = lambda x, **kwargs: x
-sys.modules["tqdm"] = tqdm_mock
-
 import torch
-from torch.utils.data import Dataset, DataLoader
-from training.optim_train import ChessTrainer
-from training.training_types import TrainingConfig, TrainingExample
 import numpy as np
-
-# Mock Dataset
-class MockDataset(Dataset):
-    def __init__(self, size):
-        self.size = size
-    
-    def __len__(self):
-        return self.size
-    
-    def __getitem__(self, idx):
-        # Return dummy data matching the expected shapes
-        # states: (89, 9, 9, 9)
-        # from_targets: (729,)
-        # to_targets: (729,)
-        # value_targets: scalar
-        return (
-            torch.zeros((89, 9, 9, 9)),
-            torch.zeros((729,)),
-            torch.zeros((729,)),
-            torch.tensor(0.0)
-        )
+from training.optim_train import ChessTrainer, TrainingConfig, TrainingExample
+from game3d.common.shared_types import SIZE, N_TOTAL_PLANES
 
 def reproduce_crash():
-    # Create a config with default train_split=0.9
+    # Minimal config
     config = TrainingConfig(
-        batch_size=4,
-        train_split=0.9,
-        model_type="transformer", # Use transformer to avoid ChessDataset logic which might be different
-        device="cpu"
+        batch_size=2,
+        epochs=1,
+        validate_every=1,
+        save_every=10,
+        model_size="small", # Use small model for speed
+        device="cpu" # Use CPU for reproduction to avoid CUDA setup issues
     )
     
-    # Create a trainer
+    # Create trainer
     trainer = ChessTrainer(config)
     
-    # Create a dataset with very few examples
-    # If size is 1: train_len = int(1 * 0.9) = 0
-    dataset = MockDataset(size=1)
+    # Create a SINGLE example
+    # This will force a very small dataset. 
+    # With default train_split=0.9, 1 example -> 0 train, 1 val OR 1 train, 0 val depending on rounding/logic
+    # Let's try to trigger the 0 batches case.
     
-    print(f"Dataset size: {len(dataset)}")
-    print(f"Train split: {config.train_split}")
+    # Create dummy data with valid policy targets (sum to 1.0)
+    state = np.zeros((N_TOTAL_PLANES, SIZE, SIZE, SIZE), dtype=np.float32)
+    from_target = np.zeros(SIZE**3, dtype=np.float32)
+    from_target[0] = 1.0
+    to_target = np.zeros(SIZE**3, dtype=np.float32)
+    to_target[0] = 1.0
     
+    example = TrainingExample(
+        state_tensor=state,
+        from_target=from_target,
+        to_target=to_target,
+        value_target=0.0
+    )
+    
+    print("Starting training with 1 example...")
     try:
-        # This should crash
-        trainer.train(dataset)
+        trainer.train([example])
+        print("Training completed successfully (Fix verified!)")
     except ZeroDivisionError:
-        print("Caught expected ZeroDivisionError!")
+        print("Caught ZeroDivisionError! Fix FAILED.")
+        import traceback
+        traceback.print_exc()
     except Exception as e:
         print(f"Caught unexpected exception: {e}")
         import traceback

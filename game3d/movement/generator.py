@@ -33,6 +33,7 @@ from game3d.movement.movementmodifiers import (
 )
 from game3d.movement.pseudolegal import (
     generate_pseudolegal_moves_batch,
+    refresh_pseudolegal_cache,
     coord_to_key,
     MoveContractViolation
 )
@@ -211,18 +212,12 @@ class LegalMoveGenerator:
     def generate_fused(self, state: 'GameState') -> np.ndarray:
         """
         Fused generation pipeline:
-        1. Pseudolegal generation (batch)
-        2. Validation (check/pin/etc)
-        3. Filtering (safe moves)
+        1. Probe TT.
+        2. Probe Legal Move Cache.
+        3. Refresh Pseudolegal Cache (Incremental).
+        4. Filter (Check, Pin, Hive, etc.).
+        5. Cache Legal Moves.
         """
-        # 0. Check for checkmate/stalemate early exit?
-        # 1. Probe TT.
-        # 2. Probe Move Cache (fast path).
-        # 3. Identify cache misses or affected pieces.
-        # 4. Regenerate raw moves (ignore occupancy) AND pseudolegal moves (respect occupancy).
-        # 5. Validate and Filter (Freeze, Hive, Priest, Check).
-        # 6. Update Cache.
-        # """
         # 1. Check Transposition Table
         cache_key = state.zkey
         tt_entry = state.cache_manager.transposition_table.probe_with_symmetry(cache_key, state.board)
@@ -236,7 +231,7 @@ class LegalMoveGenerator:
 
         self._stats['tt_misses'] += 1
 
-        # 2. Check Move Cache & Incremental Logic
+        # 2. Check Legal Move Cache
         cached = state.cache_manager.move_cache.get_legal_moves(state.color)
         affected_pieces = state.cache_manager.move_cache.get_affected_pieces(state.color)
 
@@ -246,67 +241,26 @@ class LegalMoveGenerator:
 
         self._stats['cache_misses'] += 1
 
-        # 3. Rebuild Moves
-        coords = state.cache_manager.occupancy_cache.get_positions(state.color)
-        if coords.size == 0:
-            return np.empty((0, 6), dtype=COORD_DTYPE)
-
-        coord_keys = coord_to_key(coords)
-        moves_list = []
-        pieces_to_regenerate = []
-        debuffed_coords = state.cache_manager.consolidated_aura_cache.get_debuffed_squares(state.color)
-
-        # Classify pieces: reuse cache vs regenerate
-        for i in range(len(coords)):
-            key = coord_keys[i]
-            is_affected = np.any(affected_pieces == key) if affected_pieces.size > 0 else False
-
-            if not is_affected and state.cache_manager.move_cache.has_piece_moves(state.color, key):
-                p_moves = state.cache_manager.move_cache.get_piece_moves(state.color, key)
-                if p_moves.size > 0:
-                    moves_list.append(p_moves)
-            else:
-                pieces_to_regenerate.append(coords[i])
-
-        # Regenerate raw moves for invalid/affected pieces
-        if pieces_to_regenerate:
-            regenerate_coords = np.array(pieces_to_regenerate, dtype=COORD_DTYPE)
-            
-            # 1. Generate Raw Moves (Ignore Occupancy) - for Pin Detection
-            raw_moves = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=True)
-            state.cache_manager.move_cache.store_raw_moves(state.color, raw_moves)
-
-            # 2. Generate Pseudolegal Moves (Respect Occupancy) - for Legal Move Generation
-            new_moves = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=False)
-            
-            self._cache_piece_moves(state.cache_manager, regenerate_coords, new_moves, state.color)
-            if new_moves.size > 0:
-                moves_list.append(new_moves)
-
-        final_moves = np.concatenate(moves_list, axis=0) if moves_list else np.empty((0, 6), dtype=MOVE_DTYPE)
-
-        # ✅ Store PSEUDOLEGAL moves for check detection
-        state.cache_manager.move_cache.store_pseudolegal_moves(state.color, final_moves)
+        # 3. Refresh Pseudolegal Cache (Delegated to pseudolegal.py)
+        refresh_pseudolegal_cache(state)
         
-        if final_moves.size == 0 and len(coords) > 0:
-             logger.debug(f"Generator: 0 moves after pseudolegal generation for {len(coords)} pieces")
-        # else:
-        #      logger.debug(f"Generator: {len(final_moves)} pseudolegal moves generated")
+        # Retrieve cached pseudolegal moves
+        pseudolegal_moves = state.cache_manager.move_cache.get_pseudolegal_moves(state.color)
+        
+        if pseudolegal_moves is None:
+            # Should not happen after refresh, but safety fallback
+            pseudolegal_moves = np.empty((0, 6), dtype=MOVE_DTYPE)
 
-        # 4. Validation - REMOVED (Redundant: Generators guarantee in-bounds & valid moves)
-        # if final_moves.size > 0:
-        #     valid_mask = self._validate_moves_array(state, final_moves)
-        #     final_moves = final_moves[valid_mask]
-        #     if final_moves.size == 0:
-        #          logger.debug("Generator: All moves filtered by validation")
+        # 4. Apply Game Rule Filters
+        final_moves = self._apply_all_filters(state, pseudolegal_moves)
 
-        # 5. Apply Game Rule Filters
-        final_moves = self._apply_all_filters(state, final_moves)
-        # logger.debug(f"Generator: {len(final_moves)} moves passed all filters (Final Legal Moves)")
-
-        # 6. Final Cache Store
+        # 5. Final Cache Store
         state.cache_manager.move_cache.store_legal_moves(state.color, final_moves)
-        state.cache_manager.move_cache.clear_affected_pieces(state.color)
+        
+        # Note: affected pieces are cleared in refresh_pseudolegal_cache, 
+        # but store_legal_moves might need to know if it's fresh. 
+        # Actually refresh_pseudolegal_cache clears affected pieces for pseudolegal layer.
+        # Legal layer is now fresh too.
 
         return final_moves
 
@@ -474,84 +428,12 @@ class LegalMoveGenerator:
 
     def update_legal_moves_incremental(self, state: 'GameState') -> np.ndarray:
         """
-        Incrementally update legal moves - only regenerate affected pieces.
+        Incrementally update legal moves.
+        Now delegates to generate_fused which handles incremental updates via refresh_pseudolegal_cache.
         """
-        color = state.color
+        return self.generate_fused(state)
 
-        # Get affected pieces that need regeneration
-        affected_pieces = state.cache_manager.move_cache.get_affected_pieces(color)
 
-        if affected_pieces.size == 0:
-            # Nothing affected, return cached moves
-            return state.cache_manager.move_cache.get_legal_moves(color)
-
-        # Get debuffed squares for modifier application
-        debuffed_coords = state.cache_manager.consolidated_aura_cache.get_debuffed_squares(color)
-
-        # Get all piece coordinates
-        all_coords = state.cache_manager.occupancy_cache.get_positions(color)
-        if all_coords.size == 0:
-            state.cache_manager.move_cache.store_legal_moves(color, np.empty((0, 6), dtype=MOVE_DTYPE))
-            return np.empty((0, 6), dtype=MOVE_DTYPE)
-
-        # Identify pieces that need regeneration:
-        # 1. Affected pieces (explicitly invalidated)
-        # 2. Missing pieces (not in cache yet)
-        
-        pieces_to_regenerate = []
-        coord_keys = coord_to_key(all_coords)
-        
-        for i in range(len(all_coords)):
-            key = coord_keys[i]
-            is_affected = np.any(affected_pieces == key) if affected_pieces.size > 0 else False
-            is_missing = not state.cache_manager.move_cache.has_piece_moves(color, key)
-            
-            if is_affected or is_missing:
-                pieces_to_regenerate.append(all_coords[i])
-
-        # Regenerate moves for all identified pieces
-        if pieces_to_regenerate:
-            regenerate_coords = np.array(pieces_to_regenerate, dtype=COORD_DTYPE)
-            
-            # 1. Generate Raw Moves (Ignore Occupancy)
-            raw_moves = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=True)
-            state.cache_manager.move_cache.store_raw_moves(color, raw_moves)
-            
-            # 2. Generate Pseudolegal Moves (Respect Occupancy)
-            new_moves = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=False)
-            
-            self._cache_piece_moves(state.cache_manager, regenerate_coords, new_moves, color)
-
-        # Reconstruct full move list from piece cache
-        all_moves = self._reconstruct_from_piece_cache(state, color)
-        
-        # Store full pseudolegal moves
-        state.cache_manager.move_cache.store_pseudolegal_moves(color, all_moves)
-
-        # Apply validation (REMOVED: Redundant) and filtering
-        all_moves = self._apply_all_filters(state, all_moves)
-
-        # Store in legal moves cache
-        state.cache_manager.move_cache.store_legal_moves(color, all_moves)
-        state.cache_manager.move_cache.clear_affected_pieces(color)
-
-        return all_moves
-
-    def _reconstruct_from_piece_cache(self, state: 'GameState', color: int) -> np.ndarray:
-        """Rebuild full move list from piece-level cache."""
-        all_coords = state.cache_manager.occupancy_cache.get_positions(color)
-        if all_coords.size == 0:
-            return np.empty((0, 6), dtype=COORD_DTYPE)
-
-        moves_list = []
-        coord_keys = coord_to_key(all_coords)
-
-        for key in coord_keys:
-            piece_moves = state.cache_manager.move_cache.get_piece_moves(color, key)
-            if piece_moves.size > 0:
-                moves_list.append(piece_moves)
-
-        return np.concatenate(moves_list, axis=0) if moves_list else np.empty((0, 6), dtype=COORD_DTYPE)
 # =============================================================================
 # GLOBAL GENERATOR INSTANCE & PUBLIC API
 # =============================================================================
