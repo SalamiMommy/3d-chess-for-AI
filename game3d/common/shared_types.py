@@ -7,6 +7,8 @@ import numpy as np
 from typing import Union, Tuple, Optional, Any, List
 from enum import IntEnum
 from dataclasses import dataclass
+from functools import lru_cache
+
 
 # Define enums directly to avoid circular imports
 class Color(IntEnum):
@@ -95,54 +97,64 @@ class PieceType(IntEnum):
     TRAILBLAZER = 39  # marks trail, counter removal
     SPIRAL = 40  # counter-clockwise spiral (radius 2)
     
-    # Helper methods
+    # Helper methods (cached for performance)
     @classmethod
+    @lru_cache(maxsize=1)
     def get_standard_pieces(cls) -> list['PieceType']:
         """Get list of standard chess pieces (1-6)."""
         return [cls.PAWN, cls.KNIGHT, cls.BISHOP, cls.ROOK, cls.QUEEN, cls.KING]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_special_3d_pieces(cls) -> list['PieceType']:
         """Get list of special 3D pieces (7-15)."""
         return [cls.PRIEST, cls.KNIGHT32, cls.KNIGHT31, cls.TRIGONALBISHOP, cls.HIVE, 
                 cls.ORBITER, cls.NEBULA, cls.ECHO, cls.PANEL]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_plane_specific_pieces(cls) -> list['PieceType']:
         """Get list of plane-specific pieces (16-19)."""
         return [cls.EDGEROOK, cls.XYQUEEN, cls.XZQUEEN, cls.YZQUEEN]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_advanced_movement_pieces(cls) -> list['PieceType']:
         """Get list of advanced movement pieces (20-21)."""
         return [cls.VECTORSLIDER, cls.CONESLIDER]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_special_effect_pieces(cls) -> list['PieceType']:
         """Get list of special effect pieces (22-26)."""
         return [cls.MIRROR, cls.FREEZER, cls.WALL, cls.ARCHER, cls.BOMB]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_utility_pieces(cls) -> list['PieceType']:
         """Get list of utility pieces (27-30)."""
         return [cls.FRIENDLYTELEPORTER, cls.ARMOUR, cls.SPEEDER, cls.SLOWER]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_terrain_movement_pieces(cls) -> list['PieceType']:
         """Get list of terrain/movement pieces (31-35)."""
         return [cls.GEOMANCER, cls.SWAPPER, cls.XZZIGZAG, cls.YZZIGZAG, cls.REFLECTOR]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_physics_pieces(cls) -> list['PieceType']:
         """Get list of physics-based pieces (36-37)."""
         return [cls.BLACKHOLE, cls.WHITEHOLE]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_advanced_strategic_pieces(cls) -> list['PieceType']:
         """Get list of advanced strategic pieces (38-40)."""
         return [cls.INFILTRATOR, cls.TRAILBLAZER, cls.SPIRAL]
     
     @classmethod
+    @lru_cache(maxsize=1)
     def get_all_piece_types(cls) -> list['PieceType']:
         """Get list of all piece types (1-40, excluding 0)."""
         return np.array([pt for pt in cls], dtype=np.int8)

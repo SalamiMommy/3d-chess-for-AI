@@ -24,6 +24,7 @@ from game3d.pieces.pieces.hive import get_movable_hives, apply_multi_hive_move
 
 if TYPE_CHECKING:
     from game3d.game.gamestate import GameState
+    from game3d.game.performance import PerformanceMetrics
 
 import logging
 logger = logging.getLogger(__name__)
@@ -84,6 +85,38 @@ def validate_move_integrated(game_state: 'GameState', move: Move) -> Optional[st
     # Vectorized check
     # legal_moves_list is (N, 6)
     matches = np.all(legal_moves_list[:, :6] == move_arr, axis=1)
+    
+    # ✅ CRITICAL FIX: Wall bounds validation MUST run even for cached moves
+    # This prevents invalid Wall moves from bypassing validation if they somehow
+    # end up in the legal moves cache (stale cache, race condition, etc.)
+    from_coord_batch = move.from_coord.reshape(1, 3)
+    to_coord_batch = move.to_coord.reshape(1, 3)
+    _, from_types = game_state.cache_manager.occupancy_cache.batch_get_attributes(from_coord_batch)
+    _, to_types = game_state.cache_manager.occupancy_cache.batch_get_attributes(to_coord_batch)
+    
+    # Case 0: Wall at invalid SOURCE position (corrupted state detection)
+    # A Wall should NEVER exist at x>=SIZE-1 or y>=SIZE-1 since it's a 2x2 block
+    if from_types[0] == PieceType.WALL:
+        from_x, from_y, _ = move.from_coord
+        if from_x >= SIZE - 1 or from_y >= SIZE - 1:
+            logger.error(
+                f"CORRUPTED STATE: Wall found at invalid anchor {move.from_coord}. "
+                f"Wall anchors must be in [0, {SIZE-2}] for x,y to fit 2x2 block."
+            )
+            return f"Wall at {move.from_coord} is at invalid anchor position (corrupted state)"
+    
+    # Case 1: Wall moving directly - check dest bounds
+    if from_types[0] == PieceType.WALL:
+        to_x, to_y, _ = move.to_coord
+        if to_x >= SIZE - 1 or to_y >= SIZE - 1:
+            return f"Wall move to {move.to_coord} would place part of the wall out of bounds"
+    
+    # Case 2: Swapper swapping with Wall - Wall ends up at Swapper's position (from_coord)
+    # In a swap, piece at from_coord moves to to_coord, and piece at to_coord moves to from_coord
+    if to_types[0] == PieceType.WALL and from_types[0] == PieceType.SWAPPER:
+        from_x, from_y, _ = move.from_coord
+        if from_x >= SIZE - 1 or from_y >= SIZE - 1:
+            return f"Swapper swap would place Wall at {move.from_coord} out of bounds"
     
     if np.any(matches):
         return None # Valid
@@ -229,6 +262,15 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
         ], dtype=PIECE_TYPE_DTYPE)
 
     elif from_piece["piece_type"] == PieceType.WALL:
+        # ✅ CRITICAL: Early bounds check BEFORE offset calculations
+        # Catches OOB moves that bypassed validate_move_integrated (cache coherency issues)
+        dest_x, dest_y, dest_z = mv[3], mv[4], mv[5]
+        if dest_x >= SIZE - 1 or dest_y >= SIZE - 1:
+            raise ValueError(
+                f"Wall move to [{dest_x}, {dest_y}, {dest_z}] rejected: "
+                f"dest anchor must be < {SIZE - 1} in X and Y for 2x2 block"
+            )
+        
         # Wall: Move 2x2 block
         # Calculate offsets for 2x2 block
         block_offsets = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=COORD_DTYPE)
@@ -330,43 +372,38 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     cache_manager._invalidate_affected_piece_moves(affected_squares, game_state.color, game_state)
     cache_manager._invalidate_affected_piece_moves(affected_squares, opp_color, game_state)
     
-    # ✅ INCREMENTAL CLEANUP: Remove cache entries for pieces that moved FROM old positions
+    # ✅ OPTIMIZED: Batch cache cleanup with single lock acquisition
+    # Remove cache entries for pieces that moved FROM old positions
     # These positions are now empty, so their cache entries are stale and should be removed.
-    # This prevents unbounded growth while preserving incremental updates for existing pieces.
+    move_cache = cache_manager.move_cache
     from_coord_key = int(coords_to_keys(mv[:3].reshape(1, 3))[0])
     from_color_idx = 0 if from_piece["color"] == Color.WHITE else 1
     from_piece_id = (from_color_idx, from_coord_key)
     
-    # Remove the source position's cache entry since piece is no longer there
-    if from_piece_id in cache_manager.move_cache._piece_moves_cache:
-        del cache_manager.move_cache._piece_moves_cache[from_piece_id]
-        
-        # Clean up reverse map entries for the old position
-        if from_piece_id in cache_manager.move_cache._piece_targets:
-            for target_key in cache_manager.move_cache._piece_targets[from_piece_id]:
-                if target_key in cache_manager.move_cache._reverse_map:
-                    cache_manager.move_cache._reverse_map[target_key].discard(from_piece_id)
-                    if not cache_manager.move_cache._reverse_map[target_key]:
-                        del cache_manager.move_cache._reverse_map[target_key]
-            del cache_manager.move_cache._piece_targets[from_piece_id]
+    # Collect all piece IDs to clean up
+    pieces_to_cleanup = [from_piece_id]
     
-    # Also remove cache entry for destination if there was a capture or swap
     if captured_piece or is_swap:
         target_piece = captured_piece if captured_piece is not None else swapped_piece
         to_coord_key = int(coords_to_keys(mv[3:].reshape(1, 3))[0])
         to_color_idx = 0 if target_piece["color"] == Color.WHITE else 1
         to_piece_id = (to_color_idx, to_coord_key)
-        
-        if to_piece_id in cache_manager.move_cache._piece_moves_cache:
-            del cache_manager.move_cache._piece_moves_cache[to_piece_id]
-            
-            if to_piece_id in cache_manager.move_cache._piece_targets:
-                for target_key in cache_manager.move_cache._piece_targets[to_piece_id]:
-                    if target_key in cache_manager.move_cache._reverse_map:
-                        cache_manager.move_cache._reverse_map[target_key].discard(to_piece_id)
-                        if not cache_manager.move_cache._reverse_map[target_key]:
-                            del cache_manager.move_cache._reverse_map[target_key]
-                del cache_manager.move_cache._piece_targets[to_piece_id]
+        pieces_to_cleanup.append(to_piece_id)
+    
+    # ✅ OPTIMIZED: Single lock acquisition for all cleanup operations
+    with move_cache._lock:
+        for piece_id in pieces_to_cleanup:
+            if piece_id in move_cache._piece_moves_cache:
+                del move_cache._piece_moves_cache[piece_id]
+                
+                # Clean up reverse map entries
+                if piece_id in move_cache._piece_targets:
+                    for target_key in move_cache._piece_targets[piece_id]:
+                        if target_key in move_cache._reverse_map:
+                            move_cache._reverse_map[target_key].discard(piece_id)
+                            if not move_cache._reverse_map[target_key]:
+                                del move_cache._reverse_map[target_key]
+                    del move_cache._piece_targets[piece_id]
 
     # --- 9. UPDATE GAME STATE ---
     is_capture = captured_piece is not None
@@ -381,10 +418,6 @@ def make_move(game_state: 'GameState', mv: np.ndarray) -> 'GameState':
     game_state.history.append(move_record)
     # Update turn number and color
     game_state.turn_number += 1
-    
-    # DEBUG
-    if not isinstance(game_state.color, (int, np.integer)) or isinstance(game_state.color, np.ndarray):
-        print(f"DEBUG: make_move game_state.color type: {type(game_state.color)} value: {game_state.color}")
     
     # Ensure color is Color enum (handle numpy scalars)
     if not isinstance(game_state.color, Color):
@@ -464,6 +497,8 @@ def _regenerate_moves_for_color(game_state: 'GameState', color: int) -> None:
     """
     Regenerate moves for a specific color using incremental updates.
     Only affected pieces are regenerated; others are reused from cache.
+    
+    ✅ OPTIMIZED: Uses np.isin() for O(N log M) affected check instead of O(N*M) per-piece loop.
     """
     cache_manager = game_state.cache_manager
 
@@ -484,33 +519,68 @@ def _regenerate_moves_for_color(game_state: 'GameState', color: int) -> None:
 
     # Convert to keys for cache lookups
     all_keys = coords_to_keys(all_coords)
-    moves_list = []
-
+    
     # Get debuffed squares for modifier application
     debuffed_coords = cache_manager.consolidated_aura_cache.get_debuffed_squares(color)
 
-    # Process each piece
-    for i in range(len(all_coords)):
-        piece_key = all_keys[i]
+    # ✅ OPTIMIZED: Vectorized affected check using np.isin() - O(N log M) instead of O(N*M)
+    is_affected_mask = np.isin(all_keys, affected_pieces) if affected_pieces.size > 0 else np.zeros(len(all_keys), dtype=bool)
+    
+    # ✅ OPTIMIZED: Vectorized filtering using boolean indexing
+    # This replaces the Python loop over all indices
+    
+    # 1. Identify pieces that need regeneration (NOT affected AND NOT in cache)
+    # We need to know which pieces are already cached to skip them
+    # Since we can't vectorizedly check `has_piece_moves` easily without access to internal dict keys as array,
+    # we'll use a set lookup which is fast enough for N=462
+    
+    cached_keys_set = set()
+    with cache_manager.move_cache._lock:
+        # Get keys for this color
+        # This is fast: O(N) where N is cache size
+        color_idx = 0 if color == Color.WHITE else 1
+        cached_keys_set = {k for c, k in cache_manager.move_cache._piece_moves_cache.keys() if c == color_idx}
 
-        # Check if this piece is affected and needs regeneration
-        is_affected = np.any(affected_pieces == piece_key) if affected_pieces.size > 0 else False
-
-        if not is_affected and cache_manager.move_cache.has_piece_moves(color, piece_key):
-            # Reuse cached piece moves
-            piece_moves = cache_manager.move_cache.get_piece_moves(color, piece_key)
-            if piece_moves.size > 0:
-                moves_list.append(piece_moves)
-        else:
-            # Regenerate moves for this piece
-            from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
-            piece_coord = all_coords[i:i+1]
-            new_moves = generate_pseudolegal_moves_batch(game_state, piece_coord, debuffed_coords)
-
-            if new_moves.size > 0:
-                # Cache the regenerated moves
-                cache_manager.move_cache.store_piece_moves(color, piece_key, new_moves)
-                moves_list.append(new_moves)
+    # 2. Build masks
+    # Convert all keys to int for set lookup
+    all_keys_int = all_keys.astype(np.int64) # Ensure native int for set lookup
+    
+    # Check which are in cache
+    # Note: np.isin is slow for sets if not converted to array, but list comprehension is fast for sets
+    is_in_cache = np.array([k in cached_keys_set for k in all_keys_int], dtype=bool)
+    
+    # Determine what to do with each piece
+    # Cached = (Not Affected) AND (In Cache)
+    use_cached_mask = (~is_affected_mask) & is_in_cache
+    
+    # Regen = Everything else (Affected OR Not In Cache)
+    regen_mask = ~use_cached_mask
+    
+    moves_list = []
+    
+    # 3. Batch collect cached moves
+    from game3d.common.shared_types import COORD_DTYPE
+    cached_part_keys = all_keys_int[use_cached_mask]
+    
+    if len(cached_part_keys) > 0:
+        with cache_manager.move_cache._lock:
+            cached_moves_batch = [
+                cache_manager.move_cache._piece_moves_cache.get((color_idx, k), np.empty((0, 6), dtype=MOVE_DTYPE))
+                for k in cached_part_keys
+            ]
+        # Filter out empty
+        moves_list.extend([m for m in cached_moves_batch if m.size > 0])
+    
+    # ✅ OPTIMIZED: Batch regenerate affected pieces
+    if np.any(regen_mask):
+        from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
+        regen_coords = all_coords[regen_mask]
+        new_moves = generate_pseudolegal_moves_batch(game_state, regen_coords, debuffed_coords)
+        
+        if new_moves.size > 0:
+            moves_list.append(new_moves)
+            # Cache piece moves by grouping
+            _batch_cache_piece_moves(cache_manager, regen_coords, new_moves, color)
 
     # Combine all piece moves
     all_moves = np.concatenate(moves_list, axis=0) if moves_list else np.empty((0, 6), dtype=MOVE_DTYPE)
@@ -522,80 +592,169 @@ def _regenerate_moves_for_color(game_state: 'GameState', color: int) -> None:
     cache_manager.move_cache.store_legal_moves(color, all_moves)
     cache_manager.move_cache.clear_affected_pieces(color)
 
+
+def _batch_cache_piece_moves(cache_manager, coords: np.ndarray, moves: np.ndarray, color: int) -> None:
+    """
+    ✅ OPTIMIZED: Batch cache piece moves by grouping moves by source coordinate.
+    Uses sorting for O(M log M) grouping instead of per-piece loops.
+    """
+    if moves.size == 0:
+        return
+    
+    move_sources = moves[:, :3]
+    move_keys = coords_to_keys(move_sources)
+    
+    # Sort moves by source key for efficient grouping
+    sort_idx = np.argsort(move_keys)
+    sorted_moves = moves[sort_idx]
+    sorted_keys = move_keys[sort_idx]
+    
+    # Find unique keys and their boundaries
+    unique_keys, start_indices = np.unique(sorted_keys, return_index=True)
+    end_indices = np.append(start_indices[1:], sorted_keys.size)
+    
+    # Batch store
+    for i in range(unique_keys.size):
+        cache_manager.move_cache.store_piece_moves(
+            color, unique_keys[i], sorted_moves[start_indices[i]:end_indices[i]]
+        )
+
+@njit(cache=True, fastmath=True)
+def _apply_frozen_filter_kernel(
+    from_coords: np.ndarray,
+    frozen_mask: np.ndarray,
+    keep_mask: np.ndarray
+) -> None:
+    """Apply frozen piece filter in-place."""
+    for i in range(len(from_coords)):
+        if frozen_mask[i]:
+            keep_mask[i] = False
+
+
+@njit(cache=True, fastmath=True)
+def _apply_king_capture_filter_kernel(
+    to_coords: np.ndarray,
+    king_pos: np.ndarray,
+    keep_mask: np.ndarray
+) -> None:
+    """Filter out moves that capture opponent's king."""
+    kx, ky, kz = king_pos[0], king_pos[1], king_pos[2]
+    for i in range(len(to_coords)):
+        if keep_mask[i]:
+            if to_coords[i, 0] == kx and to_coords[i, 1] == ky and to_coords[i, 2] == kz:
+                keep_mask[i] = False
+
+
 def _apply_move_filters(game_state: 'GameState', moves: np.ndarray) -> np.ndarray:
     """
     Apply all game rule filters to a move set.
-    This is a consolidated filter application for incremental updates.
+    
+    ✅ OPTIMIZED: Fused single-pass approach with batch attribute fetching.
+    - Pre-fetches all required attributes once
+    - Uses Numba kernels for inner loops
+    - Minimizes intermediate array allocations
     """
     if moves.size == 0:
         return moves
 
     cache_manager = game_state.cache_manager
-
-    # Filter 1: Frozen Pieces
-    is_frozen = cache_manager.consolidated_aura_cache.batch_is_frozen(
-        moves[:, :3], game_state.turn_number, game_state.color
+    n_moves = len(moves)
+    
+    # Pre-allocate single mask for all filters
+    keep_mask = np.ones(n_moves, dtype=np.bool_)
+    
+    # ===== BATCH FETCH ALL REQUIRED DATA UPFRONT =====
+    from_coords = moves[:, :3]
+    to_coords = moves[:, 3:6]
+    
+    # Get piece types for all source squares (needed for hive and king filters)
+    _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
+    
+    # Get frozen status
+    frozen_mask = cache_manager.consolidated_aura_cache.batch_is_frozen(
+        from_coords, game_state.turn_number, game_state.color
     )
-    if np.any(is_frozen):
-        moves = moves[~is_frozen]
+    
+    # ===== FILTER 1: Frozen Pieces (Numba kernel) =====
+    _apply_frozen_filter_kernel(from_coords, frozen_mask, keep_mask)
+    
+    remaining = np.sum(keep_mask)
+    if remaining == 0:
+        return np.empty((0, 6), dtype=moves.dtype)
 
-    # Filter 2: Hive Movement (One hive per turn)
+    # ===== FILTER 2: Hive Movement (Python - set lookup) =====
     if hasattr(game_state, '_moved_hive_positions') and game_state._moved_hive_positions:
-        _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])
         hive_mask = piece_types == PieceType.HIVE
+        hive_indices = np.where(hive_mask & keep_mask)[0]
+        
+        for i in hive_indices:
+            pos_tuple = (int(moves[i, 0]), int(moves[i, 1]), int(moves[i, 2]))
+            if pos_tuple in game_state._moved_hive_positions:
+                keep_mask[i] = False
+        
+        remaining = np.sum(keep_mask)
+        if remaining == 0:
+            return np.empty((0, 6), dtype=moves.dtype)
 
-        if np.any(hive_mask):
-            can_move = ~hive_mask
-            for i in np.where(hive_mask)[0]:
-                # Fix: _moved_hive_positions stores tuples, not int keys
-                pos_tuple = (int(moves[i, 0]), int(moves[i, 1]), int(moves[i, 2]))
-                if pos_tuple not in game_state._moved_hive_positions:
-                    can_move[i] = True
-            moves = moves[can_move]
-
-    # Filter 3: King Capture (Prevent ONLY if opponent has NO Priests)
-    # When priests exist, the king is protected and cannot be captured
-    # Only when all priests are gone can the king be captured (checkmate scenario)
+    # ===== FILTER 3: King Capture Prevention (Numba kernel) =====
     opp_color = Color.WHITE if game_state.color == Color.BLACK else Color.BLACK
     if not cache_manager.occupancy_cache.has_priest(opp_color):
-        # Opponent has no priests - king is vulnerable to capture
-        # Find king position and prevent direct king captures
         op_king_pos = cache_manager.occupancy_cache.find_king(opp_color)
         if op_king_pos is not None:
-            captures_king = np.all(moves[:, 3:6] == op_king_pos, axis=1)
-            if np.any(captures_king):
-                moves = moves[~captures_king]
-
-    # Filter 4: Self-Check (Only if King has no Priests)
-    if not cache_manager.occupancy_cache.has_priest(game_state.color):
-        from game3d.attacks.check import move_would_leave_king_in_check
-        safe_mask = np.array([
-            not move_would_leave_king_in_check(game_state, move)
-            for move in moves
-        ], dtype=bool)
-        moves = moves[safe_mask]
-
-    # Filter 5: Trailblazer Counter Avoidance (King with 2 counters cannot hit trail)
-    if moves.size > 0:
-        _, piece_types = cache_manager.occupancy_cache.batch_get_attributes(moves[:, :3])
-        king_mask = piece_types == PieceType.KING
-        
-        if np.any(king_mask):
-            king_indices = np.where(king_mask)[0]
-            keep_mask = np.ones(len(moves), dtype=bool)
+            _apply_king_capture_filter_kernel(to_coords, op_king_pos.astype(COORD_DTYPE), keep_mask)
             
-            for idx in king_indices:
-                king_pos = moves[idx, :3]
-                counters = cache_manager.trailblaze_cache.get_counter(king_pos)
-                
-                if counters >= 2:
-                    dest = moves[idx, 3:]
-                    if cache_manager.trailblaze_cache.check_trail_intersection(dest.reshape(1, 3), avoider_color=game_state.color):
-                        keep_mask[idx] = False
-                        
-            moves = moves[keep_mask]
+            remaining = np.sum(keep_mask)
+            if remaining == 0:
+                return np.empty((0, 6), dtype=moves.dtype)
 
-    return moves
+    # ===== FILTER 4: Self-Check (Batch optimized) =====
+    if not cache_manager.occupancy_cache.has_priest(game_state.color):
+        from game3d.attacks.check import batch_moves_leave_king_in_check_fused
+        
+        # Only check moves that are still valid
+        check_indices = np.where(keep_mask)[0]
+        if len(check_indices) > 0:
+            moves_to_check = moves[check_indices]
+            # Use the new fused batch check that doesn't fall back to per-move
+            unsafe_mask = batch_moves_leave_king_in_check_fused(
+                game_state, moves_to_check, cache_manager
+            )
+            keep_mask[check_indices] &= ~unsafe_mask
+            
+            remaining = np.sum(keep_mask)
+            if remaining == 0:
+                return np.empty((0, 6), dtype=moves.dtype)
+
+    # ===== FILTER 5: ✅ OPTIMIZED Trailblazer Counter Avoidance (Only for Kings) =====
+    king_mask = piece_types == PieceType.KING
+    king_indices = np.where(king_mask & keep_mask)[0]
+    
+    if len(king_indices) > 0:
+        # ✅ OPTIMIZED: Batch fetch all king positions and counters upfront
+        king_positions = moves[king_indices, :3]
+        king_destinations = moves[king_indices, 3:]
+        
+        # Batch counter lookup
+        counters = cache_manager.trailblaze_cache.batch_get_counters(king_positions)
+        danger_mask = counters >= 2
+        
+        if np.any(danger_mask):
+            # Only check trail intersection for kings with high counters
+            danger_indices = np.where(danger_mask)[0]
+            dangerous_dests = king_destinations[danger_mask]
+            
+            # Batch trail intersection check
+            hits_trail = cache_manager.trailblaze_cache.batch_check_trail_intersection(
+                dangerous_dests, avoider_color=game_state.color
+            )
+            
+            # Apply results
+            for i, local_idx in enumerate(danger_indices):
+                if hits_trail[i]:
+                    global_idx = king_indices[local_idx]
+                    keep_mask[global_idx] = False
+
+    return moves[keep_mask]
 
 # =============================================================================
 # SPECIAL MECHANICS PROCESSORS
@@ -680,55 +839,55 @@ def apply_forced_moves(game_state: 'GameState', forced_moves: np.ndarray) -> Non
     # Get moving piece attributes
     colors, types = cache_manager.occupancy_cache.batch_get_attributes(from_coords)
 
-    # ✅ CRITICAL: Resolve destination collisions
-    # If multiple pieces are forced to the same square, we must pick one.
+    # ✅ OPTIMIZED: Vectorized destination collision resolution
+    # If multiple pieces are forced to the same square, keep the one with highest priority.
     # Priority: King > Queen > ... > Pawn
-    # This prevents a King from being overwritten by a Pawn (which causes FATAL ERROR)
     
-    # Check for duplicate destinations
-    # We can use a dictionary or sort to find duplicates. Since N is small, sort is fine.
-    # But we need to keep the original indices to filter the arrays.
+    # Create priority lookup array
+    priority_lookup = np.zeros(256, dtype=np.int32)  # Max piece type value
+    priority_lookup[PieceType.KING.value] = 1000
+    priority_lookup[PieceType.QUEEN.value] = 9
+    priority_lookup[PieceType.ROOK.value] = 5
+    priority_lookup[PieceType.BISHOP.value] = 3
+    priority_lookup[PieceType.KNIGHT.value] = 3
+    priority_lookup[PieceType.PAWN.value] = 1
     
-    # Simple approach: Use a dictionary to map destination -> best_move_index
-    dest_map = {} # (x,y,z) -> index
-    indices_to_keep = []
+    # Get priorities for all pieces
+    priorities = priority_lookup[types.astype(np.int32)]
     
-    # Priority values (higher is better)
-    # King needs highest priority to survive
-    def get_priority(piece_type):
-        if piece_type == PieceType.KING.value: return 1000
-        if piece_type == PieceType.QUEEN.value: return 9
-        if piece_type == PieceType.ROOK.value: return 5
-        if piece_type == PieceType.BISHOP.value: return 3
-        if piece_type == PieceType.KNIGHT.value: return 3
-        if piece_type == PieceType.PAWN.value: return 1
-        return 0
-
-    for i in range(len(to_coords)):
-        dest_tuple = tuple(to_coords[i])
-        current_type = types[i]
-        current_prio = get_priority(current_type)
+    # Create destination keys for grouping
+    dest_keys = to_coords[:, 0].astype(np.int64) | \
+                (to_coords[:, 1].astype(np.int64) << 9) | \
+                (to_coords[:, 2].astype(np.int64) << 18)
+    
+    # Find unique destinations and their counts
+    unique_dests, inverse_indices, counts = np.unique(dest_keys, return_inverse=True, return_counts=True)
+    
+    if np.max(counts) > 1:
+        # There are collisions - need to resolve
+        # For each unique destination with count > 1, keep only highest priority piece
+        indices_to_keep = np.ones(len(dest_keys), dtype=bool)
         
-        if dest_tuple not in dest_map:
-            dest_map[dest_tuple] = (i, current_prio)
-        else:
-            # Collision! Check priority
-            existing_idx, existing_prio = dest_map[dest_tuple]
-            if current_prio > existing_prio:
-                # Replace with current (higher priority)
-                dest_map[dest_tuple] = (i, current_prio)
-            # Else: keep existing (current is discarded)
+        for dest_idx in np.where(counts > 1)[0]:
+            dest_key = unique_dests[dest_idx]
+            collision_mask = dest_keys == dest_key
+            collision_indices = np.where(collision_mask)[0]
+            collision_priorities = priorities[collision_indices]
             
-    # Collect indices to keep
-    indices_to_keep = sorted([idx for idx, _ in dest_map.values()])
-    
-    if len(indices_to_keep) < len(forced_moves):
-        # Filter arrays
-        from_coords = from_coords[indices_to_keep]
-        to_coords = to_coords[indices_to_keep]
-        colors = colors[indices_to_keep]
-        types = types[indices_to_keep]
-        # logger.info(f"Resolved {len(forced_moves) - len(indices_to_keep)} forced move collisions")
+            # Keep only the one with max priority
+            max_prio = np.max(collision_priorities)
+            best_idx = collision_indices[np.argmax(collision_priorities)]
+            
+            # Mark all except best for removal
+            for idx in collision_indices:
+                if idx != best_idx:
+                    indices_to_keep[idx] = False
+        
+        if not np.all(indices_to_keep):
+            from_coords = from_coords[indices_to_keep]
+            to_coords = to_coords[indices_to_keep]
+            colors = colors[indices_to_keep]
+            types = types[indices_to_keep]
 
     # ✅ CRITICAL: Track king moves BEFORE batch update
     king_moves = []

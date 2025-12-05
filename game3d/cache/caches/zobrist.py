@@ -1,6 +1,6 @@
 # zobrist.py - PURE NUMPY ZOBRIST HASHING
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 import numpy as np
 from numba import njit, prange
 

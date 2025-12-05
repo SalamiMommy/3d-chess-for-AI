@@ -1,7 +1,10 @@
 import numpy as np
 from numba import njit, prange
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
 
 from game3d.common.shared_types import Color, PieceType, COLOR_EMPTY, COORD_DTYPE, INDEX_DTYPE, FLOAT_DTYPE, HASH_DTYPE, N_PIECE_TYPES, BOOL_DTYPE
 import game3d.cache.caches.zobrist as zobrist_module
@@ -576,7 +579,7 @@ def _get_recent_history_coords(state: 'GameState', n_recent: int = 8) -> np.ndar
 class OpponentBase:
     def __init__(self, color: Color):
         self.color = color
-        self.repetition_penalty = -5.0
+        self.repetition_penalty = -1.0
     
     def reward(self, state: 'GameState', move: Move) -> float:
         """Single move reward - delegates to batch version."""
@@ -704,13 +707,13 @@ class OpponentBase:
         history_coords = _get_recent_history_coords(state, n_recent=n_recent)
         diversity_rewards = _compute_piece_diversity_rewards_vectorized(
             from_coords, history_coords,
-            diversity_reward=2.0,
-            repetition_penalty=-1.5
+            diversity_reward=1.0,
+            repetition_penalty=-1.0
         )
         rewards += diversity_rewards
     
     def _apply_geomancer_penalty(self, rewards: np.ndarray, from_types: np.ndarray,
-                                  penalty: float = -0.3) -> None:
+                                  penalty: float = -0.1) -> None:
         """Apply geomancer overuse penalty (PRIORITY 4).
         
         Args:

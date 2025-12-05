@@ -11,6 +11,7 @@ from game3d.movement.movementmodifiers import get_range_modifier
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
 
 # Piece-specific movement vectors - queen combines orthogonal + diagonal
 QUEEN_MOVEMENT_VECTORS = np.array([

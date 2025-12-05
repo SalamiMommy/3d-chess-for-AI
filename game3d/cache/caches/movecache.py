@@ -59,7 +59,10 @@ class MoveCache:
     def __init__(self, cache_manager, config=None):
         self.cache_manager = cache_manager
         self.config = config or MoveCacheConfig()
-        self._lock = threading.RLock()
+        
+        # ✅ OPTIMIZED: Per-color locks reduce contention for concurrent access
+        self._lock = threading.RLock()  # Global lock for cross-color operations
+        self._color_locks = [threading.RLock(), threading.RLock()]  # Per-color locks
 
         # Initialize to current board generation
         current_gen = getattr(cache_manager.board, 'generation', 0)
@@ -110,16 +113,49 @@ class MoveCache:
 
         self._max_piece_entries = 1000
         self._prune_triggered = 0
+        
+        # ✅ OPTIMIZED: Batch operation tracking for reduced lock contention
+        self._in_batch_mode = False
 
     # =========================================================================
-    # LEGAL MOVES CACHE (Final moves after ALL filtering)
+    # BATCH OPERATIONS CONTEXT MANAGER
     # =========================================================================
+    
+    class _BatchContext:
+        """Context manager for batch cache operations with single lock acquisition."""
+        def __init__(self, cache, color: int):
+            self.cache = cache
+            self.color_idx = 0 if color == Color.WHITE else 1
+            self.lock = cache._color_locks[self.color_idx]
+            
+        def __enter__(self):
+            self.lock.acquire()
+            self.cache._in_batch_mode = True
+            return self
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.cache._in_batch_mode = False
+            self.lock.release()
+            return False
+    
+    def batch_operations(self, color: int):
+        """
+        ✅ OPTIMIZED: Context manager for batch cache operations.
+        Acquires lock once for multiple operations, reducing contention.
+        
+        Usage:
+            with cache.batch_operations(color) as batch:
+                cache.store_piece_moves(color, key1, moves1)
+                cache.store_piece_moves(color, key2, moves2)
+        """
+        return self._BatchContext(self, color)
     
     def get_legal_moves(self, color: int) -> Optional[np.ndarray]:
         """Retrieve cached LEGAL moves (after filtering)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
-
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             if self._legal_moves_cache[color_idx] is None:
                 self._stats['legal_cache_misses'] += 1
                 return None
@@ -137,9 +173,10 @@ class MoveCache:
     
     def store_legal_moves(self, color: int, moves: np.ndarray) -> None:
         """Store LEGAL moves (after filtering)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
-
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             if moves.size == 0:
                 piece_count = len(self.cache_manager.occupancy_cache.get_positions(color))
                 if piece_count > 0:
@@ -179,9 +216,10 @@ class MoveCache:
     
     def get_pseudolegal_moves(self, color: int) -> Optional[np.ndarray]:
         """Retrieve cached PSEUDOLEGAL moves (respect occupancy)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
-
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             if self._pseudolegal_moves_cache[color_idx] is None:
                 self._stats['pseudolegal_cache_misses'] += 1
                 return None
@@ -196,8 +234,10 @@ class MoveCache:
     
     def store_pseudolegal_moves(self, color: int, moves: np.ndarray) -> None:
         """Store PSEUDOLEGAL moves (respect occupancy)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             self._pseudolegal_moves_cache[color_idx] = moves.copy() if moves.size > 0 else moves
     
     def invalidate_pseudolegal_moves(self, color: Optional[int] = None) -> None:
@@ -216,9 +256,10 @@ class MoveCache:
 
     def get_raw_moves(self, color: int) -> Optional[np.ndarray]:
         """Retrieve cached RAW moves (ignore occupancy)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
-
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             if self._raw_moves_cache[color_idx] is None:
                 self._stats['raw_cache_misses'] += 1
                 return None
@@ -233,8 +274,10 @@ class MoveCache:
 
     def store_raw_moves(self, color: int, moves: np.ndarray) -> None:
         """Store RAW moves (ignore occupancy)."""
-        with self._lock:
-            color_idx = 0 if color == Color.WHITE else 1
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZED: Use per-color lock for reduced contention
+        with self._color_locks[color_idx]:
             self._raw_moves_cache[color_idx] = moves.copy() if moves.size > 0 else moves
 
     def invalidate_raw_moves(self, color: Optional[int] = None) -> None:
@@ -262,7 +305,7 @@ class MoveCache:
     def invalidate(self) -> None:
         """Invalidate ALL caches."""
         with self._lock:
-            print(f"DEBUG: MoveCache.invalidate called. ID: {id(self)}")
+            # ✅ OPTIMIZED: Removed debug print statements for performance
             self.invalidate_legal_moves()
             self.invalidate_pseudolegal_moves()
             self.invalidate_raw_moves()
@@ -271,7 +314,6 @@ class MoveCache:
             self._piece_raw_moves_cache.clear()
             self._reverse_map.clear()
             self._piece_targets.clear()
-            print(f"DEBUG: MoveCache cleared. Piece cache size: {len(self._piece_moves_cache)}")
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get cache statistics for all cache levels."""

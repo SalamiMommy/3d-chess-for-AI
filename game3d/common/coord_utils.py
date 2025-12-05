@@ -551,6 +551,22 @@ def coords_to_keys(coords: np.ndarray) -> np.ndarray:
     """Convert coordinates to cache keys using bit packing: x | (y << 9) | (z << 18)."""
     return coords[:, 0] | (coords[:, 1] << 9) | (coords[:, 2] << 18)
 
+@njit(cache=True, fastmath=True, inline='always')
+def coord_to_key_scalar(x: int, y: int, z: int) -> int:
+    """
+    Convert a single coordinate to a cache key using bit packing.
+    
+    ✅ OPTIMIZED: Numba-compiled scalar function for hot paths.
+    Avoids array reshaping overhead of coords_to_keys() for single coords.
+    
+    Args:
+        x, y, z: Coordinate components
+        
+    Returns:
+        Integer key: x | (y << 9) | (z << 18)
+    """
+    return x | (y << 9) | (z << 18)
+
 def get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
     """Get the 6 direct (orthogonal) neighbors of a single coordinate."""
     # Ensure coord is 2D for get_neighbors_vectorized, which is optimized for batch input
@@ -559,3 +575,6 @@ def get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
     return get_neighbors_vectorized(coord_batch)
 
 __all__.append('get_path_between')
+__all__.append('coord_to_key_scalar')
+__all__.append('coords_to_keys')
+

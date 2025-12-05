@@ -675,7 +675,6 @@ __all__ = [
     # Constants and types
     'SIZE', 'VOLUME',
     'COORD_DTYPE', 'INDEX_DTYPE', 'BOOL_DTYPE', 'COLOR_DTYPE', 'PIECE_TYPE_DTYPE', 'FLOAT_DTYPE',
-    'WHITE', 'BLACK',
 ]
 
 # Removed performance aliases to avoid confusion

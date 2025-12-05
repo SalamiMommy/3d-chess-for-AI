@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from game3d.board.board import Board
 from game3d.cache.manager import OptimizedCacheManager
-from game3d.game3d import OptimizedGame3D
+from game3d.main_game import OptimizedGame3D
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
 from game3d.game.turnmove import make_move
 from game3d.movement.generator import generate_legal_moves

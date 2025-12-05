@@ -195,23 +195,20 @@ class GameState:
         """Get list of hive positions that haven't moved yet this turn."""
         from game3d.common.shared_types import PieceType
 
-        unmoved_hives = []
-
-        # Get all pieces of current color
-        coords = self.cache_manager.occupancy_cache.get_positions(self.color)
-        if coords.size == 0:
-            return unmoved_hives
-
-        # Get their attributes
-        colors, piece_types = self.cache_manager.occupancy_cache.batch_get_attributes(coords)
-
-        # Filter for HIVE pieces that haven't moved
-        for i, coord in enumerate(coords):
-            if piece_types[i] == PieceType.HIVE:
-                pos_tuple = tuple(coord.flatten().tolist())
-                if pos_tuple not in self._moved_hive_positions:
-                    unmoved_hives.append(coord)
-        return unmoved_hives
+        # ✅ OPTIMIZED: Vectorized Hive movement tracking
+        # 1. Get all hive positions
+        hive_coords = self.cache_manager.occupancy_cache.get_positions(self.color, PieceType.HIVE)
+        if hive_coords.size == 0:
+            return np.empty((0, 3), dtype=COORD_DTYPE)
+            
+        # 2. Filter out moved hives
+        if not self._moved_hive_positions:
+            return hive_coords
+            
+        # Vectorized filter using set lookup via list comprehension (fastest for small N)
+        is_moved = np.array([tuple(c) in self._moved_hive_positions for c in hive_coords], dtype=bool)
+        
+        return hive_coords[~is_moved]
 
     def clear_hive_move_tracking(self) -> None:
         """Clear hive move tracking (called when turn ends)."""
@@ -344,15 +341,53 @@ class GameState:
         return new_state
 
     def get_state_vector(self) -> np.ndarray:
-        """Get flattened state vector for neural networks."""
-        # Flatten board and add game state information
-        board_vector = self.board.array().flatten()
+        """
+        Get flattened state vector for neural networks.
+        
+        ✅ OPTIMIZED: Direct sparse-to-dense construction.
+        Avoids allocating intermediate (P, S, S, S) array and flattening it.
+        """
+        # 1. Initialize flat vector
+        # Size = P * S^3
+        vector_size = N_TOTAL_PLANES * VOLUME
+        flat_vector = np.zeros(vector_size, dtype=FLOAT_DTYPE)
+        
+        # 2. Get sparse occupied positions
+        # coords: (N, 3), types: (N,), colors: (N,)
+        coords, types, colors = self.cache_manager.occupancy_cache.get_all_occupied_vectorized()
+        
+        if coords.shape[0] > 0:
+            # 3. Calculate plane indices (P)
+            # plane = (piece_type - 1) + (is_black * N_PIECE_TYPES)
+            # Assumption: Color.WHITE is min value, and colors are sequential or we subtract base
+            # In shared_types, Color.WHITE is usually 1, Color.BLACK is 2
+            # Offset: White=0, Black=1 -> (color - Color.WHITE)
+            color_offsets = (colors - int(Color.WHITE)).astype(INDEX_DTYPE)
+            plane_indices = (types - 1) + (color_offsets * N_PIECE_TYPES)
+            
+            # 4. Calculate spatial indices (S*S*S)
+            # flat_spatial = x * S*S + y * S + z
+            # Note: coords are already in (x, y, z) order from occupancy cache
+            x = coords[:, 0].astype(INDEX_DTYPE)
+            y = coords[:, 1].astype(INDEX_DTYPE)
+            z = coords[:, 2].astype(INDEX_DTYPE)
+            flat_spatial = x * (SIZE * SIZE) + y * SIZE + z
+            
+            # 5. Calculate final indices into flat_vector
+            # index = p * VOLUME + flat_spatial
+            final_indices = plane_indices * VOLUME + flat_spatial
+            
+            # 6. Set values
+            # Using flat indexing is much faster than tuple indexing on ndarray
+            flat_vector[final_indices] = 1.0
+            
+        # 7. Add state info
         state_info = np.array([
-            self.color, self.halfmove_clock, self.turn_number,
+            int(self.color), self.halfmove_clock, self.turn_number,
             self._zkey % 1000  # Normalize zkey
         ], dtype=FLOAT_DTYPE)
-
-        return np.concatenate([board_vector, state_info])
+        
+        return np.concatenate([flat_vector, state_info])
 
     def __str__(self) -> str:
         """String representation."""

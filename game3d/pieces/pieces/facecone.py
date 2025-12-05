@@ -12,6 +12,7 @@ from game3d.movement.movepiece import Move
 
 if TYPE_CHECKING:
     from game3d.cache.manager import OptimizedCacheManager
+    from game3d.game.gamestate import GameState
 
 def _generate_cone_vectors_numpy() -> np.ndarray:
     """Generate cone direction vectors using fully vectorized numpy operations."""

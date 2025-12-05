@@ -12,7 +12,7 @@ from game3d.common.shared_types import (
 )
 
 # =============================================================================
-# CONSTANTS & VECTORS
+# CONSTANTS & VECTORS - DYNAMIC REGISTRY FROM pieces/pieces/
 # =============================================================================
 
 # Import vectors from piece modules
@@ -21,9 +21,42 @@ from game3d.pieces.pieces.rook import ROOK_MOVEMENT_VECTORS as ROOK_VECTORS
 from game3d.pieces.pieces.bishop import BISHOP_MOVEMENT_VECTORS as BISHOP_VECTORS
 from game3d.pieces.pieces.queen import QUEEN_MOVEMENT_VECTORS as QUEEN_VECTORS
 from game3d.pieces.pieces.trigonalbishop import TRIGONAL_BISHOP_VECTORS as TRIGONAL_VECTORS
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS as KING_VECTORS
+from game3d.pieces.pieces.bigknights import (
+    KNIGHT31_MOVEMENT_VECTORS, KNIGHT32_MOVEMENT_VECTORS
+)
+from game3d.pieces.pieces.spiral import SPIRAL_MOVEMENT_VECTORS
+from game3d.pieces.pieces.panel import PANEL_MOVEMENT_VECTORS
 
-# King vectors - handled by distance check usually, but can define if needed
-# For fast check, simple distance check is better.
+# Movement type constants
+MOVE_TYPE_JUMP = 0   # Jump pieces - check offset directly
+MOVE_TYPE_SLIDER = 1  # Slider pieces - raycast along vectors
+
+# Registry: PieceType.value -> (vectors, movement_type)
+PIECE_ATTACK_REGISTRY = {
+    # Jump pieces
+    PieceType.KNIGHT.value: (KNIGHT_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.KING.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.PRIEST.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.KNIGHT31.value: (KNIGHT31_MOVEMENT_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.KNIGHT32.value: (KNIGHT32_MOVEMENT_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.SPEEDER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.SLOWER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.FREEZER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.HIVE.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.ARMOUR.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.ARCHER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.BOMB.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.SWAPPER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.PANEL.value: (PANEL_MOVEMENT_VECTORS, MOVE_TYPE_JUMP),
+    # Slider pieces
+    PieceType.BISHOP.value: (BISHOP_VECTORS, MOVE_TYPE_SLIDER),
+    PieceType.ROOK.value: (ROOK_VECTORS, MOVE_TYPE_SLIDER),
+    PieceType.QUEEN.value: (QUEEN_VECTORS, MOVE_TYPE_SLIDER),
+    PieceType.TRIGONALBISHOP.value: (TRIGONAL_VECTORS, MOVE_TYPE_SLIDER),
+    PieceType.SPIRAL.value: (SPIRAL_MOVEMENT_VECTORS, MOVE_TYPE_SLIDER),
+}
+
 
 # =============================================================================
 # KERNELS
@@ -226,64 +259,13 @@ def square_attacked_by_fast(
     cache
 ) -> bool:
     """
-    Fast check if square is attacked using inverse logic.
-    Falls back to slow check for unhandled pieces.
+    Fast check if square is attacked using extended Numba kernel with precomputed data.
+    
+    ✅ OPTIMIZED: Now delegates to attack_registry.square_attacked_by_extended which:
+    - Handles more piece types inline in Numba (20+ vs original 7)
+    - Uses precomputed ray data for sliders
+    - Minimizes Python loop overhead
     """
-    if cache is None or not hasattr(cache, 'occupancy_cache'):
-        # Fallback
-        from game3d.attacks.check import _square_attacked_by_slow
-        return _square_attacked_by_slow(board, square, attacker_color, cache)
-        
-    # Get all attackers
-    attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
-    if attacker_positions.shape[0] == 0:
-        return False
-        
-    # Get types
-    _, attacker_types = cache.occupancy_cache.batch_get_attributes_unsafe(attacker_positions)
-    
-    # Prepare skipped array
-    skipped_indices = np.zeros(attacker_positions.shape[0] + 1, dtype=np.int32)
-    
-    # Run kernel
-    result = _fast_attack_kernel(
-        square.astype(COORD_DTYPE),
-        attacker_positions.astype(COORD_DTYPE),
-        attacker_types.astype(PIECE_TYPE_DTYPE),
-        cache.occupancy_cache._occ,
-        int(attacker_color),
-        skipped_indices
-    )
-    
-    if result == 1:
-        return True
-        
-    # Check skipped
-    skipped_count = skipped_indices[0]
-    if skipped_count == 0:
-        return False
-        
-    # Fallback for skipped pieces
-    indices = skipped_indices[1:skipped_count+1]
-    skipped_positions = attacker_positions[indices]
-    
-    # We need to check if ANY of these pieces attack the square.
-    # We can use the slow method but ONLY for these pieces.
-    
-    # Import here to avoid circular imports
-    from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
-    from game3d.game.gamestate import GameState
-    
-    # Create dummy state
-    dummy_state = GameState(board, attacker_color, cache)
-    
-    # Generate moves for skipped pieces
-    moves = generate_pseudolegal_moves_batch(dummy_state, skipped_positions)
-    
-    if moves.size == 0:
-        return False
-        
-    target_x, target_y, target_z = square[0], square[1], square[2]
-    hits = (moves[:, 3] == target_x) & (moves[:, 4] == target_y) & (moves[:, 5] == target_z)
-    
-    return bool(np.any(hits))
+    from game3d.attacks.attack_registry import square_attacked_by_extended
+    return square_attacked_by_extended(board, square, attacker_color, cache)
+

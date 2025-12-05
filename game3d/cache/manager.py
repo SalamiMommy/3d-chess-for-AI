@@ -4,7 +4,11 @@ import numpy as np
 from numba import njit, prange
 import threading
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
+    from game3d.cache.parallelmanager import ParallelManager
 import logging
 import weakref
 
@@ -14,7 +18,7 @@ from game3d.common.shared_types import (
     COORD_DTYPE, BOOL_DTYPE, FLOAT_DTYPE, SIZE, VOLUME, PIECE_TYPE_DTYPE,
     INDEX_DTYPE, COLOR_DTYPE, HASH_DTYPE, Color, N_PIECE_TYPES, MOVE_DTYPE,
     MAX_COORD_VALUE, MIN_COORD_VALUE, VECTORIZATION_THRESHOLD, TRAILBLAZER,
-    PIECE_SLICE
+    PIECE_SLICE, PieceType
 )
 from game3d.common.coord_utils import coord_to_idx, idx_to_coord, ensure_coords, in_bounds_vectorized, get_neighbors_vectorized
 from game3d.cache.managerconfig import ManagerConfig
@@ -541,8 +545,30 @@ class NumpyDependencyGraph:
 
         # Mark affected piece types based on event
         if event_type == 'move_applied':
-            # Move affects: straight sliders, diagonals, kings, aura pieces
-            affected = np.array([4, 5, 6, 7, 22, 23, 39], dtype=PIECE_TYPE_DTYPE)
+            # Move affects:
+            # 1. Standard Sliders: BISHOP(3), ROOK(4), QUEEN(5)
+            # 2. King(6), Priest(7)
+            # 3. 3D/Variant Sliders: TRIGONALBISHOP(10), EDGEROOK(16), XYQUEEN(17), XZQUEEN(18), YZQUEEN(19)
+            # 4. Advanced Sliders: VECTORSLIDER(20), CONESLIDER(21)
+            # 5. Terrain/Special Movement: XZZIGZAG(33), YZZIGZAG(34), REFLECTOR(35), TRAILBLAZER(39)
+            # 6. Effect Pieces: MIRROR(22), FREEZER(23)
+            
+            # Note: We use raw integers here or PieceType values if imported.
+            # Using raw integers to match existing style and avoid import complications if PieceType isn't available.
+            # 3=BISHOP, 4=ROOK, 5=QUEEN, 6=KING, 7=PRIEST, 10=TRIG, 16=EDGE, 17-19=PLANES
+            # 20-21=ADV, 22=MIRROR, 23=FREEZE, 33-35=ZIG/REF, 39=TRAIL
+            
+            affected_indices = [
+                3, 4, 5, 6, 7,      # Std Sliders + King + Priest
+                10,                 # Trigonal Bishop
+                16, 17, 18, 19,     # Edge/Plane pieces
+                20, 21,             # Vector/Cone sliders
+                22, 23,             # Mirror/Freezer
+                33, 34, 35,         # Zigzags/Reflector
+                39                  # Trailblazer
+            ]
+            
+            affected = np.array(affected_indices, dtype=PIECE_TYPE_DTYPE)
             self._update_timestamps[affected] = self._last_update
 
     def get_affected_pieces_vectorized(self, game_state, color: int) -> np.ndarray:

@@ -76,11 +76,6 @@ def _generate_all_slider_moves(
         current_y = pos[1] + direction[1]
         current_z = pos[2] + direction[2]
 
-        # DEBUG
-        if direction[0] == 1 and direction[1] == 2 and direction[2] == 0:
-            print("Checking dir [1, 2, 0]")
-            print("Start:", current_x, current_y, current_z)
-
         for _ in range(max_distance):
             # Bounds check
             if not (0 <= current_x < SIZE and 0 <= current_y < SIZE and 0 <= current_z < SIZE):
@@ -97,11 +92,6 @@ def _generate_all_slider_moves(
                 captures[write_idx] = False
                 write_idx += 1
             else:
-                # DEBUG
-                if direction[0] == 1 and direction[1] == 2 and direction[2] == 0:
-                    print("Hit occupant:", occupant, "at", current_x, current_y, current_z)
-                    print("Color:", color, "Ignore:", ignore_occupancy)
-
                 # Blocked
                 if ignore_occupancy:
                     # Treat as a move (capture logic irrelevant for raw moves, but we mark it)
@@ -362,10 +352,7 @@ def _generate_all_slider_moves_batch_serial(
                 current_y += dy
                 current_z += dz
                 
-    return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
-
-
-    return moves, np.empty(0, dtype=BOOL_DTYPE) # Return dummy captures
+    return moves, np.empty(0, dtype=BOOL_DTYPE)  # Return dummy captures
 
 
 @njit(cache=True, fastmath=True)
@@ -458,6 +445,116 @@ def _generate_precomputed_slider_moves(
                 break
                 
     return moves, captures
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _generate_precomputed_slider_moves_batch(
+    color: int,
+    positions: np.ndarray,
+    rays_flat: np.ndarray,
+    ray_offsets: np.ndarray,
+    square_offsets: np.ndarray,
+    occ: np.ndarray,
+    ignore_occupancy: bool = False
+) -> np.ndarray:
+    """
+    Batch version: Generate slider moves for multiple positions using precomputed rays.
+    Returns (N, 6) array of [from_x, from_y, from_z, to_x, to_y, to_z].
+    """
+    n_pos = positions.shape[0]
+    
+    # Pass 1: Count moves per position (parallel)
+    counts = np.zeros(n_pos, dtype=np.int32)
+    
+    for i in prange(n_pos):
+        px, py, pz = positions[i, 0], positions[i, 1], positions[i, 2]
+        pos_flat_idx = px + py * SIZE + pz * SIZE_SQUARED
+        
+        start_ray_idx = square_offsets[pos_flat_idx]
+        end_ray_idx = square_offsets[pos_flat_idx + 1]
+        count = 0
+        
+        for r_idx in range(start_ray_idx, end_ray_idx):
+            start_coord_idx = ray_offsets[r_idx]
+            end_coord_idx = ray_offsets[r_idx + 1]
+            
+            for c_idx in range(start_coord_idx, end_coord_idx):
+                cx = rays_flat[c_idx, 0]
+                cy = rays_flat[c_idx, 1]
+                cz = rays_flat[c_idx, 2]
+                
+                occupant = occ[cx, cy, cz]
+                
+                if occupant == 0:
+                    count += 1
+                else:
+                    if ignore_occupancy:
+                        count += 1
+                    else:
+                        if occupant != color:
+                            count += 1
+                        break
+        
+        counts[i] = count
+    
+    # Pass 2: Calculate offsets using numpy's optimized cumsum
+    # ✅ OPTIMIZED: Replaced serial loop with vectorized cumsum
+    total_moves = np.sum(counts)
+    offsets = np.empty(n_pos, dtype=np.int32)
+    offsets[0] = 0
+    if n_pos > 1:
+        # Exclusive prefix sum: each offset is sum of all counts before it
+        for i in range(1, n_pos):
+            offsets[i] = offsets[i-1] + counts[i-1]
+    
+    # Pass 3: Fill moves (parallel)
+    moves = np.empty((total_moves, 6), dtype=COORD_DTYPE)
+    
+    for i in prange(n_pos):
+        px, py, pz = positions[i, 0], positions[i, 1], positions[i, 2]
+        pos_flat_idx = px + py * SIZE + pz * SIZE_SQUARED
+        write_idx = offsets[i]
+        
+        start_ray_idx = square_offsets[pos_flat_idx]
+        end_ray_idx = square_offsets[pos_flat_idx + 1]
+        
+        for r_idx in range(start_ray_idx, end_ray_idx):
+            start_coord_idx = ray_offsets[r_idx]
+            end_coord_idx = ray_offsets[r_idx + 1]
+            
+            for c_idx in range(start_coord_idx, end_coord_idx):
+                cx = rays_flat[c_idx, 0]
+                cy = rays_flat[c_idx, 1]
+                cz = rays_flat[c_idx, 2]
+                
+                occupant = occ[cx, cy, cz]
+                
+                should_write = False
+                stop_ray = False
+                
+                if occupant == 0:
+                    should_write = True
+                else:
+                    if ignore_occupancy:
+                        should_write = True
+                    else:
+                        if occupant != color:
+                            should_write = True
+                        stop_ray = True
+                
+                if should_write:
+                    moves[write_idx, 0] = px
+                    moves[write_idx, 1] = py
+                    moves[write_idx, 2] = pz
+                    moves[write_idx, 3] = cx
+                    moves[write_idx, 4] = cy
+                    moves[write_idx, 5] = cz
+                    write_idx += 1
+                
+                if stop_ray:
+                    break
+    
+    return moves
 
 
 class SliderMovementEngine:
@@ -576,28 +673,14 @@ class SliderMovementEngine:
         
         occ = cache_manager.occupancy_cache._occ
         
-        # Handle batch input
+        # Handle batch input - ✅ OPTIMIZED: Use Numba batch kernel
         if pos.ndim == 2:
-            move_lists = []
-            
-            for i in range(pos.shape[0]):
-                p = pos[i]
-                flat_idx = p[0] + p[1] * SIZE + p[2] * SIZE_SQUARED
-                
-                dests, _ = _generate_precomputed_slider_moves(
-                    color, flat_idx, rays_flat, ray_offsets, sq_offsets, occ, ignore_occupancy
-                )
-                
-                if dests.size > 0:
-                    n = dests.shape[0]
-                    m = np.empty((n, 6), dtype=COORD_DTYPE)
-                    m[:, 0:3] = p
-                    m[:, 3:6] = dests
-                    move_lists.append(m)
-            
-            if not move_lists:
+            if pos.shape[0] == 0:
                 return np.empty((0, 6), dtype=COORD_DTYPE)
-            return np.concatenate(move_lists)
+            
+            return _generate_precomputed_slider_moves_batch(
+                color, pos.astype(COORD_DTYPE), rays_flat, ray_offsets, sq_offsets, occ, ignore_occupancy
+            )
 
         # Single position
         pos_arr = pos.astype(COORD_DTYPE).reshape(3)

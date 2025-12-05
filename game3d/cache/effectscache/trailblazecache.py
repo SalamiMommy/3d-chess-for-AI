@@ -2,7 +2,10 @@
 from __future__ import annotations
 import numpy as np
 from numba import njit, prange
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game3d.cache.manager import OptimizedCacheManager
 import threading
 
 from game3d.common.shared_types import (

@@ -204,11 +204,14 @@ def _generate_wall_moves_batch_kernel(
                 0 <= anchor[2] < board_size):
             continue
             
-        # Compute current squares for this wall
+        # ✅ OPTIMIZED: Precompute current squares as flat indices for O(1) lookup
+        # Instead of 4 coordinate comparisons per target square (16 total), use flat index
+        current_flat_indices = np.empty(4, dtype=np.int64)
         for k in range(4):
-            current_squares[k, 0] = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
-            current_squares[k, 1] = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
-            current_squares[k, 2] = anchor[2] + WALL_BLOCK_OFFSETS[k, 2]
+            cx = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
+            cy = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
+            cz = anchor[2] + WALL_BLOCK_OFFSETS[k, 2]
+            current_flat_indices[k] = cx + cy * board_size + cz * board_size * board_size
         
         for i in range(n_dirs):
             # Target anchor for this direction
@@ -217,8 +220,6 @@ def _generate_wall_moves_batch_kernel(
             taz = anchor[2] + directions[i, 2]
             
             # Bounds check for target anchor
-            # Explicitly check against board_size limits for 2x2 block
-            # Anchor must be in [0, board_size-2] for x and y, and [0, board_size-1] for z
             if tax < 0 or tax > board_size - 2: continue
             if tay < 0 or tay > board_size - 2: continue
             if taz < 0 or taz > board_size - 1: continue
@@ -241,18 +242,13 @@ def _generate_wall_moves_batch_kernel(
                 occ_color = occ[tx, ty, tz]
                 
                 if occ_color != 0:
-                    # Square is occupied.
-                    # It blocks IF:
-                    # 1. It is friendly (occ_color == my_color)
-                    # 2. AND it is NOT part of the current wall (self-overlap)
-                    
+                    # Square is occupied. Check if it's a friendly piece that isn't part of current wall
                     if occ_color == my_color:
-                        # Check self-overlap
+                        # ✅ OPTIMIZED: O(1) flat index comparison instead of 4x coordinate loop
+                        target_flat = tx + ty * board_size + tz * board_size * board_size
                         is_self = False
                         for k in range(4):
-                            if (current_squares[k, 0] == tx and 
-                                current_squares[k, 1] == ty and 
-                                current_squares[k, 2] == tz):
+                            if current_flat_indices[k] == target_flat:
                                 is_self = True
                                 break
                         
@@ -312,6 +308,14 @@ def generate_wall_moves(
     color: int,
     pos: np.ndarray
 ) -> np.ndarray:
+    """
+    Generate Wall moves with fused buffed/unbuffed processing.
+    
+    ✅ OPTIMIZED: 
+    - Trusted kernel-level bounds validation (no redundant Python checks)
+    - Fused buffed/unbuffed into single kernel call
+    - Filter anchors with fast Numba kernel
+    """
     anchors = pos.astype(COORD_DTYPE)
     
     # Handle single input
@@ -322,7 +326,7 @@ def generate_wall_moves(
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
     # Filter out non-anchor wall parts using Numba kernel
-    # This avoids creating neighbor arrays and batch lookups
+    # This also validates anchor bounds within the kernel
     valid_indices = _filter_anchors_numba(anchors, cache_manager.occupancy_cache._ptype)
     
     if valid_indices.shape[0] == 0:
@@ -333,99 +337,128 @@ def generate_wall_moves(
     if valid_anchors.shape[0] == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
     
-    # Split into buffed and unbuffed
+    # ✅ OPTIMIZED: Removed Python-level bounds validation - kernel handles this
+    # Get buffed status for all anchors at once
     buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
+    is_buffed = buffed_squares[valid_anchors[:, 0], valid_anchors[:, 1], valid_anchors[:, 2]]
     
-    buffed_indices = []
-    unbuffed_indices = []
+    # Define orthogonal vectors for unbuffed wall (6 directions)
+    UNBUFFED_WALL_VECTORS = np.array([
+        [1, 0, 0], [-1, 0, 0],
+        [0, 1, 0], [0, -1, 0],
+        [0, 0, 1], [0, 0, -1]
+    ], dtype=COORD_DTYPE)
     
-    for i in range(valid_anchors.shape[0]):
-        x, y, z = valid_anchors[i]
-        if buffed_squares[x, y, z]:
-            buffed_indices.append(i)
+    # Call fused kernel (handles all bounds checking internally)
+    return _generate_wall_moves_fused_kernel(
+        valid_anchors,
+        cache_manager.occupancy_cache._occ,
+        color,
+        SIZE,
+        UNBUFFED_WALL_VECTORS,
+        BUFFED_KING_MOVEMENT_VECTORS,
+        is_buffed.astype(np.int8)
+    )
+
+@njit(cache=True, fastmath=True)
+def _generate_wall_moves_fused_kernel(
+    anchors: np.ndarray, 
+    occ: np.ndarray,
+    my_color: int,
+    board_size: int,
+    unbuffed_directions: np.ndarray,
+    buffed_directions: np.ndarray,
+    is_buffed: np.ndarray
+) -> np.ndarray:
+    """
+    Fused kernel for wall move generation handling both buffed and unbuffed walls.
+    
+    ✅ OPTIMIZED: Single pass with conditional direction selection.
+    """
+    n_walls = anchors.shape[0]
+    # Max moves = max dirs (buffed) per wall
+    max_dirs = max(unbuffed_directions.shape[0], buffed_directions.shape[0])
+    max_moves = n_walls * max_dirs
+    moves = np.empty((max_moves, 6), dtype=COORD_DTYPE)
+    count = 0
+    
+    # Current wall squares for overlap check (reusable buffer)
+    current_squares = np.empty((4, 3), dtype=COORD_DTYPE)
+    
+    for w in range(n_walls):
+        anchor = anchors[w]
+        
+        # Select directions based on buffed status
+        if is_buffed[w]:
+            directions = buffed_directions
         else:
-            unbuffed_indices.append(i)
-            
-    moves_list = []
-    
-    # Process unbuffed
-    if unbuffed_indices:
-        unbuffed_anchors = valid_anchors[unbuffed_indices]
-        moves = _generate_wall_moves_batch_kernel(
-            unbuffed_anchors, 
-            cache_manager.occupancy_cache._occ, 
-            color,
-            SIZE,
-            KING_MOVEMENT_VECTORS
-        )
-        if moves.size > 0:
-            moves_list.append(moves)
-            
-    # Process buffed
-    if buffed_indices:
-        buffed_anchors = valid_anchors[buffed_indices]
-        moves = _generate_wall_moves_batch_kernel(
-            buffed_anchors, 
-            cache_manager.occupancy_cache._occ, 
-            color,
-            SIZE,
-            BUFFED_KING_MOVEMENT_VECTORS
-        )
-        if moves.size > 0:
-            moves_list.append(moves)
-            
-    if not moves_list:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+            directions = unbuffed_directions
         
-    moves = np.concatenate(moves_list)
-    
-    # ✅ CRITICAL: Multi-layer defensive bounds validation for Wall moves
-    # Wall is 2x2, so anchor at (x,y,z) occupies (x,y), (x+1,y), (x,y+1), (x+1,y+1)
-    # Therefore: BOTH x and y must be < SIZE-1 (so x+1 and y+1 are in bounds)
-    if moves.size > 0:
-        # Validate BOTH source and destination anchors
-        # This catches any edge cases that slipped through kernel checks
-        source_valid = (
-            (moves[:, 0] >= 0) & (moves[:, 0] < SIZE - 1) &
-            (moves[:, 1] >= 0) & (moves[:, 1] < SIZE - 1) &
-            (moves[:, 2] >= 0) & (moves[:, 2] < SIZE)
-        )
+        n_dirs = directions.shape[0]
         
-        dest_valid = (
-            (moves[:, 3] >= 0) & (moves[:, 3] < SIZE - 1) &
-            (moves[:, 4] >= 0) & (moves[:, 4] < SIZE - 1) &
-            (moves[:, 5] >= 0) & (moves[:, 5] < SIZE)
-        )
+        # ✅ OPTIMIZED: Precompute current squares as flat indices for O(1) lookup
+        current_flat_indices = np.empty(4, dtype=np.int64)
+        for k in range(4):
+            cx = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
+            cy = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
+            cz = anchor[2] + WALL_BLOCK_OFFSETS[k, 2]
+            current_flat_indices[k] = cx + cy * board_size + cz * board_size * board_size
         
-        all_valid = source_valid & dest_valid
-        
-        if not np.all(all_valid):
-            n_invalid = np.sum(~all_valid)
-            invalid_moves = moves[~all_valid]
+        for i in range(n_dirs):
+            # Target anchor for this direction
+            tax = anchor[0] + directions[i, 0]
+            tay = anchor[1] + directions[i, 1]
+            taz = anchor[2] + directions[i, 2]
             
-            # Enhanced logging for OOB detection
-            if n_invalid > 0:
-                first_invalid = invalid_moves[0]
-                logger.error(
-                    f"CRITICAL: Wall move generator produced {n_invalid} OOB moves! "
-                    f"SIZE={SIZE}. First invalid move: {first_invalid}. "
-                    f"Source: {first_invalid[:3]}, Dest: {first_invalid[3:]}. "
-                    f"Valid Range: [0, {SIZE-2}] for x,y."
-                )
+            # Bounds check for target anchor
+            if tax < 0 or tax > board_size - 2: continue
+            if tay < 0 or tay > board_size - 2: continue
+            if taz < 0 or taz > board_size - 1: continue
+                
+            # Check the 4 squares of the target wall
+            is_blocked = False
             
-            import warnings
-            warnings.warn(
-                f"Wall move generator filtered {n_invalid} out-of-bounds moves. "\
-                f"First invalid: {invalid_moves[0] if len(invalid_moves) > 0 else 'none'}. "\
-                f"Source anchors must be in [0, {SIZE-2}] for x,y to allow 2x2 block.",
-                RuntimeWarning
-            )
-            moves = moves[all_valid]
+            for j in range(4):
+                tx = tax + WALL_BLOCK_OFFSETS[j, 0]
+                ty = tay + WALL_BLOCK_OFFSETS[j, 1]
+                tz = taz + WALL_BLOCK_OFFSETS[j, 2]
+                
+                # Bounds check before array access
+                if not (0 <= tx < board_size and 0 <= ty < board_size and 0 <= tz < board_size):
+                    is_blocked = True
+                    break
+                
+                # Direct occupancy lookup
+                occ_color = occ[tx, ty, tz]
+                
+                if occ_color != 0:
+                    if occ_color == my_color:
+                        # ✅ OPTIMIZED: O(1) flat index comparison
+                        target_flat = tx + ty * board_size + tz * board_size * board_size
+                        is_self = False
+                        for k in range(4):
+                            if current_flat_indices[k] == target_flat:
+                                is_self = True
+                                break
+                        
+                        if not is_self:
+                            is_blocked = True
+                            break
             
-    return moves
+            if not is_blocked:
+                moves[count, 0] = anchor[0]
+                moves[count, 1] = anchor[1]
+                moves[count, 2] = anchor[2]
+                moves[count, 3] = tax
+                moves[count, 4] = tay
+                moves[count, 5] = taz
+                count += 1
+            
+    return moves[:count]
 
 @register(PieceType.WALL)
 def wall_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
     return generate_wall_moves(state.cache_manager, state.color, pos)
 
 __all__ = ["generate_wall_moves", "can_capture_wall_vectorized"]
+

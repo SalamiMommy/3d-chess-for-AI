@@ -3,7 +3,10 @@
 
 import numpy as np
 from numba import njit, prange
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game3d.cache.caches.transposition import CompactMove
 import logging
 
 from game3d.common.shared_types import (

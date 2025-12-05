@@ -19,7 +19,9 @@ from game3d.common.shared_types import (
 )
 from game3d.common.coord_utils import in_bounds_vectorized
 from game3d.movement.pseudolegal import coord_to_key
-from game3d.game.gamestate import GameState
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from game3d.game.gamestate import GameState
 
 @njit(cache=True)
 def _get_ray_between(start: np.ndarray, end: np.ndarray) -> np.ndarray:
@@ -57,7 +59,7 @@ def _get_ray_between(start: np.ndarray, end: np.ndarray) -> np.ndarray:
         
     return ray
 
-def get_pinned_pieces(state: GameState, color: int) -> Dict[int, int]:
+def get_pinned_pieces(state: 'GameState', color: int) -> Dict[int, int]:
     """
     Identify pinned pieces for the given color.
     

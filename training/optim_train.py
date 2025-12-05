@@ -23,6 +23,8 @@ from models.graph_transformer import GraphTransformer3D, create_optimized_model,
 HAS_GRAPH_TRANSFORMER = True
 
 from training.training_types import TrainingExample, TrainingConfig, BatchData, convert_examples_to_tensors
+from training.parallel_self_play import generate_training_data_parallel
+from training.opponents import AVAILABLE_OPPONENTS
 from game3d.common.shared_types import N_CHANNELS, SIZE, MAX_COORD_VALUE, MIN_COORD_VALUE
 
 # Setup ROCm optimizations if available
@@ -626,8 +628,21 @@ def load_or_init_model(config: TrainingConfig) -> tuple[nn.Module, optim.Optimiz
 
 def train_with_self_play(config: TrainingConfig, num_games: int = 10) -> Dict[str, Any]:
     """Train model with self-play generated data."""
-    model, _, _ = load_or_init_model(config)
+    model, _, epoch = load_or_init_model(config)
     
+    # Opponent Selection Logic
+    if epoch == 0:
+        # First iteration: Fixed enemies
+        opponent_types = ["priest_hunter", "priest_hunter"]
+        print(f"Epoch {epoch}: Using fixed opponents: {opponent_types}")
+    else:
+        # Subsequent iterations: Round robin
+        # Use epoch to select index
+        opp_idx = epoch % len(AVAILABLE_OPPONENTS)
+        opp_type = AVAILABLE_OPPONENTS[opp_idx]
+        opponent_types = [opp_type, opp_type]
+        print(f"Epoch {epoch}: Using round-robin opponent: {opp_type} (Index {opp_idx}/{len(AVAILABLE_OPPONENTS)})")
+
     # Save model to temporary checkpoint
     import tempfile
     with tempfile.NamedTemporaryFile(mode='wb', suffix='.pt', delete=False) as f:
@@ -640,7 +655,8 @@ def train_with_self_play(config: TrainingConfig, num_games: int = 10) -> Dict[st
             model_checkpoint_path=checkpoint_path,
             num_games=num_games,
             device=config.device,
-            model_size=config.model_size
+            model_size=config.model_size,
+            opponent_types=opponent_types
         )
         trainer = ChessTrainer(config, model=model)
         return trainer.train(examples)

@@ -17,7 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 from numba import njit, prange
 
-from game3d.common.shared_types import COORD_DTYPE, PieceType, MOVE_DTYPE
+from game3d.common.shared_types import COORD_DTYPE, PieceType, MOVE_DTYPE, Color
 from game3d.common.registry import get_piece_dispatcher
 from game3d.pieces.pieces.pawn import generate_pawn_moves
 
@@ -358,6 +358,8 @@ def refresh_pseudolegal_cache(state: "GameState") -> None:
     2. Generates RAW and PSEUDOLEGAL moves for them.
     3. Updates piece-level cache.
     4. Reconstructs and updates color-level cache.
+    
+    ✅ OPTIMIZED: Uses np.isin() for O(N log M) affected check instead of O(N*M)
     """
     cache_manager = state.cache_manager
     color = state.color
@@ -377,21 +379,53 @@ def refresh_pseudolegal_cache(state: "GameState") -> None:
         return
 
     coord_keys = coord_to_key(all_coords)
-    pieces_to_regenerate = []
     
-    # Identify pieces that need update
-    for i in range(len(all_coords)):
-        key = coord_keys[i]
-        is_affected = np.any(affected_pieces == key) if affected_pieces.size > 0 else False
-        is_missing_pseudo = not cache_manager.move_cache.has_piece_moves(color, key)
-        is_missing_raw = not cache_manager.move_cache.has_piece_raw_moves(color, key)
+    # ✅ OPTIMIZED: Vectorized affected check using np.isin() - O(N log M) instead of O(N*M)
+    is_affected_mask = np.isin(coord_keys, affected_pieces) if affected_pieces.size > 0 else np.zeros(len(coord_keys), dtype=bool)
+    
+    # ✅ OPTIMIZED: Batch check for missing cache entries
+    # Pre-compute which pieces need regeneration in a single pass
+    needs_regen_mask = is_affected_mask.copy()
+    
+    # Check missing entries using batch approach with single lock acquisition
+    # We can't easily vectorize dictionary lookups, but we can minimize locking overhead
+    move_cache = cache_manager.move_cache
+    color_idx = 0 if color == Color.WHITE else 1
+    
+    # Check coverage efficiently
+    with move_cache._lock:
+        # Get all keys currently in cache for this color
+        # Optimized: Extract directly to list then numpy array
+        # Note: keys() returns (color_idx, coord_key) tuples
+        keys_in_moves_cache = np.array(
+            [k for c, k in move_cache._piece_moves_cache.keys() if c == color_idx], 
+            dtype=np.int32
+        )
+        keys_in_raw_moves_cache = np.array(
+            [k for c, k in move_cache._piece_raw_moves_cache.keys() if c == color_idx],
+            dtype=np.int32
+        )
         
-        if is_affected or is_missing_pseudo or is_missing_raw:
-            pieces_to_regenerate.append(all_coords[i])
-            
+        # Verify coverage using vectorized set operations
+        # We need keys that are in BOTH caches
+        # Since we just need to identify missing ones
+        
+        # Check 1: Is key in pseudolegal moves cache?
+        in_pseudo = np.isin(coord_keys, keys_in_moves_cache)
+        
+        # Check 2: Is key in raw moves cache?
+        in_raw = np.isin(coord_keys, keys_in_raw_moves_cache)
+        
+        # If missing in either, needs regen (OR if already marked from affected)
+        # needs_regen_mask is already True for affected items
+        # We Update it: needs_regen_mask |= (~in_pseudo | ~in_raw)
+        missing_mask = (~in_pseudo) | (~in_raw)
+        needs_regen_mask = needs_regen_mask | missing_mask
+    
     # 3. Regenerate moves for affected pieces
-    if pieces_to_regenerate:
-        regenerate_coords = np.array(pieces_to_regenerate, dtype=COORD_DTYPE)
+    if np.any(needs_regen_mask):
+        regenerate_coords = all_coords[needs_regen_mask]
+        regenerate_keys = coord_keys[needs_regen_mask]
         debuffed_coords = cache_manager.consolidated_aura_cache.get_debuffed_squares(color)
         
         # A. Generate RAW moves (Ignore Occupancy)
@@ -400,18 +434,16 @@ def refresh_pseudolegal_cache(state: "GameState") -> None:
         # B. Generate PSEUDOLEGAL moves (Respect Occupancy)
         pseudo_moves_batch = generate_pseudolegal_moves_batch(state, regenerate_coords, debuffed_coords, ignore_occupancy=False)
         
-        # C. Update Piece Caches
-        # First, ensure we clear old entries for these pieces (handled by store overwriting)
-        # But we need to handle pieces that generated 0 moves.
-        # The batch generator returns concatenated moves. Pieces with 0 moves are missing from result.
-        # We must explicitly set empty moves for all regenerated pieces first.
-        
-        regen_keys = coord_to_key(regenerate_coords)
+        # C. Update Piece Caches with single lock acquisition
         empty = np.empty((0, 6), dtype=COORD_DTYPE)
         
-        for key in regen_keys:
-            cache_manager.move_cache.store_piece_raw_moves(color, key, empty)
-            cache_manager.move_cache.store_piece_moves(color, key, empty)
+        with move_cache._lock:
+            for key in regenerate_keys:
+                int_key = int(key)
+                piece_id = (color_idx, int_key)
+                # Store empty moves first to handle pieces with 0 moves
+                move_cache._piece_raw_moves_cache[piece_id] = empty
+                move_cache._piece_moves_cache[piece_id] = empty
             
         # Now overwrite with actual moves
         if raw_moves_batch.size > 0:
@@ -420,22 +452,18 @@ def refresh_pseudolegal_cache(state: "GameState") -> None:
         if pseudo_moves_batch.size > 0:
             _cache_piece_moves(cache_manager, regenerate_coords, pseudo_moves_batch, color, is_raw=False)
 
-    # 4. Reconstruct full Color-level arrays from Piece cache
-    # This ensures consistency and O(N) reconstruction instead of full O(N*M) regeneration
-    
-    all_raw_moves = []
-    all_pseudo_moves = []
-    
-    for key in coord_keys:
-        # Raw
-        p_raw = cache_manager.move_cache.get_piece_raw_moves(color, key)
-        if p_raw.size > 0:
-            all_raw_moves.append(p_raw)
-            
-        # Pseudo
-        p_pseudo = cache_manager.move_cache.get_piece_moves(color, key)
-        if p_pseudo.size > 0:
-            all_pseudo_moves.append(p_pseudo)
+    # 4. ✅ OPTIMIZED: Batch reconstruct Color-level arrays from Piece cache
+    # Single lock acquisition + list comprehension is faster than manual loops
+    with move_cache._lock:
+         # Use list comprehension for speed
+         all_raw_moves = [
+             move_cache._piece_raw_moves_cache.get((color_idx, int(key)), np.empty((0, 6), dtype=COORD_DTYPE))
+             for key in coord_keys
+         ]
+         all_pseudo_moves = [
+             move_cache._piece_moves_cache.get((color_idx, int(key)), np.empty((0, 6), dtype=COORD_DTYPE))
+             for key in coord_keys
+         ]
             
     final_raw = np.concatenate(all_raw_moves, axis=0) if all_raw_moves else np.empty((0, 6), dtype=COORD_DTYPE)
     final_pseudo = np.concatenate(all_pseudo_moves, axis=0) if all_pseudo_moves else np.empty((0, 6), dtype=COORD_DTYPE)

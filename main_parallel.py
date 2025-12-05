@@ -92,7 +92,7 @@ if __name__ == "__main__":
     setup_rocm_optimizations()
 
     # Import game components for validation
-    from game3d.game3d import OptimizedGame3D
+    from game3d.main_game import OptimizedGame3D
     from game3d.board.board import Board
     from game3d.cache.manager import OptimizedCacheManager
     from game3d.common.shared_types import Color, N_TOTAL_PLANES
@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     # CLI configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games-per-iter", type=int, default=6)  # Increased from 24 for more data
+    parser.add_argument("--games-per-iter", type=int, default=60)  # Increased from 24 for more data
     parser.add_argument("--num-parallel", type=int, default=6)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
@@ -373,8 +373,7 @@ if __name__ == "__main__":
                 pbar.write(f"  -> replay metadata saved")
 
                 # Save model checkpoint
-                if iteration % args.save_interval == 0:
-                    model_path = run_dir / f"model_iter_{iteration}.pt"
+                if iteration > start_iteration and iteration % args.save_interval == 0:
                     checkpoint = {
                         "iteration": iteration,
                         "model_state_dict": trainer.model.state_dict(),
@@ -383,7 +382,6 @@ if __name__ == "__main__":
                         "best_val_loss": results['best_val_loss'],
                         "config": vars(args)
                     }
-                    torch.save(checkpoint, model_path)
 
                     latest_path = run_dir / "model_latest.pt"
                     torch.save(checkpoint, latest_path)

@@ -186,7 +186,7 @@ def _game_worker_client(args):
     from game3d.common.coord_utils import coord_to_idx
     from game3d.common.shared_types import POLICY_DIM, Color, Result, COORD_DTYPE
     from game3d.movement.movepiece import Move
-    from game3d.game3d import OptimizedGame3D, InvalidMoveError
+    from game3d.main_game import OptimizedGame3D, InvalidMoveError
     from training.opponents import create_opponent, OpponentBase
     from game3d.game.terminal import get_draw_reason, result as get_result
     from game3d.game.factory import start_game_state
