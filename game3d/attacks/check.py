@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from game3d.cache.manager import CacheManager
     from game3d.game.gamestate import GameState
 
+from game3d.common.shared_types import MinimalStateProxy
+
 Coord = np.ndarray  # Shape: (3,)
 
 class CheckStatus(IntEnum):
@@ -725,17 +727,9 @@ def square_attacked_by_incremental(
     # This avoids the expensive GameState.__init__ overhead
     from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
     
-    class _MinimalStateProxy:
-        """Lightweight proxy with only required attributes for move generation."""
-        __slots__ = ('board', 'color', 'cache_manager')
-        def __init__(self, board, color, cache_manager):
-            self.board = board
-            self.color = color
-            self.cache_manager = cache_manager
-    
     # Generate new moves for affected pieces using lightweight proxy
     if affected_coords.size > 0:
-        proxy_state = _MinimalStateProxy(board, attacker_color, cache)
+        proxy_state = MinimalStateProxy(board, attacker_color, cache)
         new_affected_moves = generate_pseudolegal_moves_batch(
             proxy_state, affected_coords, np.empty((0, 3), dtype=COORD_DTYPE), ignore_occupancy=False
         )
@@ -797,15 +791,7 @@ def _square_attacked_by_slow(board, square: np.ndarray, attacker_color: int, cac
     from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
     
     # ✅ OPTIMIZED: Use lightweight proxy instead of full GameState creation
-    class _MinimalStateProxy:
-        """Lightweight proxy with only required attributes for move generation."""
-        __slots__ = ('board', 'color', 'cache_manager')
-        def __init__(self, board, color, cache_manager):
-            self.board = board
-            self.color = color
-            self.cache_manager = cache_manager
-    
-    dummy_state = _MinimalStateProxy(board, attacker_color, cache)
+    dummy_state = MinimalStateProxy(board, attacker_color, cache)
     
     # Generate ALL raw moves for attacker
     # This is expensive but correct.

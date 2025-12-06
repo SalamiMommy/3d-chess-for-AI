@@ -126,23 +126,43 @@ def transform_coordinates_batch(coords: np.ndarray, transform_idx: int) -> np.nd
 # =============================================================================
 # BOARD ARRAY TRANSFORMATION
 # =============================================================================
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, parallel=True)
 def transform_board_array(board_array: np.ndarray, transform_idx: int) -> np.ndarray:
+    """
+    Apply symmetry transformation to entire board array.
+    
+    ✅ OPTIMIZED: 
+    - Parallel execution via prange on z-axis
+    - Inlined matrix multiplication (avoids per-iteration array allocation)
+    - Pre-fetch matrix outside loops
+    """
     transformed = np.zeros_like(board_array)
+    matrix = TRANSFORM_MATRICES[transform_idx]
+    
+    # Center point (4 for 9x9x9 board)
+    center = (SIZE - 1) // 2
 
     for plane in range(N_TOTAL_PLANES):
-        for z in range(SIZE):
+        for z in prange(SIZE):  # ✅ Parallelize outer spatial loop
             for y in range(SIZE):
                 for x in range(SIZE):
                     value = board_array[plane, z, y, x]
                     if value != 0:
-                        # ✅ FIX 1: Create array in correct order directly
-                        coord_xyz = np.array([x, y, z], dtype=COORD_DTYPE)
-
-                        transformed_xyz = transform_coordinate_numba(coord_xyz, transform_idx)
-
-                        # ✅ FIX 2: Extract components directly instead of fancy indexing
-                        tz, ty, tx = transformed_xyz[2], transformed_xyz[1], transformed_xyz[0]
+                        # ✅ OPTIMIZED: Inline matrix multiplication
+                        # Center coordinates around origin
+                        cx = x - center
+                        cy = y - center  
+                        cz = z - center
+                        
+                        # Apply rotation matrix (inline, no array allocation)
+                        rx = matrix[0, 0] * cx + matrix[0, 1] * cy + matrix[0, 2] * cz
+                        ry = matrix[1, 0] * cx + matrix[1, 1] * cy + matrix[1, 2] * cz
+                        rz = matrix[2, 0] * cx + matrix[2, 1] * cy + matrix[2, 2] * cz
+                        
+                        # Translate back and convert to int
+                        tx = int(rx + center)
+                        ty = int(ry + center)
+                        tz = int(rz + center)
 
                         if 0 <= tx < SIZE and 0 <= ty < SIZE and 0 <= tz < SIZE:
                             transformed[plane, tz, ty, tx] = value

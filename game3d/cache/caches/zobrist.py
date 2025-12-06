@@ -115,12 +115,12 @@ class ZobristHash:
 
     def __init__(self):
         """Initialize Zobrist hashing with pure numpy using shared_types."""
-        self._piece_keys = np.random.randint(
-            0, 1 << 63,
-            size=(N_PIECE_TYPES, N_COLOR_PLANES, SIZE, SIZE, SIZE),
-            dtype=np.uint64
-        ).astype(HASH_DTYPE)
-        self._side_key = HASH_DTYPE(np.random.randint(0, 1 << 63, dtype=np.uint64))
+        # Ensure global keys are initialized
+        _init_zobrist()
+        
+        # Share values - optimization: view instead of copy
+        self._piece_keys = _PIECE_KEYS
+        self._side_key = _SIDE_KEY
 
     def compute_from_scratch(self, board: "Board", color: int) -> HASH_DTYPE:
         """Compute hash from scratch for board state."""

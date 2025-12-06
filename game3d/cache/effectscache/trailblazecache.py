@@ -85,10 +85,55 @@ def _batch_trail_squares_check_numba(
 
     return result
 
-@njit(cache=True, nogil=True)
-def _coords_to_flat_scalar(x: int, y: int, z: int) -> int:
-    """Scalar coordinate to flat index conversion."""
-    return x + SIZE * y + SIZE * (SIZE * z)
+
+@njit(cache=True, fastmath=True)
+def _extract_trail_squares_numba(
+    trail_coords: np.ndarray,
+    trail_lengths: np.ndarray,
+    max_history: int,
+    max_per_move: int
+) -> np.ndarray:
+    """
+    Extract all active trail squares from structured arrays.
+    Replaces Python loop with list appends.
+    
+    Args:
+        trail_coords: (N, TOTAL_TRAIL_CAPACITY, 3) - coordinates for each trailblazer
+        trail_lengths: (N, MAX_TRAIL_HISTORY) - length of each segment
+        max_history: MAX_TRAIL_HISTORY constant
+        max_per_move: MAX_SQUARES_PER_MOVE constant
+    
+    Returns:
+        (M, 3) array of all trail square coordinates
+    """
+    n_entries = trail_coords.shape[0]
+    
+    # First pass: count total squares
+    total_count = 0
+    for e in range(n_entries):
+        for h in range(max_history):
+            total_count += trail_lengths[e, h]
+    
+    if total_count == 0:
+        return np.empty((0, 3), dtype=COORD_DTYPE)
+    
+    # Allocate output
+    out = np.empty((total_count, 3), dtype=COORD_DTYPE)
+    write_idx = 0
+    
+    # Second pass: copy coordinates
+    for e in range(n_entries):
+        for h in range(max_history):
+            length = trail_lengths[e, h]
+            if length > 0:
+                start = h * max_per_move
+                for i in range(length):
+                    out[write_idx, 0] = trail_coords[e, start + i, 0]
+                    out[write_idx, 1] = trail_coords[e, start + i, 1]
+                    out[write_idx, 2] = trail_coords[e, start + i, 2]
+                    write_idx += 1
+    
+    return out
 
 # =============================================================================
 # OPTIMIZED TRAILBLAZE CACHE
@@ -338,65 +383,52 @@ class TrailblazeCache(CacheListener):
         """
         Get all active trail squares across all trailblazers.
         If avoider_color is provided, excludes trails created by pieces of that color.
+        
+        ✅ OPTIMIZED: Uses Numba kernel instead of Python loop with list appends.
         """
         active_mask = self._trail_data['active']
         
         # Filter by color if needed
         if avoider_color is not None:
-            # We want trails that are NOT owned by avoider_color
-            # i.e. trail_color != avoider_color
             color_mask = self._trail_data['color'] != avoider_color
             active_mask = active_mask & color_mask
             
         if not np.any(active_mask):
             return np.empty((0, 3), dtype=self._coord_dtype)
-            
-        all_squares = []
-        active_indices = np.where(active_mask)[0]
         
-        for idx in active_indices:
-            lengths = self._trail_data[idx]['trail_lengths']
-            coords = self._trail_data[idx]['trail_coords']
-            
-            for i in range(MAX_TRAIL_HISTORY):
-                l = lengths[i]
-                if l > 0:
-                    start = i * MAX_SQUARES_PER_MOVE
-                    all_squares.append(coords[start:start+l])
-                    
-        if not all_squares:
-            return np.empty((0, 3), dtype=self._coord_dtype)
-            
-        return np.vstack(all_squares)
+        # ✅ OPTIMIZED: Use Numba kernel for extraction
+        return _extract_trail_squares_numba(
+            self._trail_data['trail_coords'][active_mask],
+            self._trail_data['trail_lengths'][active_mask],
+            MAX_TRAIL_HISTORY,
+            MAX_SQUARES_PER_MOVE
+        )
 
     # ========================================================================
     # INTERNAL BATCH OPERATIONS
     # ========================================================================
 
     def _remove_trail_batch(self, flat_indices: np.ndarray) -> int:
-        """Batch trail removal - fully vectorized."""
+        """
+        Batch trail removal - fully vectorized.
+        
+        ✅ OPTIMIZED: Uses np.isin for batch matching instead of per-item Python loop.
+        """
         if flat_indices.size == 0:
             return 0
 
-        removed_count = 0
-
-        # Process each index to remove
-        for idx in flat_indices:
-            # Find matching entries
-            mask = self._trail_data['flat_idx'] == idx
-            if not np.any(mask):
-                continue
-
-            entry_idx = np.where(mask)[0][0]
-
-            if self._trail_data[entry_idx]['active']:
-                # Mark as inactive
-                self._trail_data[entry_idx]['active'] = False
-                self._trail_data[entry_idx]['trail_lengths'][:] = 0
-                removed_count += 1
-
-        # Rebuild fast lookup structures
-        self._rebuild_fast_lookups()
+        # ✅ OPTIMIZED: Batch match all indices at once using np.isin
+        match_mask = np.isin(self._trail_data['flat_idx'], flat_indices)
+        match_mask &= self._trail_data['active']
+        
+        removed_count = int(np.sum(match_mask))
+        
+        if removed_count > 0:
+            # Vectorized update of matched entries
+            self._trail_data['active'][match_mask] = False
+            self._trail_data['trail_lengths'][match_mask] = 0
+            # Rebuild fast lookup structures
+            self._rebuild_fast_lookups()
 
         return removed_count
 
@@ -490,21 +522,21 @@ class TrailblazeCache(CacheListener):
             raise ValueError(f"Invalid coordinate shape: {coords.shape}")
 
     def _coords_to_flat(self, coords: np.ndarray) -> np.ndarray:
-        """Batch coordinate to flat index conversion."""
+        """Batch coordinate to flat index conversion (vectorized)."""
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        
         # Use memory pool if available
         if self._memory_pool is not None and hasattr(self._memory_pool, 'allocate_array'):
             try:
                 n = coords.shape[0]
                 result = self._memory_pool.allocate_array((n,), INDEX_DTYPE)
-                for i in range(n):
-                    x, y, z = coords[i]
-                    result[i] = _coords_to_flat_scalar(int(x), int(y), int(z))
+                # Assignment implicitly casts to result dtype if needed, but safe here
+                result[:] = x + SIZE * y + SIZE * SIZE * z
                 return result
             except (AttributeError, TypeError):
                 pass
 
-        # Fallback to direct calculation
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        # Fallback to direct calculation (automatically vectorized by numpy)
         return x + SIZE * y + SIZE * SIZE * z
 
     def _is_trailblazer_flat(self, flat_coords: np.ndarray) -> np.ndarray:

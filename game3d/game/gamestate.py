@@ -329,7 +329,7 @@ class GameState:
         )
 
         # 5. Copy move history
-        new_state._move_history = getattr(self, '_move_history', np.array([], dtype=MOVE_DTYPE)).copy()
+        # new_state._move_history was legacy code, removed.
 
         # 6. CRITICAL: Zobrist was recomputed during cache rebuild
         new_state._zkey = new_cache._zkey

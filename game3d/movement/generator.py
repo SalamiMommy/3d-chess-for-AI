@@ -19,7 +19,7 @@ from collections import defaultdict
 from game3d.common.shared_types import (
     COORD_DTYPE, PIECE_TYPE_DTYPE, SIZE, VOLUME,
     Color, PieceType, VECTORIZATION_THRESHOLD, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE,
-    MOVE_DTYPE, INDEX_DTYPE, BOOL_DTYPE, MOVE_FLAGS
+    MOVE_DTYPE, INDEX_DTYPE, BOOL_DTYPE, MOVE_FLAGS, MinimalStateProxy
 )
 from game3d.common.coord_utils import in_bounds_vectorized, ensure_coords
 from game3d.common.validation import validate_coords_batch, validate_coord, validate_moves, validate_move
@@ -159,38 +159,17 @@ def filter_safe_moves_optimized(game_state: 'GameState', moves: np.ndarray) -> n
     # 1. Ensure opponent's moves are cached for efficient check detection
     opponent_color = Color(color).opposite().value
     if game_state.cache_manager.move_cache.get_pseudolegal_moves(opponent_color) is None:
-        # ✅ OPTIMIZED: Use lightweight proxy instead of full GameState creation
-        opp_coords = occ_cache.get_positions(opponent_color)
-        if opp_coords.size > 0:
-            class _MinimalStateProxy:
-                """Lightweight proxy with only required attributes for move generation."""
-                __slots__ = ('board', 'color', 'cache_manager')
-                def __init__(self, board, color, cache_manager):
-                    self.board = board
-                    self.color = color
-                    self.cache_manager = cache_manager
-            
-            opp_state = _MinimalStateProxy(game_state.board, opponent_color, game_state.cache_manager)
-            debuffed = game_state.cache_manager.consolidated_aura_cache.get_debuffed_squares(opponent_color)
-            
-            # 1. Generate and cache RAW moves (Required for pin detection)
-            opp_raw_moves = generate_pseudolegal_moves_batch(
-                opp_state, opp_coords, debuffed, ignore_occupancy=True
-            )
-            game_state.cache_manager.move_cache.store_raw_moves(opponent_color, opp_raw_moves)
-
-            # 2. Generate and store PSEUDOLEGAL moves
-            opp_moves = generate_pseudolegal_moves_batch(
-                opp_state, opp_coords, debuffed, ignore_occupancy=False
-            )
-            game_state.cache_manager.move_cache.store_pseudolegal_moves(opponent_color, opp_moves)
-            
-            global _generator
-            if _generator is None:
-                _generator = LegalMoveGenerator()
-            _generator._cache_piece_moves(game_state.cache_manager, opp_coords, opp_moves, opponent_color)
-        else:
-             game_state.cache_manager.move_cache.store_pseudolegal_moves(opponent_color, np.empty((0, 6), dtype=MOVE_DTYPE))
+        # ✅ OPTIMIZED: Use lightweight proxy via refresh_pseudolegal_cache (Incremental Update)
+        # This replaces full regeneration (O(N)) with incremental update (O(k) where k=affected pieces)
+        
+        opp_state = MinimalStateProxy(
+            game_state.board, 
+            opponent_color, 
+            game_state.cache_manager,
+            turn_number=game_state.turn_number,
+            history=game_state.history
+        )
+        refresh_pseudolegal_cache(opp_state)
 
     is_in_check = king_in_check(game_state.board, color, color, cache=game_state.cache_manager)
 

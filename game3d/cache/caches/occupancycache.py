@@ -205,8 +205,8 @@ def _batch_occupied_numba(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
         if (0 <= x <= max_val and 0 <= y <= max_val and 0 <= z <= max_val):
             out[i] = occ[x, y, z] != 0
 
-    return out
 
+    return out
 
 class OccupancyCache:
     __slots__ = ("_occ", "_ptype", "_priest_count", "_coord_dtype",
@@ -239,7 +239,14 @@ class OccupancyCache:
         self._flat_view_lock = threading.Lock()
         self._cache_size_limit = 1000  # Prevent unbounded growth
         self._king_cache_misses = 0  # Track cache effectiveness
-        self._memory_pool = get_memory_pool()
+        
+    def _allocate_id(self) -> int:
+        """Allocate a new piece ID (O(1))."""
+        raise NotImplementedError("SoA logic has been reverted.")
+
+    def _free_id(self, pid: int) -> None:
+        """Free a piece ID (O(1))."""
+        raise NotImplementedError("SoA logic has been reverted.")
 
     def batch_is_occupied(self, coords: np.ndarray) -> np.ndarray:
         coords = self._normalize_coords(coords)
@@ -595,6 +602,7 @@ class OccupancyCache:
                 color_idx = 0 if king_colors[i] == Color.WHITE else 1
                 self._king_positions[color_idx] = king_coords[i]
 
+
         self._priest_count = _parallel_count_priests(self._occ, self._ptype, PARALLEL_CHUNKS)
 
         # King positions are now found via direct lookup, no cache warming needed
@@ -661,7 +669,7 @@ class OccupancyCache:
         self._occ.fill(0)
         self._ptype.fill(0)
         self._priest_count.fill(0)
-        self._king_positions.fill(-1)  # ✅ Clear king cache
+        self._king_positions.fill(-1)
 
     def close(self):
         """Cleanup memory pool."""

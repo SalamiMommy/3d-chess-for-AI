@@ -194,6 +194,8 @@ def _generate_wall_moves_batch_kernel(
     
     # Current wall squares for overlap check (reusable buffer)
     current_squares = np.empty((4, 3), dtype=COORD_DTYPE)
+    # Pre-allocate reuse buffer for flat indices
+    current_flat_indices = np.empty(4, dtype=np.int64)
     
     for w in range(n_walls):
         anchor = anchors[w]
@@ -206,7 +208,6 @@ def _generate_wall_moves_batch_kernel(
             
         # ✅ OPTIMIZED: Precompute current squares as flat indices for O(1) lookup
         # Instead of 4 coordinate comparisons per target square (16 total), use flat index
-        current_flat_indices = np.empty(4, dtype=np.int64)
         for k in range(4):
             cx = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
             cy = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]
@@ -360,7 +361,7 @@ def generate_wall_moves(
         is_buffed.astype(np.int8)
     )
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def _generate_wall_moves_fused_kernel(
     anchors: np.ndarray, 
     occ: np.ndarray,
@@ -384,8 +385,10 @@ def _generate_wall_moves_fused_kernel(
     
     # Current wall squares for overlap check (reusable buffer)
     current_squares = np.empty((4, 3), dtype=COORD_DTYPE)
+    # Reusable buffer for flat indices
+    current_flat_indices = np.empty(4, dtype=np.int64)
     
-    for w in range(n_walls):
+    for w in prange(n_walls):
         anchor = anchors[w]
         
         # Select directions based on buffed status
@@ -397,7 +400,6 @@ def _generate_wall_moves_fused_kernel(
         n_dirs = directions.shape[0]
         
         # ✅ OPTIMIZED: Precompute current squares as flat indices for O(1) lookup
-        current_flat_indices = np.empty(4, dtype=np.int64)
         for k in range(4):
             cx = anchor[0] + WALL_BLOCK_OFFSETS[k, 0]
             cy = anchor[1] + WALL_BLOCK_OFFSETS[k, 1]

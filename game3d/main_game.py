@@ -55,7 +55,7 @@ class OptimizedGame3D:
             color=Color.WHITE,
             cache_manager=cache,
         )
-        self._move_history = np.array([], dtype=object)  # Simplified history tracking
+        self._move_history = []  # Simplified history tracking (use list for O(1) append)
 
     @property
     def state(self) -> GameState:
@@ -122,7 +122,7 @@ class OptimizedGame3D:
         """Append move to history with timing."""
         # Simple tuple storage for frontend use
         entry = (move, move_time, self._state.turn_number, self._state.color)
-        self._move_history = np.append(self._move_history, entry)
+        self._move_history.append(entry)
 
     def reset(self, start_state: Optional[GameState] = None) -> None:
         """
@@ -137,11 +137,12 @@ class OptimizedGame3D:
             self._state = GameState.from_startpos()
             self._cache_manager = self._state.cache_manager
 
-        self._move_history = np.array([], dtype=object)
+        self._move_history = []
 
     def get_move_history(self) -> np.ndarray:
         """Get copy of move history."""
-        return self._move_history.copy()
+        # Convert to numpy array on demand
+        return np.array(self._move_history, dtype=object)
 
     def clone(self) -> 'OptimizedGame3D':
         """

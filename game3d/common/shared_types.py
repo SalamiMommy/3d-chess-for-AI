@@ -222,6 +222,7 @@ NODE_TYPE_DTYPE = np.uint8
 COLOR_DTYPE = np.uint8
 PIECE_TYPE_DTYPE = np.int8
 HASH_DTYPE = np.int64
+HASH_DTYPE = np.int64
 POINTER_DTYPE = np.int64
 
 # Type aliases
@@ -704,4 +705,17 @@ __all__ = [
     
     # Vectorized utilities
     # Note: in_bounds_vectorized has been moved to coord_utils.py
+    
+    # Common classes
+    'MinimalStateProxy',
 ]
+
+class MinimalStateProxy:
+    """Lightweight proxy with only required attributes for move generation."""
+    __slots__ = ('board', 'color', 'cache_manager', 'turn_number', 'history')
+    def __init__(self, board, color, cache_manager, turn_number=0, history=None):
+        self.board = board
+        self.color = color
+        self.cache_manager = cache_manager
+        self.turn_number = turn_number
+        self.history = history if history is not None else []
