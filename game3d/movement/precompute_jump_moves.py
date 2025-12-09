@@ -2,51 +2,43 @@
 import numpy as np
 import os
 import sys
+from unittest.mock import MagicMock
+
+# Mock numba before it gets imported by piece modules
+numba_mock = MagicMock()
+# Create a dummy decorator that returns the function as-is
+def dummy_decorator(*args, **kwargs):
+    def wrapper(func):
+        return func
+    return wrapper
+# Handle both @njit and @njit(...)
+def njit_mock(*args, **kwargs):
+    if len(args) == 1 and callable(args[0]):
+        return args[0]
+    return dummy_decorator
+
+numba_mock.njit = njit_mock
+numba_mock.objmode = MagicMock()
+numba_mock.prange = range # Mock prange as normal range
+sys.modules['numba'] = numba_mock
 
 # Add project root to path
+import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from game3d.common.shared_types import COORD_DTYPE, SIZE, SIZE_SQUARED, PieceType
 
-# Define vectors locally to avoid import issues and private variable access
-# King-like vectors (26 directions) - unbuffed
-dx_vals, dy_vals, dz_vals = np.meshgrid([-1, 0, 1], [-1, 0, 1], [-1, 0, 1], indexing='ij')
-all_coords = np.stack([dx_vals.ravel(), dy_vals.ravel(), dz_vals.ravel()], axis=1)
-origin_mask = np.any(all_coords != 0, axis=1)
-KING_VECTORS = all_coords[origin_mask].astype(COORD_DTYPE)
+# Import vectors directly from piece definitions to ensure consistency
+from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
+from game3d.pieces.pieces.knight import KNIGHT_MOVEMENT_VECTORS, BUFFED_KNIGHT_MOVEMENT_VECTORS
+from game3d.pieces.pieces.orbiter import ORBITER_MOVEMENT_VECTORS, BUFFED_ORBITER_MOVEMENT_VECTORS
+from game3d.pieces.pieces.nebula import NEBULA_MOVEMENT_VECTORS, BUFFED_NEBULA_MOVEMENT_VECTORS
+from game3d.pieces.pieces.echo import ECHO_MOVEMENT_VECTORS, BUFFED_ECHO_MOVEMENT_VECTORS
+from game3d.pieces.pieces.wall import UNBUFFED_WALL_VECTORS
+from game3d.pieces.pieces.panel import PANEL_MOVEMENT_VECTORS, BUFFED_PANEL_MOVEMENT_VECTORS
+from game3d.pieces.pieces.edgerook import EDGE_ROOK_VECTORS
 
-# Buffed King: 5x5x5 cube (Chebyshev distance 2)
-dx_vals_b, dy_vals_b, dz_vals_b = np.meshgrid(
-    [-2, -1, 0, 1, 2], 
-    [-2, -1, 0, 1, 2], 
-    [-2, -1, 0, 1, 2], 
-    indexing='ij'
-)
-all_coords_b = np.stack([dx_vals_b.ravel(), dy_vals_b.ravel(), dz_vals_b.ravel()], axis=1)
-origin_mask_b = np.any(all_coords_b != 0, axis=1)
-BUFFED_KING_VECTORS = all_coords_b[origin_mask_b].astype(COORD_DTYPE)
-
-# Knight vectors (2,1,0) - unbuffed
-KNIGHT_VECTORS = np.array([
-    [1, 2, 0], [2, 1, 0], [-1, 2, 0], [-2, 1, 0],
-    [1, -2, 0], [2, -1, 0], [-1, -2, 0], [-2, -1, 0],
-    [0, 1, 2], [0, 2, 1], [0, -1, 2], [0, -2, 1],
-    [0, 1, -2], [0, 2, -1], [0, -1, -2], [0, -2, -1],
-    [1, 0, 2], [2, 0, 1], [-1, 0, 2], [-2, 0, 1],
-    [1, 0, -2], [2, 0, -1], [-1, 0, -2], [-2, 0, -1]
-], dtype=COORD_DTYPE)
-
-# Buffed knight movement vectors (2,1,1) - buffed
-BUFFED_KNIGHT_VECTORS = np.array([
-    [2, 1, 1], [2, 1, -1], [2, -1, 1], [2, -1, -1],
-    [-2, 1, 1], [-2, 1, -1], [-2, -1, 1], [-2, -1, -1],
-    [1, 2, 1], [1, 2, -1], [1, -2, 1], [1, -2, -1],
-    [-1, 2, 1], [-1, 2, -1], [-1, -2, 1], [-1, -2, -1],
-    [1, 1, 2], [1, 1, -2], [1, -1, 2], [1, -1, -2],
-    [-1, 1, 2], [-1, 1, -2], [-1, -1, 2], [-1, -1, -2],
-], dtype=COORD_DTYPE)
-
-# Knight31 vectors (3,1,0) - unbuffed
+# Knight31 vectors (3,1,0) - unbuffed (Local definition as files do not exist)
 KNIGHT31_VECTORS = np.array([
     (3, 1, 0), (3, -1, 0), (-3, 1, 0), (-3, -1, 0),
     (1, 3, 0), (1, -3, 0), (-1, 3, 0), (-1, -3, 0),
@@ -56,7 +48,7 @@ KNIGHT31_VECTORS = np.array([
     (0, 1, 3), (0, 1, -3), (0, -1, 3), (0, -1, -3),
 ], dtype=COORD_DTYPE)
 
-# Buffed Knight31 (3,1,1) - buffed
+# Buffed Knight31 (3,1,1) - buffed (Local definition as files do not exist)
 BUFFED_KNIGHT31_VECTORS = np.array([
     (3, 1, 1), (3, 1, -1), (3, -1, 1), (3, -1, -1),
     (-3, 1, 1), (-3, 1, -1), (-3, -1, 1), (-3, -1, -1),
@@ -66,7 +58,7 @@ BUFFED_KNIGHT31_VECTORS = np.array([
     (-1, 1, 3), (-1, 1, -3), (-1, -1, 3), (-1, -1, -3),
 ], dtype=COORD_DTYPE)
 
-# Knight32 vectors (3,2,0) - unbuffed
+# Knight32 vectors (3,2,0) - unbuffed (Local definition as files do not exist)
 KNIGHT32_VECTORS = np.array([
     (3, 2, 0), (3, -2, 0), (-3, 2, 0), (-3, -2, 0),
     (2, 3, 0), (2, -3, 0), (-2, 3, 0), (-2, -3, 0),
@@ -76,7 +68,7 @@ KNIGHT32_VECTORS = np.array([
     (0, 2, 3), (0, 2, -3), (0, -2, 3), (0, -2, -3),
 ], dtype=COORD_DTYPE)
 
-# Buffed Knight32 (3,2,1) - buffed
+# Buffed Knight32 (3,2,1) - buffed (Local definition as files do not exist)
 BUFFED_KNIGHT32_VECTORS = np.array([
     (3, 2, 1), (3, 2, -1), (3, -2, 1), (3, -2, -1),
     (-3, 2, 1), (-3, 2, -1), (-3, -2, 1), (-3, -2, -1),
@@ -92,124 +84,38 @@ BUFFED_KNIGHT32_VECTORS = np.array([
     (-3, 1, 2), (-3, 1, -2), (-3, -1, 2), (-3, -1, -2),
 ], dtype=COORD_DTYPE)
 
-# Wall vectors (orthogonal)
-WALL_VECTORS = np.array([
-    [1, 0, 0], [-1, 0, 0],
-    [0, 1, 0], [0, -1, 0],
-    [0, 0, 1], [0, 0, -1]
-], dtype=COORD_DTYPE)
-
-# Orbiter vectors - Radius 3 Euclidean sphere (surface only) - unbuffed
-ORBITER_VECTORS = np.array([
-    (dx, dy, dz)
-    for dx in range(-4, 5)
-    for dy in range(-4, 5)
-    for dz in range(-4, 5)
-    if 8 <= (dx*dx + dy*dy + dz*dz) <= 11
-], dtype=COORD_DTYPE)
-
-# Buffed Orbiter - Radius 4 Euclidean sphere (surface only) - buffed
-BUFFED_ORBITER_VECTORS = np.array([
-    (dx, dy, dz)
-    for dx in range(-5, 6)
-    for dy in range(-5, 6)
-    for dz in range(-5, 6)
-    if 14 <= (dx*dx + dy*dy + dz*dz) <= 18
-], dtype=COORD_DTYPE)
-
-# Nebula - All positions within radius 2 (excluding origin) - unbuffed
-NEBULA_VECTORS = np.array([
-    (dx, dy, dz)
-    for dx in range(-2, 3)
-    for dy in range(-2, 3)
-    for dz in range(-2, 3)
-    if 0 < (dx*dx + dy*dy + dz*dz) <= 4
-], dtype=COORD_DTYPE)
-
-# Buffed Nebula - All positions within radius 3 (excluding origin) - buffed
-BUFFED_NEBULA_VECTORS = np.array([
-    (dx, dy, dz)
-    for dx in range(-3, 4)
-    for dy in range(-3, 4)
-    for dz in range(-3, 4)
-    if 0 < (dx*dx + dy*dy + dz*dz) <= 9
-], dtype=COORD_DTYPE)
-
-# Panel vectors - 3x3 panels at distance 2 - unbuffed
-def _create_panel_vectors(distance):
-    vectors = []
-    r = [-1, 0, 1]
-    # X faces
-    for x in [-distance, distance]:
-        for y in r:
-            for z in r:
-                vectors.append([x, y, z])
-    # Y faces
-    for y in [-distance, distance]:
-        for x in r:
-            for z in r:
-                vectors.append([x, y, z])
-    # Z faces
-    for z in [-distance, distance]:
-        for x in r:
-            for y in r:
-                vectors.append([x, y, z])
-    return np.array(vectors, dtype=COORD_DTYPE)
-
-PANEL_VECTORS = _create_panel_vectors(2)
-BUFFED_PANEL_VECTORS = _create_panel_vectors(3)
-
-# Echo piece - 6 cardinal anchors at offset 2 + 26 radius-1 bubble offsets - unbuffed
-# Build radius 1 offsets
-_radius_1_coords = np.mgrid[-1:2, -1:2, -1:2].reshape(3, -1).T
-_radius_1_offsets = _radius_1_coords[np.sum(_radius_1_coords * _radius_1_coords, axis=1) <= 1].astype(COORD_DTYPE)
-
-_ECHO_ANCHORS = np.array([
-    [-2, 0, 0], [2, 0, 0],
-    [0, -2, 0], [0, 2, 0],
-    [0, 0, -2], [0, 0, 2]
-], dtype=COORD_DTYPE)
-ECHO_VECTORS = (_ECHO_ANCHORS[:, None, :] + _radius_1_offsets[None, :, :]).reshape(-1, 3)
-
-# Buffed Echo - 6 cardinal anchors at offset 3 + 26 radius-1 bubble offsets - buffed
-_BUFFED_ECHO_ANCHORS = np.array([
-    [-3, 0, 0], [3, 0, 0],
-    [0, -3, 0], [0, 3, 0],
-    [0, 0, -3], [0, 0, 3]
-], dtype=COORD_DTYPE)
-BUFFED_ECHO_VECTORS = (_BUFFED_ECHO_ANCHORS[:, None, :] + _radius_1_offsets[None, :, :]).reshape(-1, 3)
-
 # Archer vectors (King + Radius 2 Surface)
 # NOTE: Archer shots (radius 2) are capture-only and cannot be handled by standard jump engine precomputation
 # which assumes move-or-capture. So we only precompute the movement part (King vectors).
-ARCHER_COMBINED_VECTORS = KING_VECTORS
+ARCHER_COMBINED_VECTORS = KING_MOVEMENT_VECTORS
 
 # Mapping of PieceType to Vectors - now supporting both unbuffed and buffed
 PIECE_VECTORS = {
-    PieceType.KING: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.PRIEST: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.KNIGHT: {'unbuffed': KNIGHT_VECTORS, 'buffed': BUFFED_KNIGHT_VECTORS},
+    PieceType.KING: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.PRIEST: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.KNIGHT: {'unbuffed': KNIGHT_MOVEMENT_VECTORS, 'buffed': BUFFED_KNIGHT_MOVEMENT_VECTORS},
     PieceType.KNIGHT31: {'unbuffed': KNIGHT31_VECTORS, 'buffed': BUFFED_KNIGHT31_VECTORS},
     PieceType.KNIGHT32: {'unbuffed': KNIGHT32_VECTORS, 'buffed': BUFFED_KNIGHT32_VECTORS},
-    PieceType.BOMB: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.BLACKHOLE: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.WHITEHOLE: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.HIVE: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.SWAPPER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.INFILTRATOR: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.ORBITER: {'unbuffed': ORBITER_VECTORS, 'buffed': BUFFED_ORBITER_VECTORS},
-    PieceType.ARCHER: {'unbuffed': ARCHER_COMBINED_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.FREEZER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.SPEEDER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.WALL: {'unbuffed': WALL_VECTORS, 'buffed': WALL_VECTORS},  # Wall doesn't have buffed variant
-    PieceType.SLOWER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.GEOMANCER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.ARMOUR: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.NEBULA: {'unbuffed': NEBULA_VECTORS, 'buffed': BUFFED_NEBULA_VECTORS},
-    PieceType.ECHO: {'unbuffed': ECHO_VECTORS, 'buffed': BUFFED_ECHO_VECTORS},
-    PieceType.PANEL: {'unbuffed': PANEL_VECTORS, 'buffed': BUFFED_PANEL_VECTORS},
-    PieceType.MIRROR: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
-    PieceType.FRIENDLYTELEPORTER: {'unbuffed': KING_VECTORS, 'buffed': BUFFED_KING_VECTORS},
+    PieceType.BOMB: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.BLACKHOLE: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.WHITEHOLE: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.HIVE: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.SWAPPER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.INFILTRATOR: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.ORBITER: {'unbuffed': ORBITER_MOVEMENT_VECTORS, 'buffed': BUFFED_ORBITER_MOVEMENT_VECTORS},
+    PieceType.ARCHER: {'unbuffed': ARCHER_COMBINED_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.FREEZER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.SPEEDER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.WALL: {'unbuffed': UNBUFFED_WALL_VECTORS, 'buffed': UNBUFFED_WALL_VECTORS},  # Wall doesn't have buffed variant
+    PieceType.SLOWER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.GEOMANCER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.ARMOUR: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.NEBULA: {'unbuffed': NEBULA_MOVEMENT_VECTORS, 'buffed': BUFFED_NEBULA_MOVEMENT_VECTORS},
+    PieceType.ECHO: {'unbuffed': ECHO_MOVEMENT_VECTORS, 'buffed': BUFFED_ECHO_MOVEMENT_VECTORS},
+    PieceType.PANEL: {'unbuffed': PANEL_MOVEMENT_VECTORS, 'buffed': BUFFED_PANEL_MOVEMENT_VECTORS},
+    PieceType.MIRROR: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.FRIENDLYTELEPORTER: {'unbuffed': KING_MOVEMENT_VECTORS, 'buffed': BUFFED_KING_MOVEMENT_VECTORS},
+    PieceType.EDGEROOK: {'unbuffed': EDGE_ROOK_VECTORS, 'buffed': EDGE_ROOK_VECTORS},
 }
 
 def precompute_moves():

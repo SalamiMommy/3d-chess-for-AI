@@ -4,18 +4,11 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 from numba import njit
 
-from game3d.common.shared_types import (
-    COORD_DTYPE, BOOL_DTYPE, RADIUS_2_OFFSETS, SIZE, MOVE_FLAGS, SIZE_SQUARED
-)
+from game3d.common.shared_types import *
 from game3d.common.shared_types import Color, PieceType
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
-from game3d.movement.jump_engine import get_jump_movement_generator
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
@@ -48,11 +41,6 @@ def _check_explosion_numba(
                     
     return has_enemy
 
-def generate_bomb_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:  # Changed from List[Move] to np.ndarray
     """Generate bomb moves: king-like walks + strategic self-detonation."""
     pos_arr = pos.astype(COORD_DTYPE)
 
@@ -95,9 +83,5 @@ def generate_bomb_moves(
 
     return moves
 
-@register(PieceType.BOMB)
-def bomb_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Generate all bomb moves for given position."""
-    return generate_bomb_moves(state.cache_manager, state.color, pos)
+__all__ = []
 
-__all__ = ["generate_bomb_moves"]

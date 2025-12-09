@@ -8,14 +8,9 @@ import numpy as np
 from numba import njit
 from typing import List, TYPE_CHECKING
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE, SIZE_MINUS_1, SIZE, SIZE_SQUARED, BOOL_DTYPE
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
-from game3d.movement.jump_engine import get_jump_movement_generator
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 @njit(cache=True)
 def _generate_mirror_moves_kernel(
@@ -73,49 +68,7 @@ def _generate_mirror_moves_kernel(
                 
     return moves[:count]
 
-from game3d.pieces.pieces.kinglike import generate_king_moves
 
-def generate_mirror_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate mirror moves: King-like moves + Teleport (z-mirror unbuffed, xyz-mirror buffed)."""
-    pos_arr = pos.astype(COORD_DTYPE)
-    
-    # Handle single input
-    if pos_arr.ndim == 1:
-        pos_arr = pos_arr.reshape(1, 3)
-        
-    moves_list = []
 
-    # 1. King-like movement (handles buffs)
-    king_moves = generate_king_moves(cache_manager, color, pos_arr, piece_type=PieceType.MIRROR)
-    if king_moves.size > 0:
-        moves_list.append(king_moves)
+__all__ = []
 
-    # 2. Mirror Teleport
-    # Check if buffed
-    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
-    x, y, z = pos_arr[0]
-    is_buffed = buffed_squares[x, y, z]
-    
-    # Get flattened occupancy
-    flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
-    
-    # Generate moves using kernel (mirror all axes if buffed, only z if not)
-    teleport_moves = _generate_mirror_moves_kernel(pos_arr, flattened_occ, color, is_buffed)
-    if teleport_moves.size > 0:
-        moves_list.append(teleport_moves)
-
-    if not moves_list:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    return np.concatenate(moves_list, axis=0)
-
-@register(PieceType.MIRROR)
-def mirror_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatch mirror piece moves."""
-    return generate_mirror_moves(state.cache_manager, state.color, pos)
-
-__all__ = ["generate_mirror_moves"]

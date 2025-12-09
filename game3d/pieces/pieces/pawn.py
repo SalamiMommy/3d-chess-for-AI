@@ -4,39 +4,33 @@ from numba import njit
 from typing import List, TYPE_CHECKING
 
 from game3d.common.coord_utils import in_bounds_vectorized
-from game3d.common.shared_types import (
-    Color, PieceType,
-    COORD_DTYPE, COLOR_WHITE, COLOR_BLACK, SIZE,
-    PAWN_START_RANK_WHITE, PAWN_START_RANK_BLACK,
-    PAWN_PROMOTION_RANK_WHITE, PAWN_PROMOTION_RANK_BLACK, MOVE_FLAGS,
-    COLOR_DTYPE, PIECE_TYPE_DTYPE
-)
-from game3d.common.registry import register
-from game3d.movement.jump_engine import get_jump_movement_generator
-from game3d.movement.movepiece import Move
+from game3d.common.shared_types import *
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 # Pawn push directions - white moves +Z, black moves -Z
 PAWN_PUSH_DIRECTIONS = np.array([
-    [0, 0, 1],   # White pawn push
-    [0, 0, -1],  # Black pawn push
+    [0, 0, 1],
+    [0, 0, -1],
 ], dtype=COORD_DTYPE)
 
 # Pawn attack directions - 4 trigonal attacks (forward in Z, diagonal in XY)
 # White (+Z): (±1, ±1, 1)
 # Black (-Z): (±1, ±1, -1)
 PAWN_ATTACK_DIRECTIONS = np.array([
-    [1, 1, 1], [-1, 1, 1], [1, -1, 1], [-1, -1, 1],  # White attacks
-    [1, 1, -1], [-1, 1, -1], [1, -1, -1], [-1, -1, -1],  # Black attacks
+    [-1, -1, 1],
+    [-1, 1, 1],
+    [1, -1, 1],
+    [1, 1, 1],
+    [-1, -1, -1],
+    [-1, 1, -1],
+    [1, -1, -1],
+    [1, 1, -1],
 ], dtype=COORD_DTYPE)
 
 # ✅ OPTIMIZATION: Pre-compute attack direction slices
 PAWN_ATTACK_DIRECTIONS_WHITE = PAWN_ATTACK_DIRECTIONS[:4]
 PAWN_ATTACK_DIRECTIONS_BLACK = PAWN_ATTACK_DIRECTIONS[4:]
-
 
 @njit(cache=True, fastmath=True)
 def _generate_pawn_moves_batch_kernel(
@@ -106,51 +100,5 @@ def _generate_pawn_moves_batch_kernel(
                     
     return moves[:count]
 
+__all__ = ['PAWN_PUSH_DIRECTIONS', 'PAWN_ATTACK_DIRECTIONS']
 
-def generate_pawn_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate pawn moves with optimized batch processing.
-    
-    Supports both single coordinate (3,) and batch coordinates (N, 3).
-    """
-    # Normalize input to (N, 3)
-    if pos.ndim == 1:
-        coords = pos.reshape(1, 3)
-    else:
-        coords = pos
-        
-    if coords.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-        
-    colour = Color(color)
-    
-    # Select appropriate parameters
-    dz = 1 if colour == Color.WHITE else -1
-    start_rank = PAWN_START_RANK_WHITE if colour == Color.WHITE else PAWN_START_RANK_BLACK
-    attack_dirs = PAWN_ATTACK_DIRECTIONS_WHITE if colour == Color.WHITE else PAWN_ATTACK_DIRECTIONS_BLACK
-    
-    # Get cache arrays
-    occ = cache_manager.occupancy_cache._occ
-    ptype = cache_manager.occupancy_cache._ptype
-    armour_type = PieceType.ARMOUR.value
-    
-    # Use fused kernel
-    return _generate_pawn_moves_batch_kernel(
-        coords,
-        occ,
-        ptype,
-        color,
-        start_rank,
-        dz,
-        attack_dirs,
-        armour_type
-    )
-
-@register(PieceType.PAWN)
-def pawn_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_pawn_moves(state.cache_manager, state.color, pos)
-
-__all__ = ['generate_pawn_moves', 'PAWN_PUSH_DIRECTIONS', 'PAWN_ATTACK_DIRECTIONS']

@@ -8,17 +8,10 @@ import numpy as np
 from numba import njit
 from typing import List, TYPE_CHECKING
 from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch
-from game3d.common.shared_types import (
-    COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, SIZE
-)
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
-from game3d.movement.jump_engine import get_jump_movement_generator
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
@@ -58,11 +51,6 @@ def _generate_infiltrator_teleport_moves(
             
     return moves[:count]
 
-def generate_infiltrator_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
     """Generate infiltrator moves: king walks + pawn teleports (front unbuffed, behind buffed)."""
     start = pos.astype(COORD_DTYPE)
     
@@ -146,7 +134,7 @@ def _get_valid_pawn_targets(
     cache_manager: 'OptimizedCacheManager',
     color: int,
     teleport_behind: bool = False
-) -> np.ndarray:
+):
     """Get empty squares in front of (or behind) enemy pawns using fused kernel."""
     enemy_color = Color(color).opposite().value
     
@@ -167,8 +155,5 @@ def _get_valid_pawn_targets(
         dz
     )
 
-@register(PieceType.INFILTRATOR)
-def infiltrator_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_infiltrator_moves(state.cache_manager, state.color, pos)
+__all__ = []
 
-__all__ = ["generate_infiltrator_moves"]

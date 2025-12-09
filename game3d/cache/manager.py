@@ -27,10 +27,11 @@ from game3d.cache.caches.zobrist import ZobristHash
 from game3d.cache.caches.movecache import create_move_cache
 from game3d.cache.effectscache.trailblazecache import TrailblazeCache
 from game3d.cache.effectscache.geomancycache import GeomancyCache
-from game3d.cache.effectscache.auracache import ConsolidatedAuraCache
+from game3d.cache.effectscache.trailblazecache import TrailblazeCache
+from game3d.cache.caches.auracache import AuraCache
 from game3d.board.symmetry import SymmetryManager
 from game3d.cache.caches.symmetry_tt import SymmetryAwareTranspositionTable
-
+from game3d.common.geometry_utils import batch_check_alignment
 
 # =============================================================================
 # GLOBAL REGISTRY - NUMPY-NATIVE IMPLEMENTATION
@@ -165,7 +166,7 @@ class OptimizedCacheManager:
         "transposition_table", "symmetry_manager", "move_cache",
         "_effect_caches", "_effect_cache_instances", "_batch_effect_cache",
         "dependency_graph", "_memory_pool", "_parallel_executor",
-        "_start_tensor_cache", "_lock", "__weakref__"
+        "_start_tensor_cache", "_lock", "__weakref__", "aura_cache"
     )
 
     def __init__(self, board, color: int = 0, initial_data: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None):
@@ -238,12 +239,12 @@ class OptimizedCacheManager:
         # Effect Caches
         self._effect_caches = {}
         
-        aura_cache = ConsolidatedAuraCache(self._board, self)
+        self.aura_cache = AuraCache(self._board)
         geomancy_cache = GeomancyCache(self)
         trailblaze_cache = TrailblazeCache(self)
         
         self._effect_cache_instances = [
-            aura_cache,
+            # aura_cache is managed explicitly now
             geomancy_cache,
             trailblaze_cache
         ]
@@ -252,12 +253,14 @@ class OptimizedCacheManager:
         """Initialize occupancy from board setup (coords, types, colors)."""
         coords, types, colors = setup
         self.occupancy_cache.rebuild(coords, types, colors)
+        self.aura_cache.rebuild_from_board(self.occupancy_cache)
         logger.info(f"Initialized occupancy cache from board setup: {len(coords)} pieces")
 
     def _initialize_from_data(self, data: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> None:
         """Initialize occupancy from existing data (cloning)."""
         coords, types, colors = data
         self.occupancy_cache.import_state(coords, types, colors)
+        self.aura_cache.rebuild_from_board(self.occupancy_cache)
         logger.info(f"Initialized occupancy cache from data: {len(coords)} pieces")
 
 
@@ -399,19 +402,19 @@ class OptimizedCacheManager:
         return self._parallel_executor
 
     @property
-    def consolidated_aura_cache(self) -> 'ConsolidatedAuraCache':
-        """Access the consolidated aura cache."""
-        return self._effect_cache_instances[0]
+    def consolidated_aura_cache(self) -> 'AuraCache':
+        """Access the aura cache (alias for backward compat if needed)."""
+        return self.aura_cache
 
     @property
     def geomancy_cache(self) -> 'GeomancyCache':
         """Access the geomancy cache."""
-        return self._effect_cache_instances[1]
+        return self._effect_cache_instances[0]
     
     @property
     def trailblaze_cache(self) -> 'TrailblazeCache':
         """Access the trailblaze cache."""
-        return self._effect_cache_instances[2]
+        return self._effect_cache_instances[1]
 
 
 
@@ -452,7 +455,8 @@ class OptimizedCacheManager:
                 self.move_cache.invalidate_targeting_pieces(keys)
 
             # --- STEP 3: Get dependency-affected pieces ---
-            dep_coords = self.dependency_graph.get_affected_pieces_vectorized(game_state, color)
+            # Pass affected_coords for geometric filtering
+            dep_coords = self.dependency_graph.get_affected_pieces_vectorized(game_state, color, affected_coords)
 
             if dep_coords.size > 0:
                 dep_keys = _coords_to_keys(dep_coords)
@@ -499,9 +503,21 @@ class OptimizedCacheManager:
 
             # --- STEP 4: NOTIFY EFFECT CACHES ---
             self._notify_all_effect_caches(changed_coords, pieces_data)
+            
+            # Explicitly update AuraCache (incremental)
+            self.aura_cache.on_move(
+                mv[:3], mv[3:], 
+                from_piece["piece_type"], from_piece["color"],
+                captured_piece["piece_type"] if captured_piece else 0,
+                captured_piece["color"] if captured_piece else 0
+            )
 
             # --- STEP 5: FREEZE EFFECT (temporal) ---
-            self.consolidated_aura_cache.trigger_freeze(game_state.color, game_state.turn_number)
+            # self.consolidated_aura_cache.trigger_freeze(game_state.color, game_state.turn_number)
+            # AuraCache handles permanent freeze maps; temporal freeze logic (iterative)
+            # is complex. If trigger_freeze was for specific turn-based logic, it needs migration.
+            # For now, AuraCache maintains static freeze maps.
+            pass
 
             # --- STEP 6: INVALIDATE MOVE CACHE ---
             self.dependency_graph.notify_update('move_applied')
@@ -571,7 +587,7 @@ class NumpyDependencyGraph:
             affected = np.array(affected_indices, dtype=PIECE_TYPE_DTYPE)
             self._update_timestamps[affected] = self._last_update
 
-    def get_affected_pieces_vectorized(self, game_state, color: int) -> np.ndarray:
+    def get_affected_pieces_vectorized(self, game_state, color: int, affected_coords: Optional[np.ndarray] = None) -> np.ndarray:
         """Get coordinates of pieces with outdated dependencies."""
         # Get all pieces of color
         all_coords = self._manager.occupancy_cache.get_positions(color)
@@ -583,7 +599,13 @@ class NumpyDependencyGraph:
         colors, piece_types = self._manager.occupancy_cache.batch_get_attributes(all_coords)
 
         # Check if any dependencies are outdated
-        outdated_mask = self._update_timestamps[piece_types] < self._last_update
+        # ✅ FIXED: Corrected logic to check equality with last update (marked dirty)
+        outdated_mask = self._update_timestamps[piece_types] == self._last_update
+
+        # ✅ OPTIMIZED: Apply geometric filtering if coordinates provided
+        if affected_coords is not None and affected_coords.size > 0:
+             geo_mask = batch_check_alignment(all_coords, affected_coords, piece_types)
+             outdated_mask &= geo_mask
 
         return all_coords[outdated_mask]
 

@@ -24,8 +24,8 @@ from game3d.common.performance_utils import track_operation, create_timing_conte
 from game3d.board.board import Board
 from game3d.common.shared_types import Color, PieceType, Result
 from game3d.movement.movepiece import Move
-from game3d.attacks.check import king_in_check, get_check_summary
-from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
+from game3d.attacks.check import king_in_check, get_check_summary, get_attackers
+
 
 # Cache frequently used utilities
 _coord_to_idx_scalar = CoordinateUtils.coord_to_idx_scalar
@@ -74,7 +74,7 @@ def is_stalemate(game_state) -> bool:
     if is_check(game_state):
         return False
 
-    legal_moves = getattr(game_state, 'legal_moves', np.empty(0, dtype=MOVE_DTYPE))
+    legal_moves = getattr(game_state, 'legal_moves', np.empty((0, 6), dtype=COORD_DTYPE))
 
     if _should_log_debug(game_state):
         logger.debug(f"is_stalemate: legal_moves.size={legal_moves.size}")
@@ -215,19 +215,25 @@ def is_game_over(game_state) -> bool:
 
     if is_repetition_draw(game_state):
         # Always log when game-ending condition is met
-        turn = getattr(game_state, 'turn_number', 'Unknown')
-        logger.warning(f"Game over: repetition draw (Turn: {turn})")
+        if not getattr(game_state, '_terminal_logged', False):
+            turn = getattr(game_state, 'turn_number', 'Unknown')
+            logger.warning(f"Game over: repetition draw (Turn: {turn})")
+            game_state._terminal_logged = True
         return True
 
     if is_move_rule_draw(game_state):
-        turn = getattr(game_state, 'turn_number', 'Unknown')
-        logger.warning(f"Game over: move rule draw (Turn: {turn})")
+        if not getattr(game_state, '_terminal_logged', False):
+            turn = getattr(game_state, 'turn_number', 'Unknown')
+            logger.warning(f"Game over: move rule draw (Turn: {turn})")
+            game_state._terminal_logged = True
         return True
 
     if is_insufficient_material(game_state):
         # Always log when game-ending condition is met
-        turn = getattr(game_state, 'turn_number', 'Unknown')
-        logger.warning(f"Game over: insufficient material (Turn: {turn})")
+        if not getattr(game_state, '_terminal_logged', False):
+            turn = getattr(game_state, 'turn_number', 'Unknown')
+            logger.warning(f"Game over: insufficient material (Turn: {turn})")
+            game_state._terminal_logged = True
         return True
 
     legal_moves = game_state.legal_moves
@@ -240,6 +246,10 @@ def is_game_over(game_state) -> bool:
         return False
 
     # No legal moves -> Game Over (either Checkmate or Stalemate)
+    if getattr(game_state, '_terminal_logged', False):
+        return True
+    game_state._terminal_logged = True
+
     if is_check(game_state):
         # Gather detailed info for logging
         try:
@@ -261,30 +271,8 @@ def is_game_over(game_state) -> bool:
                 white_king = occ_cache.find_king(COLOR_WHITE)
                 black_king = occ_cache.find_king(COLOR_BLACK)
                 
-                # Find attackers
-                king_pos = white_king if current_color == COLOR_WHITE else black_king
-                
-                if king_pos is not None:
-                    # Create dummy state for opponent to generate moves correctly
-                    # We need to use the same class as game_state
-                    dummy_state = game_state.__class__(game_state.board, opponent_color, cache_manager)
-                    
-                    attacker_positions = occ_cache.get_positions(opponent_color)
-                    moves = generate_pseudolegal_moves_batch(dummy_state, attacker_positions)
-                    
-                    # Filter moves hitting the king
-                    target_x, target_y, target_z = king_pos[0], king_pos[1], king_pos[2]
-                    hits = (moves[:, 3] == target_x) & (moves[:, 4] == target_y) & (moves[:, 5] == target_z)
-                    
-                    attacking_moves = moves[hits]
-                    
-                    for move in attacking_moves:
-                        src = move[:3]
-                        piece_info = occ_cache.get_fast(src)
-                        if piece_info:
-                            ptype = piece_info[0] # piece_type
-                            ptype_name = PieceType(ptype).name
-                            attackers_info.append(f"{ptype_name} at ({src[0]},{src[1]},{src[2]})")
+                # Find attackers using centralized logic
+                attackers_info = get_attackers(game_state)
 
             def fmt_pos(pos):
                 return f"({pos[0]},{pos[1]},{pos[2]})" if pos is not None else "None"
@@ -455,7 +443,9 @@ def batch_check_game_over_vectorized(states, zkeys, halfmove_clocks, position_ke
         if halfmove_clocks[i] >= FIFTY_MOVE_RULE:
             results[i] = True
             continue
-        # Placeholder for other checks
+        # For now, we only support vectorized repetition/move rule. 
+        # Check/Stalemate/Material require full state access which is hard to vectorise fully without more data.
+        # Fallback to False (not game over) - caller should use scalar check if high precision needed
         results[i] = False
     return results
 

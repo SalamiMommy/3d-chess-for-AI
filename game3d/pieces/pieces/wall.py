@@ -9,21 +9,24 @@ import numpy as np
 from numba import njit, prange
 
 from game3d.common.shared_types import Color, PieceType, Result, WALL, COORD_DTYPE, SIZE, get_empty_coord_batch, BOOL_DTYPE
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds_vectorized
 import logging
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
 # Wall block offsets (constant)
 WALL_BLOCK_OFFSETS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=COORD_DTYPE)
+
+# UNBUFFED_WALL_VECTORS (Global definition for import)
+UNBUFFED_WALL_VECTORS = np.array([
+    [1, 0, 0], [-1, 0, 0],
+    [0, 1, 0], [0, -1, 0],
+    [0, 0, 1], [0, 0, -1]
+], dtype=COORD_DTYPE)
 
 @njit(cache=True, fastmath=True)
 def _wall_squares_numba(anchor: np.ndarray) -> np.ndarray:
@@ -268,8 +271,6 @@ def _generate_wall_moves_batch_kernel(
             
     return moves[:count]
 
-
-
 @njit(cache=True, fastmath=True)
 def _filter_anchors_numba(
     anchors: np.ndarray,
@@ -285,6 +286,12 @@ def _filter_anchors_numba(
     
     for i in range(n):
         x, y, z = anchors[i]
+        
+        # ✅ CRITICAL FIX: Reject anchors at invalid positions
+        # Wall is 2x2 in x-y plane, so anchor must be at x,y < SIZE-1
+        # This prevents generating moves from corrupted wall states
+        if x >= SIZE - 1 or y >= SIZE - 1:
+            continue
         
         # Check left neighbor (x-1)
         is_left_wall = False
@@ -304,64 +311,7 @@ def _filter_anchors_numba(
             
     return valid_indices[:count]
 
-def generate_wall_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """
-    Generate Wall moves with fused buffed/unbuffed processing.
-    
-    ✅ OPTIMIZED: 
-    - Trusted kernel-level bounds validation (no redundant Python checks)
-    - Fused buffed/unbuffed into single kernel call
-    - Filter anchors with fast Numba kernel
-    """
-    anchors = pos.astype(COORD_DTYPE)
-    
-    # Handle single input
-    if anchors.ndim == 1:
-        anchors = anchors.reshape(1, 3)
-        
-    if anchors.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-
-    # Filter out non-anchor wall parts using Numba kernel
-    # This also validates anchor bounds within the kernel
-    valid_indices = _filter_anchors_numba(anchors, cache_manager.occupancy_cache._ptype)
-    
-    if valid_indices.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-        
-    valid_anchors = anchors[valid_indices]
-    
-    if valid_anchors.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
-    
-    # ✅ OPTIMIZED: Removed Python-level bounds validation - kernel handles this
-    # Get buffed status for all anchors at once
-    buffed_squares = cache_manager.consolidated_aura_cache._buffed_squares
-    is_buffed = buffed_squares[valid_anchors[:, 0], valid_anchors[:, 1], valid_anchors[:, 2]]
-    
-    # Define orthogonal vectors for unbuffed wall (6 directions)
-    UNBUFFED_WALL_VECTORS = np.array([
-        [1, 0, 0], [-1, 0, 0],
-        [0, 1, 0], [0, -1, 0],
-        [0, 0, 1], [0, 0, -1]
-    ], dtype=COORD_DTYPE)
-    
-    # Call fused kernel (handles all bounds checking internally)
-    return _generate_wall_moves_fused_kernel(
-        valid_anchors,
-        cache_manager.occupancy_cache._occ,
-        color,
-        SIZE,
-        UNBUFFED_WALL_VECTORS,
-        BUFFED_KING_MOVEMENT_VECTORS,
-        is_buffed.astype(np.int8)
-    )
-
-@njit(cache=True, fastmath=True, parallel=True)
+@njit(cache=True, fastmath=True)
 def _generate_wall_moves_fused_kernel(
     anchors: np.ndarray, 
     occ: np.ndarray,
@@ -388,7 +338,8 @@ def _generate_wall_moves_fused_kernel(
     # Reusable buffer for flat indices
     current_flat_indices = np.empty(4, dtype=np.int64)
     
-    for w in prange(n_walls):
+    for w in range(n_walls):
+
         anchor = anchors[w]
         
         # Select directions based on buffed status
@@ -458,9 +409,5 @@ def _generate_wall_moves_fused_kernel(
             
     return moves[:count]
 
-@register(PieceType.WALL)
-def wall_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_wall_moves(state.cache_manager, state.color, pos)
-
-__all__ = ["generate_wall_moves", "can_capture_wall_vectorized"]
+__all__ = ['can_capture_wall_vectorized', 'UNBUFFED_WALL_VECTORS']
 

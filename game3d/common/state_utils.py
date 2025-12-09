@@ -102,8 +102,8 @@ def create_new_state(original_state, new_board, new_color, move=None,
             king_pos = cache_manager.occupancy_cache.find_king(color)
             if king_pos is None:
                 logger.warning(f"King for color {color} not found after state creation")
-            else:
-                logger.debug(f"King for color {color} cached at {king_pos}")
+            # else:
+            #     logger.debug(f"King for color {color} cached at {king_pos}")
 
     return new_state
 

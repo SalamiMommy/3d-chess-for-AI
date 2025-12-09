@@ -8,19 +8,17 @@ from numba import njit, prange
 
 from game3d.common.shared_types import SIZE, SIZE_MINUS_1, COORD_DTYPE, BOOL_DTYPE
 from game3d.common.shared_types import Color, PieceType
-from game3d.common.registry import register
-from game3d.movement.jump_engine import get_jump_movement_generator
-from game3d.movement.movepiece import Move
 
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING: pass
 
 # Edge-Rook movement vectors - 6 orthogonal directions
 EDGE_ROOK_VECTORS = np.array([
-    [1, 0, 0], [-1, 0, 0],
-    [0, 1, 0], [0, -1, 0],
-    [0, 0, 1], [0, 0, -1]
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
 ], dtype=COORD_DTYPE)
 
 N_EDGE_VECTORS = len(EDGE_ROOK_VECTORS)
@@ -87,7 +85,7 @@ def _edgerook_bfs_batch_numba(
     neighbors_table: np.ndarray,
     flattened_occ: np.ndarray,
     color: int
-) -> np.ndarray:
+):
     """
     Numba-optimized BFS for Edge Rook batch.
     Performs BFS for each start node.
@@ -174,30 +172,5 @@ def _edgerook_bfs_batch_numba(
                         
     return all_moves[:total_count]
 
-def generate_edgerook_moves(cache_manager, color: int, pos: np.ndarray) -> np.ndarray:
-    """Optimized wrapper using Numba implementation."""
-    pos_arr = pos.astype(COORD_DTYPE)
-    
-    # Handle single input
-    if pos_arr.ndim == 1:
-        pos_arr = pos_arr.reshape(1, 3)
-        
-    if pos_arr.shape[0] == 0:
-        return np.empty((0, 6), dtype=COORD_DTYPE)
+__all__ = ['EDGE_ROOK_VECTORS']
 
-    # Fast exit check - filter pieces not on edge?
-    # Actually, if a piece is not on edge, it has no neighbors in the graph, 
-    # so BFS will just terminate immediately. No need for explicit filter.
-
-    # Get cached flattened occupancy (O(1) access)
-    flattened = cache_manager.occupancy_cache.get_flattened_occupancy()
-
-    # Run Numba BFS
-    return _edgerook_bfs_batch_numba(pos_arr, _EDGE_NEIGHBORS, flattened, color)
-
-@register(PieceType.EDGEROOK)
-def edgerook_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatcher for edge-rook moves."""
-    return generate_edgerook_moves(state.cache_manager, state.color, pos)
-
-__all__ = ["generate_edgerook_moves", "EDGE_ROOK_VECTORS"]

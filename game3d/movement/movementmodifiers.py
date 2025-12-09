@@ -8,12 +8,8 @@ handled separately or deferred to validation/Move object creation.
 import numpy as np
 from numba import njit, prange
 from typing import Optional, Union, TYPE_CHECKING
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-
 from game3d.common.shared_types import COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, SIZE, MOVE_FLAGS
 from game3d.common.coord_utils import in_bounds_vectorized
-from game3d.cache.effectscache.auracache import ConsolidatedAuraCache
 
 # =============================================================================
 # CORE FILTERING - WORKS WITH (N, 6) ARRAYS
@@ -107,46 +103,4 @@ __all__ = [
     'get_range_modifier'
 ]
 
-def get_range_modifier(game_state: 'GameState', pos: np.ndarray) -> Union[int, np.ndarray]:
-    """
-    Get range modifier for a piece or batch of pieces.
-    Returns:
-        +1 if buffed (Speeder)
-        -1 if debuffed (Slower)
-        0 otherwise
-    """
-    # Direct access to ConsolidatedAuraCache - assume it exists for speed
-    # This removes the try/except overhead which is significant in hot paths
-    aura_cache = game_state.cache_manager.consolidated_aura_cache
-            
-    # Handle batch input
-    if pos.ndim == 2:
-        # Direct access to boolean arrays for speed
-        # pos is (N, 3), arrays are [x, y, z]
-        x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
-        
-        is_buffed = aura_cache._buffed_squares[x, y, z]
-        is_debuffed = aura_cache._debuffed_squares[x, y, z]
-        
-        modifiers = np.zeros(pos.shape[0], dtype=np.int8)
-        # Use boolean indexing for faster addition/subtraction
-        if np.any(is_buffed):
-            modifiers[is_buffed] += 1
-        if np.any(is_debuffed):
-            modifiers[is_debuffed] -= 1
-        return modifiers
 
-    # Handle single input
-    x, y, z = pos[0], pos[1], pos[2]
-    
-    # Direct array access
-    is_buffed = aura_cache._buffed_squares[x, y, z]
-    is_debuffed = aura_cache._debuffed_squares[x, y, z]
-    
-    modifier = 0
-    if is_buffed:
-        modifier += 1
-    if is_debuffed:
-        modifier -= 1
-        
-    return modifier

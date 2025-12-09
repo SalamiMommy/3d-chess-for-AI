@@ -4,43 +4,15 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 import numpy as np
 
-from game3d.common.shared_types import (
-    COORD_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE,
-    HIVE, Color, PieceType, Result
-)
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
-from game3d.movement.jump_engine import get_jump_movement_generator
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING: pass
+from game3d.movement.generator import generate_legal_moves_for_piece
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
-def generate_hive_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: COLOR_DTYPE,
-    pos: np.ndarray,
-) -> np.ndarray:
-    engine = get_jump_movement_generator()
-    return engine.generate_jump_moves(
-        cache_manager=cache_manager,
-        color=color,
-        pos=pos.astype(COORD_DTYPE),
-        directions=KING_MOVEMENT_VECTORS,
-        allow_capture=True,
-        piece_type=PieceType.HIVE,
-        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
-    )
-
-@register(PieceType.HIVE)
-def hive_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_hive_moves(state.cache_manager, state.color, pos)
-
 def get_movable_hives(state: 'GameState', color: COLOR_DTYPE, exclude_positions: set = None) -> np.ndarray:
-    from game3d.movement.generator import generate_legal_moves_for_piece
 
     movable_hives: List[np.ndarray] = []
     exclude_positions = exclude_positions or set()
@@ -98,10 +70,5 @@ def apply_multi_hive_move(state: 'GameState', move: Move) -> 'GameState':
     new_state._clear_caches()
     return new_state
 
+__all__ = []
 
-
-__all__ = [
-    "generate_hive_moves",
-    "get_movable_hives",
-    "apply_multi_hive_move",
-]

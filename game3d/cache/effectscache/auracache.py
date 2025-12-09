@@ -6,13 +6,17 @@ from typing import Optional, Dict, Any, Tuple
 import threading
 
 from game3d.common.shared_types import (
-    COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE,
-    SIZE, VOLUME, MAX_COORD_VALUE, PieceType, Color,
+    COORD_DTYPE, BATCH_COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE,
+    COLOR_DTYPE, PIECE_TYPE_DTYPE, SIZE, SIZE_SQUARED,
+    N_PIECE_TYPES, VECTORIZATION_THRESHOLD, MAX_COORD_VALUE,
+    COLOR_WHITE, COLOR_BLACK,
+    PieceType, Color,
     FREEZER, SPEEDER, SLOWER, BLACKHOLE, WHITEHOLE,
     RADIUS_2_OFFSETS
 )
 from game3d.common.coord_utils import ensure_coords, in_bounds_vectorized, coord_to_idx
 from game3d.cache.cache_protocols import CacheListener
+from game3d.common.performance_utils import track_operation, create_timing_context
 
 # =============================================================================
 # EFFECT TYPE DEFINITIONS - NUMPY CONSTANTS
@@ -437,7 +441,9 @@ class ConsolidatedAuraCache(CacheListener):
              victim_color = int(victim_color.item())
         
         if victim_color in self._freeze_expiry:
-            return self._freeze_expiry[victim_color][x, y, z] >= turn_number
+            # We don't filter by turn > 200 anymore as debug log is gone
+            results = self._freeze_expiry[victim_color][x, y, z] >= turn_number
+            return results
         return np.zeros(coords.shape[0], dtype=BOOL_DTYPE)
 
     def batch_is_debuffed(self, coords: np.ndarray, color: int) -> np.ndarray:
@@ -503,7 +509,10 @@ class ConsolidatedAuraCache(CacheListener):
         # Turn 0, 1: Iteration 1 (Active) -> (0//2)%2 = 0, (1//2)%2 = 0
         # Turn 2, 3: Iteration 2 (Inactive) -> (2//2)%2 = 1, (3//2)%2 = 1
         # Turn 4, 5: Iteration 3 (Active) -> (4//2)%2 = 0
-        if (turn_number // 2) % 2 != 0:
+        
+        cycle_val = (turn_number // 2) % 2
+        
+        if cycle_val != 0:
             return
         
         # Set freeze expiry for enemy pieces
@@ -512,7 +521,7 @@ class ConsolidatedAuraCache(CacheListener):
         # - At turn_number + 2 (next friendly turn), they are unfrozen (expiry < turn_number)
         expiry_turn = turn_number + 1
         
-        # ✅ FIX: Only set expiry if not already frozen to prevent perpetual renewal
+        # ✅ FIX: Only set expiry if not already frozen to prevent perpetual freezing
         # frozen_coords are (x, y, z), arrays indexed as [x, y, z]
         x, y, z = frozen_coords[:, 0], frozen_coords[:, 1], frozen_coords[:, 2]
         
@@ -523,7 +532,6 @@ class ConsolidatedAuraCache(CacheListener):
         # This allows existing freezes to expire naturally without being renewed
         should_update = current_expiry < turn_number
         
-        # Update only the squares that need freezing
         if np.any(should_update):
             update_x = x[should_update]
             update_y = y[should_update]
@@ -617,6 +625,53 @@ class ConsolidatedAuraCache(CacheListener):
                     self._pull_map.nbytes + self._push_map.nbytes
                 )
             }
+
+    @track_operation(metrics=None)
+    def rollback_turn(self, turn_number: int) -> None:
+        """
+        Handle turn rollback (undo) by clearing freeze expiries that are in the future.
+        Any expiry > turn_number was set by a move that is now being undone or was in 
+        an abandoned future branch, and must be cleared to prevent 'ghost freezes'.
+        """
+        if turn_number < 0:
+            turn_number = 0
+            
+        with self._lock:
+            # Clear freezes for both colors that are set to expire after the current turn
+            # Use Color enum member values for iteration
+            for color in [Color.WHITE, Color.BLACK]:
+                if color in self._freeze_expiry:
+                    expiry_grid = self._freeze_expiry[color]
+                    # Identify future expiries
+                    # Expiries are strictly future timestamps (turn when piece unfreezes)
+                    # If we rollback to turn T, any expiry > T is from a future we abandoned.
+                    # Wait, if expiry = T, it means it unfreezes AT turn T. 
+                    # This was set by move at T-1. This is valid.
+                    # If expiry = T+1, it means it unfreezes AT turn T+1.
+                    # This was set by move at T. This is exactly what we just undid.
+                    # So any expiry > turn_number must be cleared.
+                    
+                    future_mask = expiry_grid > turn_number
+                    
+                    if np.any(future_mask):
+                        # print(f"DEBUG: Rolling back {np.sum(future_mask)} future freezes for color {color} at turn {turn_number}")
+                        # Reset future expiries to -1 (no freeze)
+                        expiry_grid[future_mask] = -1
+                        
+                        # Note: we do NOT clear _frozen_squares blindly because
+                        # there might be valid freezes (expiry <= turn_number) on the same squares?
+                        # No, _frozen_squares is boolean OR of all freezes?
+                        # Let's check trigger_freeze logic.
+                        # It sets: self._frozen_squares[...] = True.
+                        # It doesn't check if something else froze it.
+                        # So _frozen_squares represents "Is frozen right now".
+                        # If we clear expiry, is it still frozen?
+                        # If expiry is gone, it is NOT frozen.
+                        # So we should clear the boolean flag for these squares too.
+                        
+                        target_indices = np.where(future_mask)
+                        self._frozen_squares[target_indices] = False
+
 
 # Module exports
 __all__ = ['ConsolidatedAuraCache', 'EFFECT_FREEZE', 'EFFECT_BUFF', 'EFFECT_DEBUFF',

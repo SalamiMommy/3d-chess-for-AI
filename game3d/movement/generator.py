@@ -21,24 +21,18 @@ from game3d.common.shared_types import (
     Color, PieceType, VECTORIZATION_THRESHOLD, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE,
     MOVE_DTYPE, INDEX_DTYPE, BOOL_DTYPE, MOVE_FLAGS, MinimalStateProxy
 )
-from game3d.common.coord_utils import in_bounds_vectorized, ensure_coords
+from game3d.common.coord_utils import in_bounds_vectorized, ensure_coords, coords_to_keys
 from game3d.common.validation import validate_coords_batch, validate_coord, validate_moves, validate_move
-from game3d.movement.slider_engine import SliderMovementEngine
-from game3d.movement.jump_engine import JumpMovementEngine
+
 from game3d.movement.movepiece import Move
 from game3d.movement.movementmodifiers import (
     apply_buff_effects_vectorized,
     apply_debuff_effects_vectorized,
     filter_valid_moves
 )
-from game3d.movement.pseudolegal import (
-    generate_pseudolegal_moves_batch,
-    refresh_pseudolegal_cache,
-    coord_to_key,
-    MoveContractViolation
-)
-from game3d.attacks.check import move_would_leave_king_in_check, king_in_check
-from game3d.attacks.pin import get_pinned_pieces, get_legal_pin_squares
+
+from game3d.attacks.check import move_would_leave_king_in_check, king_in_check, batch_moves_leave_king_in_check
+
 from numba import njit, prange
 
 if TYPE_CHECKING:
@@ -49,180 +43,7 @@ logger = logging.getLogger(__name__)
 class MoveGenerationError(RuntimeError):
     pass
 
-@njit(cache=True)
-def _check_on_segment(start: np.ndarray, end: np.ndarray, point: np.ndarray) -> bool:
-    """Check if point is on the line segment between start and end (inclusive)."""
-    # Vectors relative to start
-    v = end - start
-    w = point - start
-    
-    # 1. Check collinearity using cross product (must be 0)
-    # cx = v[1]*w[2] - v[2]*w[1]
-    if (v[1]*w[2] - v[2]*w[1]) != 0: return False
-    # cy = v[2]*w[0] - v[0]*w[2]
-    if (v[2]*w[0] - v[0]*w[2]) != 0: return False
-    # cz = v[0]*w[1] - v[1]*w[0]
-    if (v[0]*w[1] - v[1]*w[0]) != 0: return False
-    
-    # 2. Check direction (dot product >= 0)
-    dot = v[0]*w[0] + v[1]*w[1] + v[2]*w[2]
-    if dot < 0: return False
-    
-    # 3. Check length (w must not be longer than v)
-    # Since they are collinear and same direction, we can compare squared lengths via dot product
-    # dot(v, w) = |v|*|w|
-    # dot(v, v) = |v|*|v|
-    # We want |w| <= |v|, so |v|*|w| <= |v|*|v|
-    v_sq = v[0]*v[0] + v[1]*v[1] + v[2]*v[2]
-    if dot > v_sq: return False
-    
-    # 4. Exclude King square (start)
-    # The pin ray excludes the King itself (move to friendly piece square is invalid anyway, but good to be precise)
-    if w[0] == 0 and w[1] == 0 and w[2] == 0: return False
-    
-    return True
 
-@njit(cache=True, parallel=True)
-def _apply_pin_filter_kernel(
-    moves_sources: np.ndarray, # (N, 3)
-    moves_dests: np.ndarray,   # (N, 3)
-    mask: np.ndarray,          # (N,)
-    pinned_keys: np.ndarray,   # (K,)
-    attacker_keys: np.ndarray, # (K,)
-    king_pos: np.ndarray       # (3,)
-) -> None:
-    """Vectorized application of pin constraints."""
-    n_moves = moves_sources.shape[0]
-    n_pinned = pinned_keys.shape[0]
-    
-    # Pre-unpack attacker keys to coordinates
-    attacker_coords = np.empty((n_pinned, 3), dtype=moves_sources.dtype)
-    for k in range(n_pinned):
-        key = attacker_keys[k]
-        attacker_coords[k, 0] = key & 0x1FF
-        attacker_coords[k, 1] = (key >> 9) & 0x1FF
-        attacker_coords[k, 2] = (key >> 18) & 0x1FF
-        
-    for i in prange(n_moves):
-        if not mask[i]:
-            continue
-            
-        # Recalculate key for source
-        sx, sy, sz = moves_sources[i]
-        s_key = sx + (sy << 9) + (sz << 18)
-        
-        # Check against pinned list
-        pinned_idx = -1
-        for k in range(n_pinned):
-            if pinned_keys[k] == s_key:
-                pinned_idx = k
-                break
-                
-        if pinned_idx != -1:
-            # Pinned! Check validity
-            is_valid = _check_on_segment(king_pos, attacker_coords[pinned_idx], moves_dests[i])
-            if not is_valid:
-                mask[i] = False
-
-# =============================================================================
-# MOVE FILTERING HELPERS
-# =============================================================================
-def filter_safe_moves_optimized(game_state: 'GameState', moves: np.ndarray) -> np.ndarray:
-    """
-    Optimized move filtration.
-
-    ✅ OPTIMIZED: Uses batch_moves_leave_king_in_check for king moves instead of
-    per-move simulation. This is 5-10x faster for positions with many king moves.
-    
-    ✅ OPTIMIZED: Vectorized pinned piece filtering using pre-built allowed keys lookup.
-
-    Algorithm:
-    1. Check if King is currently in check.
-    2. If NOT in check:
-       - King moves use batch attack mask check
-       - PINNED pieces are restricted to their pin rays (geometric check)
-       - All other moves are automatically safe.
-    3. If IN check:
-       - Use batch check for all moves.
-    """
-    if moves.size == 0:
-        return moves
-
-    color = game_state.color
-    occ_cache = game_state.cache_manager.occupancy_cache
-    king_pos = occ_cache.find_king(color)
-
-    # If no king (captured/error), all moves are theoretically unsafe or game is over
-    if king_pos is None:
-        return np.empty((0, 6), dtype=moves.dtype)
-
-    # 1. Ensure opponent's moves are cached for efficient check detection
-    opponent_color = Color(color).opposite().value
-    if game_state.cache_manager.move_cache.get_pseudolegal_moves(opponent_color) is None:
-        # ✅ OPTIMIZED: Use lightweight proxy via refresh_pseudolegal_cache (Incremental Update)
-        # This replaces full regeneration (O(N)) with incremental update (O(k) where k=affected pieces)
-        
-        opp_state = MinimalStateProxy(
-            game_state.board, 
-            opponent_color, 
-            game_state.cache_manager,
-            turn_number=game_state.turn_number,
-            history=game_state.history
-        )
-        refresh_pseudolegal_cache(opp_state)
-
-    is_in_check = king_in_check(game_state.board, color, color, cache=game_state.cache_manager)
-
-    # Pre-calculate keys and masks
-    mask = np.ones(len(moves), dtype=bool)
-    sources = moves[:, :3]
-    dests = moves[:, 3:]
-
-    # Identify King moves
-    is_king_move = (sources[:, 0] == king_pos[0]) & \
-                   (sources[:, 1] == king_pos[1]) & \
-                   (sources[:, 2] == king_pos[2])
-
-    if not is_in_check:
-        # --- FAST PATH: NOT IN CHECK ---
-
-        # A. ✅ OPTIMIZED: Batch filter King moves using attack mask
-        if np.any(is_king_move):
-            from game3d.attacks.check import batch_moves_leave_king_in_check
-            king_moves = moves[is_king_move]
-            unsafe_mask = batch_moves_leave_king_in_check(game_state, king_moves)
-            
-            # Apply results to global mask
-            king_indices = np.where(is_king_move)[0]
-            mask[king_indices] = ~unsafe_mask
-
-        # B. ✅ OPTIMIZED: Vectorized Pinned Pieces Filtering
-        pinned_info = get_pinned_pieces(game_state, color)
-
-        if pinned_info:
-            # Prepare arrays for vectorized kernel
-            pinned_keys = np.array(list(pinned_info.keys()), dtype=np.int64)
-            attacker_keys = np.array(list(pinned_info.values()), dtype=np.int64)
-            
-            # Run kernel
-            _apply_pin_filter_kernel(
-                sources,
-                dests,
-                mask,
-                pinned_keys,
-                attacker_keys,
-                king_pos.astype(COORD_DTYPE)
-            )
-
-        # C. Unpinned, Non-King moves are automatically safe when not in check.
-
-    else:
-        # --- IN CHECK PATH: Use batch check ---
-        from game3d.attacks.check import batch_moves_leave_king_in_check
-        unsafe_mask = batch_moves_leave_king_in_check(game_state, moves)
-        mask = ~unsafe_mask
-
-    return moves[mask]
 # =============================================================================
 # OPTIMIZED MOVE GENERATOR
 # =============================================================================
@@ -252,50 +73,191 @@ class LegalMoveGenerator:
         5. Cache Legal Moves.
         """
         # 1. Check Transposition Table
-        cache_key = state.zkey
-        tt_entry = state.cache_manager.transposition_table.probe_with_symmetry(cache_key, state.board)
+        # (Removed incorrect early return optimization that treated TT best_move as the ONLY legal move)
+        # cache_key = state.zkey
+        # tt_entry = state.cache_manager.transposition_table.probe_with_symmetry(cache_key, state.board)
+        # if tt_entry and tt_entry.best_move: ...
 
-        if tt_entry and tt_entry.best_move:
-            self._stats['tt_hits'] += 1
-            from_c, to_c = tt_entry.best_move.from_coord, tt_entry.best_move.to_coord
-            moves = np.array([[*from_c, *to_c]], dtype=COORD_DTYPE)
-            state.cache_manager.move_cache.store_legal_moves(state.color, moves)
-            return moves
 
-        self._stats['tt_misses'] += 1
-
-        # 2. Check Legal Move Cache
-        cached = state.cache_manager.move_cache.get_legal_moves(state.color)
-        affected_pieces = state.cache_manager.move_cache.get_affected_pieces(state.color)
-
-        if cached is not None and affected_pieces.size == 0:
+        # 2. Check Legal Move Cache (Identity Fix)
+        # 2. Check Legal Move Cache (Identity Fix)
+        cached_moves = state.cache_manager.move_cache.get_legal_moves(state.color)
+        if cached_moves is not None:
             self._stats['cache_hits'] += 1
-            return cached
-
+            return cached_moves
+            
         self._stats['cache_misses'] += 1
 
-        # 3. Refresh Pseudolegal Cache (Delegated to pseudolegal.py)
-        refresh_pseudolegal_cache(state)
+        # 3. Incremental Move Generation
+        final_moves = self._generate_raw_pseudolegal(state)
         
-        # Retrieve cached pseudolegal moves
-        pseudolegal_moves = state.cache_manager.move_cache.get_pseudolegal_moves(state.color)
+        # 4. Filter Moves (CRITICAL STEP)
+        chk_moves = self._apply_all_filters(state, final_moves, check_king_safety=True)
         
-        if pseudolegal_moves is None:
-            # Should not happen after refresh, but safety fallback
-            pseudolegal_moves = np.empty((0, 6), dtype=MOVE_DTYPE)
-
-        # 4. Apply Game Rule Filters
-        final_moves = self._apply_all_filters(state, pseudolegal_moves)
-
-        # 5. Final Cache Store
-        state.cache_manager.move_cache.store_legal_moves(state.color, final_moves)
+        # 5. Cache Legal Moves
+        state.cache_manager.move_cache.store_legal_moves(state.color, chk_moves)
         
-        # Note: affected pieces are cleared in refresh_pseudolegal_cache, 
-        # but store_legal_moves might need to know if it's fresh. 
-        # Actually refresh_pseudolegal_cache clears affected pieces for pseudolegal layer.
-        # Legal layer is now fresh too.
+        return chk_moves
 
-        return final_moves
+    def _generate_raw_pseudolegal(self, state: 'GameState') -> np.ndarray:
+        """Helper to generate raw pseudolegal moves incrementally."""
+        cache_manager = state.cache_manager
+        move_cache = cache_manager.move_cache
+        occ_cache = cache_manager.occupancy_cache
+        
+        # Get all pieces for current color
+        all_coords = occ_cache.get_positions(state.color)
+        
+        if all_coords.size == 0:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+
+        all_keys = coords_to_keys(all_coords)
+
+        # Retrieve valid cached moves and identify dirty pieces
+        clean_moves_list, dirty_indices = move_cache.get_incremental_state(state.color, all_keys)
+        
+        new_moves_list = []
+        
+        # If we have dirty pieces, regenerate them
+        if dirty_indices:
+            from game3d.core.buffer import state_to_buffer
+            from game3d.core.api import generate_pseudolegal_moves_subset
+            
+            # Get FULL state buffer (read only, zero copy)
+            buffer = state_to_buffer(state, readonly=True)
+            
+            # Get all pieces to map indices
+            all_occ_coords, all_occ_types, _, _, all_occ_colors = occ_cache.export_buffer_data()
+            
+            # Find indices where color == state.color
+            color_mask = (all_occ_colors == state.color)
+            global_indices = np.where(color_mask)[0]
+            
+            target_global_indices = global_indices[dirty_indices].astype(np.int32)
+            
+            # Generate
+            batch_new_moves = generate_pseudolegal_moves_subset(buffer, target_global_indices)
+            
+            if batch_new_moves.size > 0:
+                new_moves_list.append(batch_new_moves)
+                # Update piece cache
+                self._cache_piece_moves(cache_manager, batch_new_moves[:, :3], batch_new_moves, state.color)
+        
+        # Merge clean and new moves
+        if not clean_moves_list and not new_moves_list:
+            return np.empty((0, 6), dtype=COORD_DTYPE)
+        else:
+            return np.concatenate(clean_moves_list + new_moves_list)
+
+    def refresh_pseudolegal_moves(self, state: 'GameState') -> None:
+        """
+        Refreshes only the pseudolegal cache (for opponent/attack generation).
+        Skips expensive king safety checks.
+        """
+        # 1. Generate Raw Pseudolegal Moves (Incremental)
+        raw_moves = self._generate_raw_pseudolegal(state)
+        
+        # 2. Filter basic constraints (Frozen, Hive, Wall) but SKIP King Safety
+        filtered_moves = self._apply_all_filters(state, raw_moves, check_king_safety=False)
+        
+        # 3. Cache as Pseudolegal Moves (updates attack mask)
+        # 3. Cache as Pseudolegal Moves (updates attack mask)
+        state.cache_manager.move_cache.store_pseudolegal_moves(state.color, filtered_moves)
+        
+        # ✅ FIX: Clear affected pieces tracking since we just regenerated
+        state.cache_manager.move_cache.clear_affected_pieces(state.color)
+
+    # ✅ OPT 1.3: Lazy Pseudolegal Cache Refresh
+    def refresh_pseudolegal_moves_incremental(self, state: 'GameState', dirty_piece_keys: np.ndarray) -> None:
+        """
+        Incrementally refresh pseudolegal moves ONLY for dirty pieces.
+        
+        ✅ OPTIMIZED: Instead of regenerating all pieces' moves, this only
+        regenerates for explicitly dirty pieces (typically 1-5 vs 20+).
+        
+        Use case: After a move, only pieces affected by that move need refresh.
+        
+        Args:
+            state: Current game state
+            dirty_piece_keys: Packed coordinate keys of pieces that need refresh
+        """
+        if dirty_piece_keys.size == 0:
+            return  # Nothing to refresh
+        
+        cache_manager = state.cache_manager
+        move_cache = cache_manager.move_cache
+        occ_cache = cache_manager.occupancy_cache
+        
+        # Convert keys back to coordinates
+        dirty_coords = self._keys_to_coords(dirty_piece_keys)
+        
+        # Filter to only pieces that still exist (might have been captured)
+        valid_mask = np.zeros(dirty_coords.shape[0], dtype=np.bool_)
+        for i, coord in enumerate(dirty_coords):
+            ptype, _ = occ_cache.get_fast(coord) if hasattr(occ_cache, 'get_fast') else (0, 0)
+            valid_mask[i] = (ptype != 0)
+        
+        dirty_coords = dirty_coords[valid_mask]
+        
+        if dirty_coords.size == 0:
+            return
+        
+        from game3d.core.buffer import state_to_buffer
+        from game3d.core.api import generate_pseudolegal_moves_subset
+        
+        # Get state buffer
+        buffer = state_to_buffer(state, readonly=True)
+        
+        # Get all occupied coords to find indices
+        all_occ_coords, all_occ_types, _, _, all_occ_colors = occ_cache.export_buffer_data()
+        
+        # Create lookup for coordinates -> global index
+        # We need to find which indices in the buffer correspond to dirty_coords
+        dirty_new_moves = []
+        
+        for coord in dirty_coords:
+            # Find global index of this coord
+            cx, cy, cz = int(coord[0]), int(coord[1]), int(coord[2])
+            match_mask = (all_occ_coords[:, 0] == cx) & (all_occ_coords[:, 1] == cy) & (all_occ_coords[:, 2] == cz)
+            matched_indices = np.where(match_mask)[0]
+            
+            if matched_indices.size > 0:
+                target_idx = matched_indices[0].astype(np.int32).reshape(1)
+                piece_moves = generate_pseudolegal_moves_subset(buffer, target_idx)
+                if piece_moves.size > 0:
+                    dirty_new_moves.append(piece_moves)
+                    # Update piece cache
+                    coord_key = cx | (cy << 9) | (cz << 18)
+                    move_cache.store_piece_moves(state.color, coord_key, piece_moves)
+        
+        # Merge new moves with existing clean moves
+        existing_moves = move_cache.get_pseudolegal_moves(state.color)
+        
+        if existing_moves is None:
+            # No existing cache - need full refresh
+            self.refresh_pseudolegal_moves(state)
+            return
+        
+        # Remove old moves for dirty pieces and add new ones
+        if dirty_new_moves:
+            # Filter out moves from dirty pieces in existing cache
+            dirty_key_set = set(int(k) for k in dirty_piece_keys)
+            
+            from_coords = existing_moves[:, :3]
+            from_keys = coords_to_keys(from_coords)
+            keep_mask = ~np.isin(from_keys, np.array(list(dirty_key_set), dtype=np.int64))
+            
+            clean_moves = existing_moves[keep_mask]
+            all_new_moves = np.concatenate(dirty_new_moves)
+            
+            # Filter new moves for constraints
+            filtered_new = self._apply_all_filters(state, all_new_moves, check_king_safety=False)
+            
+            # Combine and store
+            combined = np.vstack([clean_moves, filtered_new]) if clean_moves.size > 0 and filtered_new.size > 0 else (clean_moves if clean_moves.size > 0 else filtered_new)
+            move_cache.store_pseudolegal_moves(state.color, combined)
+
+
 
     def _keys_to_coords(self, keys: np.ndarray) -> np.ndarray:
         """Convert cache keys back to coordinates."""
@@ -317,7 +279,7 @@ class LegalMoveGenerator:
             return
 
         move_sources = batch_moves[:, :3]
-        move_keys = coord_to_key(move_sources)
+        move_keys = coords_to_keys(move_sources)
 
         # Group moves by sorting keys
         sort_idx = np.argsort(move_keys)
@@ -327,10 +289,12 @@ class LegalMoveGenerator:
         unique_keys, start_indices = np.unique(sorted_keys, return_index=True)
         end_indices = np.append(start_indices[1:], sorted_keys.size)
 
+        # logger.info(f"Caching moves for {unique_keys.size} pieces (batch size {batch_moves.shape[0]})")
+
         for i in range(unique_keys.size):
-            cache_manager.move_cache.store_piece_moves(
-                color, unique_keys[i], sorted_moves[start_indices[i]:end_indices[i]]
-            )
+            key = unique_keys[i]
+            moves = sorted_moves[start_indices[i]:end_indices[i]]
+            cache_manager.move_cache.store_piece_moves(color, key, moves)
 
     def validate_move(self, state: "GameState", move: Union[Move, np.ndarray]) -> bool:
         """Validates a single move via validation.py."""
@@ -359,12 +323,22 @@ class LegalMoveGenerator:
         return stats
 
 
-    def _apply_all_filters(self, state: 'GameState', moves: np.ndarray) -> np.ndarray:
+    def _apply_all_filters(self, state: 'GameState', moves: np.ndarray, check_king_safety: bool = True) -> np.ndarray:
         """Apply all move filters (check, pin, wall capture, etc.)."""
         if moves.size == 0:
             return moves
+            
+        initial_count = moves.shape[0]
+        # logger.info(f"[_apply_all_filters] Initial: {initial_count}")
 
         occ_cache = state.cache_manager.occupancy_cache
+        
+        # ✅ OPTIMIZATION: Early return if Priest protects King
+        # With Priest immunity, the King cannot be captured, so check-related
+        # filters are unnecessary. Still need to apply Frozen/Hive/Wall filters.
+        has_priest = occ_cache.has_priest(state.color) if check_king_safety else False
+
+        # 1. Filter: Frozen Pieces (Cheap - Vectorized Aura Check)
 
         # 1. Filter: Frozen Pieces (Cheap - Vectorized Aura Check)
         is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
@@ -372,7 +346,10 @@ class LegalMoveGenerator:
         )
         if np.any(is_frozen):
             moves = moves[~is_frozen]
-            if moves.size == 0: return moves
+            if moves.size == 0: 
+                logger.warning(f"[_apply_all_filters] ALL moves filtered by FROZEN (Initial: {initial_count})")
+                return moves
+            # logger.info(f"[_apply_all_filters] After Frozen: {moves.shape[0]}")
 
         # 2. Filter: Hive Movement History (Cheap - Set Lookup)
         if hasattr(state, '_moved_hive_positions') and state._moved_hive_positions:
@@ -399,7 +376,10 @@ class LegalMoveGenerator:
                      keep_mask = np.ones(len(moves), dtype=bool)
                      keep_mask[hive_indices[is_already_moved]] = False
                      moves = moves[keep_mask]
-                     if moves.size == 0: return moves
+                     if moves.size == 0: 
+                         logger.warning(f"[_apply_all_filters] ALL moves filtered by HIVE")
+                         return moves
+            # logger.info(f"[_apply_all_filters] After Hive: {moves.shape[0]}")
 
         # 3. Filter: Wall Capture Restrictions (Cheap - Type Check)
         # Identify moves that capture a WALL
@@ -433,7 +413,10 @@ class LegalMoveGenerator:
                 keep_mask[indices_to_remove] = False
                 
                 moves = moves[keep_mask]
-                if moves.size == 0: return moves
+                if moves.size == 0: 
+                    logger.warning(f"[_apply_all_filters] ALL moves filtered by WALL_CAPTURE")
+                    return moves
+            # logger.info(f"[_apply_all_filters] After Wall: {moves.shape[0]}")
 
         # 4. Filter: Trailblazer Counter Avoidance (Cheap - Cache Lookup)
         _, piece_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
@@ -464,13 +447,71 @@ class LegalMoveGenerator:
                             keep_mask[global_idx] = False
                     
                     moves = moves[keep_mask]
-                    if moves.size == 0: return moves
+                    if moves.size == 0: 
+                        logger.warning(f"[_apply_all_filters] ALL moves filtered by TRAILBLAZER")
+                        return moves
 
-        # 5. ✅ OPTIMIZED: Check & Pin Filtering (Most Expensive - Run Last)
-        # Only run if Priests are gone (otherwise King is immune)
-        if not occ_cache.has_priest(state.color):
-            # This replaces the old separate filter_safe_moves AND pinned logic
-            moves = filter_safe_moves_optimized(state, moves)
+        # 5. Filter: Swapper-Wall Swap Prevention (Guards against stale cache)
+        # Swapper cannot swap with Wall pieces (would fragment 2x2 structure)
+        # Note: Swapper moves target FRIENDLY pieces only (by design), so any Wall target
+        # in a Swapper move must be a friendly Wall. We block ALL such moves.
+        _, source_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
+        swapper_mask = source_types == PieceType.SWAPPER
+        
+        if np.any(swapper_mask):
+            swapper_indices = np.where(swapper_mask)[0]
+            
+            # Get destination types for swapper moves
+            _, dest_types_for_swapper = occ_cache.batch_get_attributes_unsafe(moves[swapper_indices, 3:])
+            
+            # Check if any swapper is targeting a Wall - block ALL Wall targets
+            # (Swapper moves are generated only for friendly pieces, so any Wall here is friendly)
+            wall_dest_mask = dest_types_for_swapper == PieceType.WALL
+            
+            if np.any(wall_dest_mask):
+                indices_to_remove = swapper_indices[wall_dest_mask]
+                keep_mask = np.ones(len(moves), dtype=bool)
+                keep_mask[indices_to_remove] = False
+                moves = moves[keep_mask]
+                if moves.size == 0:
+                    logger.warning(f"[_apply_all_filters] ALL moves filtered by SWAPPER_WALL")
+                    return moves
+
+        # 6. Filter: Wall Edge Bounds Prevention (Guards against stale cache)
+        # Wall is 2x2 in x-y plane, so destination anchor must have x,y < SIZE-1
+        _, source_types_wall = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
+        wall_source_mask = source_types_wall == PieceType.WALL
+        
+        if np.any(wall_source_mask):
+            wall_indices = np.where(wall_source_mask)[0]
+            wall_dest_x = moves[wall_indices, 3]
+            wall_dest_y = moves[wall_indices, 4]
+            
+            # Invalid if destination x >= SIZE-1 or y >= SIZE-1
+            invalid_wall_dest_mask = (wall_dest_x >= SIZE - 1) | (wall_dest_y >= SIZE - 1)
+            
+            if np.any(invalid_wall_dest_mask):
+                indices_to_remove = wall_indices[invalid_wall_dest_mask]
+                keep_mask = np.ones(len(moves), dtype=bool)
+                keep_mask[indices_to_remove] = False
+                moves = moves[keep_mask]
+                if moves.size == 0:
+                    logger.warning(f"[_apply_all_filters] ALL moves filtered by WALL_BOUNDS")
+                    return moves
+
+        # 7. Filter: King Safety (CRITICAL - Filter moves leaving king in check)
+        # This is the most expensive filter, so we do it last and only when no priests
+        if check_king_safety and not has_priest:
+            from game3d.attacks.check import batch_moves_leave_king_in_check_fused
+            
+            # Use fused batch check for efficiency
+            leaves_check = batch_moves_leave_king_in_check_fused(state, moves, state.cache_manager)
+            
+            if np.any(leaves_check):
+                moves = moves[~leaves_check]
+                if moves.size == 0:
+                    logger.warning(f"[_apply_all_filters] ALL moves filtered by KING_SAFETY")
+                    return moves
 
         return moves
 

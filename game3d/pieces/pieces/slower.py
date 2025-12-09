@@ -4,31 +4,16 @@ from typing import List, TYPE_CHECKING
 import numpy as np
 
 from game3d.common.shared_types import Color, PieceType, SLOWER, COORD_DTYPE, RADIUS_2_OFFSETS
-from game3d.common.registry import register
-from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import in_bounds_vectorized
 from numba import njit
 from game3d.common.shared_types import SIZE, SIZE_SQUARED
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
-
-
-
-def generate_slower_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate king-like single-step moves for slower piece."""
-    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.SLOWER)
+if TYPE_CHECKING: pass
 
 def get_debuffed_squares(
     cache_manager: 'OptimizedCacheManager',
     effect_color: int,
-) -> np.ndarray:
+):
     """
     Get squares within 2-sphere of friendly SLOWER pieces that affect enemies.
     Returns array of shape (N, 3) containing affected square coordinates.
@@ -50,7 +35,6 @@ def get_debuffed_squares(
     return _get_slower_debuff_squares_fast(
         effect_pieces, flattened_occ, effect_color, RADIUS_2_OFFSETS
     )
-
 
 @njit(cache=True)
 def _get_slower_debuff_squares_fast(
@@ -116,11 +100,5 @@ def _get_slower_debuff_squares_fast(
             
     return out
 
+__all__ = ['get_debuffed_squares']
 
-@register(PieceType.SLOWER)
-def slower_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatch slower move generation with numpy-native coordinates."""
-    return generate_slower_moves(state.cache_manager, state.color, pos)
-
-
-__all__ = ["generate_slower_moves", "get_debuffed_squares"]

@@ -6,28 +6,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange
 
-from game3d.common.shared_types import Color, PieceType, Result, WHITEHOLE
-from game3d.common.registry import register
-from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move
 from game3d.common.shared_types import (
-    COORD_DTYPE, WHITEHOLE_PUSH_RADIUS, SIZE, SIZE_SQUARED, BOOL_DTYPE
+    Color, PieceType, Result, WHITEHOLE,
+    BOOL_DTYPE, COORD_DTYPE, SIZE, SIZE_SQUARED, WHITEHOLE_PUSH_RADIUS
 )
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
-
-
-def generate_whitehole_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """White-Hole moves exactly like a Speeder (king single steps)."""
-    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.WHITEHOLE)
-
+if TYPE_CHECKING: pass
 
 @njit(cache=True, fastmath=True, parallel=True)
 def _push_candidates_numba(
@@ -117,10 +102,9 @@ def _push_candidates_numba(
             
     return out
 
-
 def push_candidates_vectorized(
     cache_manager: 'OptimizedCacheManager',
-    controller: Color,
+    controller: Color
 ) -> np.ndarray:
     """Find enemies to push away from whiteholes - optimized with Numba."""
     # Get all friendly pieces
@@ -158,11 +142,5 @@ def push_candidates_vectorized(
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
     return _push_candidates_numba(enemy_coords, whitehole_coords, flattened_occ)
 
+__all__ = ['push_candidates_vectorized']
 
-@register(PieceType.WHITEHOLE)
-def whitehole_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Registered dispatcher for White-Hole moves."""
-    return generate_whitehole_moves(state.cache_manager, state.color, pos)
-
-
-__all__ = ["generate_whitehole_moves", "push_candidates_vectorized"]

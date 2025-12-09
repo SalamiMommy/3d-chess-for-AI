@@ -35,7 +35,7 @@ class GameState:
         'board', 'color', 'cache_manager', 'history', 'halfmove_clock',
         'turn_number', '_zkey', '_position_keys', '_position_counts', '_legal_moves_cache',
         '_legal_moves_cache_key', '_metrics', '_cache_key_multipliers', '_undo_info',
-        '_pending_hive_moves', '_moved_hive_positions'
+        '_pending_hive_moves', '_moved_hive_positions', '_terminal_logged'
     )
 
     def __init__(self, board, color: int = COLOR_BLACK, cache_manager: Optional[OptimizedCacheManager] = None,
@@ -96,6 +96,9 @@ class GameState:
         # Multi-hive move tracking
         self._pending_hive_moves = []
         self._moved_hive_positions = set()
+        
+        # Terminal state logging flag
+        self._terminal_logged = False
 
     @classmethod
     def from_startpos(cls) -> 'GameState':
@@ -105,6 +108,11 @@ class GameState:
         color = COLOR_WHITE
         cache_manager = OptimizedCacheManager(board, color)
         return cls(board=board, color=color, cache_manager=cache_manager)
+
+    def gen_moves(self) -> np.ndarray:
+        """Generate legal moves for current state (compatibility alias)."""
+        from game3d.movement.generator import generate_legal_moves
+        return generate_legal_moves(self)
 
     def reset(self, start_state: Optional['GameState'] = None) -> None:
         """Reset game state to initial or specified state."""
@@ -122,6 +130,7 @@ class GameState:
             self._undo_info = start_state._undo_info.copy()
             self._pending_hive_moves = start_state._pending_hive_moves.copy()
             self._moved_hive_positions = start_state._moved_hive_positions.copy()
+            self._terminal_logged = getattr(start_state, '_terminal_logged', False)
         else:
             # Reset to start position
             from game3d.board.board import Board
@@ -138,6 +147,7 @@ class GameState:
             self._undo_info = []
             self._pending_hive_moves = []
             self._moved_hive_positions = set()
+            self._terminal_logged = False
 
         self._clear_caches()
 
@@ -337,6 +347,7 @@ class GameState:
         # 7. Copy hive tracking state
         new_state._pending_hive_moves = self._pending_hive_moves.copy()
         new_state._moved_hive_positions = self._moved_hive_positions.copy()
+        new_state._terminal_logged = self._terminal_logged
 
         return new_state
 

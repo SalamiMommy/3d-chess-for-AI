@@ -4,38 +4,12 @@ import numpy as np
 from typing import List, TYPE_CHECKING
 from numba import njit
 
-from game3d.common.shared_types import (
-    COORD_DTYPE, RADIUS_2_OFFSETS, Color, PieceType, SIZE, SIZE_SQUARED, BOOL_DTYPE
-)
-from game3d.common.registry import register
-from game3d.movement.jump_engine import get_jump_movement_generator
-from game3d.movement.movepiece import Move
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
-
-def generate_freezer_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    pos_arr = pos.astype(COORD_DTYPE)
-
-    # Use jump generator with piece-specific vectors
-    jump_engine = get_jump_movement_generator()
-    return jump_engine.generate_jump_moves(
-        cache_manager=cache_manager,
-        color=color,
-        pos=pos_arr,
-        directions=KING_MOVEMENT_VECTORS,
-        allow_capture=True,
-        piece_type=PieceType.FREEZER,
-        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
-    )
 
 @njit(cache=True)
 def _get_frozen_squares_fast(
@@ -104,7 +78,7 @@ def _get_frozen_squares_fast(
 def get_all_frozen_squares_numpy(
     cache_manager: 'OptimizedCacheManager',
     controller: Color,
-) -> np.ndarray:
+):
     """Get all enemy squares frozen by controller's freezers. Returns (N, 3) array."""
     if isinstance(controller, np.ndarray):
         controller = Color(int(controller.item()))
@@ -129,9 +103,5 @@ def get_all_frozen_squares_numpy(
         freezers, flattened_occ, int(controller), RADIUS_2_OFFSETS
     )
 
-@register(PieceType.FREEZER)
-def freezer_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Generate legal freezer moves from position."""
-    return generate_freezer_moves(state.cache_manager, state.color, pos)
+__all__ = ['get_all_frozen_squares_numpy']
 
-__all__ = ["generate_freezer_moves", "get_all_frozen_squares_numpy"]

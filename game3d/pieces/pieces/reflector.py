@@ -5,13 +5,9 @@ import numpy as np
 from numba import njit
 from typing import List, TYPE_CHECKING
 from game3d.common.shared_types import COORD_DTYPE, SIZE, SIZE_SQUARED, Color, PieceType
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
 from game3d.common.coord_utils import CoordinateUtils, ensure_coords
 
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.bishop import BISHOP_MOVEMENT_VECTORS
 
@@ -26,7 +22,7 @@ def _trace_reflector_rays_batch(
     max_bounces: int,
     color_code: int,
     ignore_occupancy: bool = False
-) -> np.ndarray:
+):
     """
     Trace reflecting rays for a batch of pieces.
     """
@@ -116,13 +112,6 @@ def _trace_reflector_rays_batch(
 
     return moves[:count]
 
-def generate_reflecting_bishop_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray,
-    max_bounces: int = 2,
-    ignore_occupancy: bool = False
-) -> np.ndarray:
     """
     Generate all legal moves for a reflecting bishop piece.
     Uses numpy-native operations and follows the same pattern as bishop.py.
@@ -153,18 +142,5 @@ def generate_reflecting_bishop_moves(
         ignore_occupancy=ignore_occupancy
     )
 
-@register(PieceType.REFLECTOR)
-def reflector_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
-    """
-    Registered dispatcher for REFLECTOR piece type.
-    Delegates to numpy-native move generation.
-    """
-    return generate_reflecting_bishop_moves(
-        cache_manager=state.cache_manager,
-        color=state.color,
-        pos=pos,
-        max_bounces=2,
-        ignore_occupancy=ignore_occupancy
-    )
+__all__ = []
 
-__all__ = ["generate_reflecting_bishop_moves"]

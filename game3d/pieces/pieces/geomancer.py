@@ -4,19 +4,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange
 
-from game3d.common.shared_types import (
-    Color, PieceType, Result,
-    COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
-    RADIUS_3_OFFSETS, get_empty_coord_batch, MOVE_FLAGS, SIZE, SIZE_SQUARED
-)
-from game3d.common.registry import register
-from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized, CoordinateUtils
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 # Pre-compute geomancy offsets - Radius 3 (unbuffed, Cheb dist >= 2)
 _OFFSETS_R3 = np.asarray(RADIUS_3_OFFSETS, dtype=COORD_DTYPE)
@@ -27,11 +18,60 @@ GEOMANCY_OFFSETS = _OFFSETS_R3[_GEOMANCY_MASK_R3]
 # Pre-compute geomancy offsets - Radius 4 (buffed, Cheb dist >= 2)
 # Generate radius 4 offsets manually since RADIUS_4_OFFSETS doesn't exist
 _OFFSETS_R4 = np.array([
-    (dx, dy, dz)
-    for dx in range(-4, 5)
-    for dy in range(-4, 5)
-    for dz in range(-4, 5)
-    if max(abs(dx), abs(dy), abs(dz)) <= 4
+    [-4, -1, 0],
+    [-4, 0, -1],
+    [-4, 0, 0],
+    [-4, 0, 1],
+    [-4, 1, 0],
+    [-3, -2, -2],
+    [-3, -2, 2],
+    [-3, 2, -2],
+    [-3, 2, 2],
+    [-2, -3, -2],
+    [-2, -3, 2],
+    [-2, -2, -3],
+    [-2, -2, 3],
+    [-2, 2, -3],
+    [-2, 2, 3],
+    [-2, 3, -2],
+    [-2, 3, 2],
+    [-1, -4, 0],
+    [-1, 0, -4],
+    [-1, 0, 4],
+    [-1, 4, 0],
+    [0, -4, -1],
+    [0, -4, 0],
+    [0, -4, 1],
+    [0, -1, -4],
+    [0, -1, 4],
+    [0, 0, -4],
+    [0, 0, 4],
+    [0, 1, -4],
+    [0, 1, 4],
+    [0, 4, -1],
+    [0, 4, 0],
+    [0, 4, 1],
+    [1, -4, 0],
+    [1, 0, -4],
+    [1, 0, 4],
+    [1, 4, 0],
+    [2, -3, -2],
+    [2, -3, 2],
+    [2, -2, -3],
+    [2, -2, 3],
+    [2, 2, -3],
+    [2, 2, 3],
+    [2, 3, -2],
+    [2, 3, 2],
+    [3, -2, -2],
+    [3, -2, 2],
+    [3, 2, -2],
+    [3, 2, 2],
+    [4, -1, 0],
+    [4, 0, -1],
+    [4, 0, 0],
+    [4, 0, 1],
+    [4, 1, 0],
 ], dtype=COORD_DTYPE)
 _CHEB_DIST_R4 = np.max(np.abs(_OFFSETS_R4), axis=1)
 _GEOMANCY_MASK_R4 = _CHEB_DIST_R4 >= 2
@@ -93,7 +133,7 @@ def _block_candidates_numba(
 def block_candidates_numpy(
     cache_manager: 'OptimizedCacheManager',
     mover_color: 'Color',
-) -> np.ndarray:
+):
     """
     Return empty squares that <mover_color> may block via geomancy this turn.
     Returns array of shape (N, 3).
@@ -120,7 +160,6 @@ def block_candidates_numpy(
     offsets = np.asarray(RADIUS_3_OFFSETS, dtype=COORD_DTYPE)
     
     return _block_candidates_numba(geomancer_coords, flattened_occ, offsets)
-
 
 @njit(cache=True, fastmath=True)
 def _generate_geomancy_moves_kernel(
@@ -157,11 +196,6 @@ def _generate_geomancy_moves_kernel(
                 
     return moves[:count]
 
-def generate_geomancer_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
     """Generate geomancer moves: radius-1 king moves + radius-2/3 (unbuffed) or radius-2/4 (buffed) geomancy placement moves."""
     start = pos.astype(COORD_DTYPE)
     
@@ -192,10 +226,5 @@ def generate_geomancer_moves(
         
     return np.concatenate((king_moves, geom_moves))
 
+__all__ = ['block_candidates_numpy']
 
-@register(PieceType.GEOMANCER)
-def geomancer_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_geomancer_moves(state.cache_manager, state.color, pos)
-
-
-__all__ = ["generate_geomancer_moves", "block_candidates_numpy"]

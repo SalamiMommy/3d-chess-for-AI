@@ -66,7 +66,7 @@ class UnifiedMemoryPool:
         self._misses = defaultdict(int)
         self._total_allocated = defaultdict(int)
 
-    def allocate_array(self, shape: Tuple[int, ...], dtype: np.dtype) -> np.ndarray:
+    def allocate_array(self, shape: Tuple[int, ...], dtype: np.dtype, require_zeroed: bool = True) -> np.ndarray:
         """Generic allocation method compatible with other pool interfaces."""
         # Determine pool key based on shape and dtype
         key = None
@@ -99,9 +99,11 @@ class UnifiedMemoryPool:
             key = 'blocked'
 
         if key:
-            return self._get_array(key, shape, dtype)
+            return self._get_array(key, shape, dtype, require_zeroed)
         
         # Fallback
+        if require_zeroed:
+            return np.zeros(shape, dtype=dtype)
         return np.empty(shape, dtype=dtype)
     
     def get_coords_3(self, shape: Tuple[int, int], dtype: np.dtype = COORD_DTYPE) -> np.ndarray:
@@ -148,17 +150,21 @@ class UnifiedMemoryPool:
         """Get or create blocked indices array."""
         return self._get_array('blocked', shape, COORD_OFFSET_DTYPE)
     
-    def _get_array(self, key: str, shape: Tuple[int, ...], dtype: np.dtype) -> np.ndarray:
+    def _get_array(self, key: str, shape: Tuple[int, ...], dtype: np.dtype, require_zeroed: bool = True) -> np.ndarray:
         """Get array from pool or create new one."""
         with self._lock:
             if self._pools[key]:
                 arr = self._pools[key].pop()
                 if arr.shape == shape and arr.dtype == dtype:
                     self._hits[key] += 1
+                    if require_zeroed:
+                        arr.fill(0)
                     return arr
             
             self._misses[key] += 1
             self._total_allocated[key] += 1
+            if require_zeroed:
+                return np.zeros(shape, dtype=dtype, order='C')
             return np.empty(shape, dtype=dtype, order='C')
     
     def release(self, arr: np.ndarray, pool_type: Optional[str] = None) -> None:
@@ -182,8 +188,7 @@ class UnifiedMemoryPool:
                     # Evict from largest pools first
                     self._trim_to_fit(arr_bytes)
                 
-                # CLEAR ARRAY BEFORE RETURNING TO POOL
-                arr.fill(0)
+                # Removed automatic fill(0) on release for performance
                 self._pools[pool_type].append(arr)
                 self._total_pooled_bytes += arr_bytes
     

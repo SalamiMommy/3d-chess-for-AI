@@ -4,8 +4,34 @@ from enum import IntEnum
 import numpy as np
 from numba import njit, prange
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
+
+# ✅ OPTIMIZATION: Thread-local scratch buffer for attack mask delta operations
+_ATTACK_SCRATCH = threading.local()
+
+# ✅ OPTIMIZATION: Singleton empty arrays to avoid repeated allocations
+_EMPTY_MOVES = np.empty((0, 6), dtype=np.int16)  # Frozen empty moves array
+
+
+def _get_scratch_buffers() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Get thread-local scratch buffers for subset generation."""
+    if not hasattr(_ATTACK_SCRATCH, 'type_counts'):
+        # Allocate once per thread
+        # 512 is safe upper bound for piece count
+        _ATTACK_SCRATCH.type_counts = np.zeros(64, dtype=np.int32)
+        _ATTACK_SCRATCH.effective_types = np.zeros(512, dtype=np.int32)
+        _ATTACK_SCRATCH.sorted_indices = np.zeros(512, dtype=np.int32)
+        _ATTACK_SCRATCH.offsets = np.zeros(64, dtype=np.int32)
+    
+    return (
+        _ATTACK_SCRATCH.type_counts,
+        _ATTACK_SCRATCH.effective_types,
+        _ATTACK_SCRATCH.sorted_indices,
+        _ATTACK_SCRATCH.offsets
+    )
+
 
 from game3d.common.shared_types import (
     PieceType, Color, SIZE, COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
@@ -62,7 +88,7 @@ def move_would_leave_king_in_check(game_state: 'GameState', move: np.ndarray, ca
 
     # ✅ CENTRALIZED PRIEST CHECK: All moves are safe if player has priests
     if occ_cache.has_priest(player_color):
-        logger.warning(f"move_would_leave_king_in_check called for {Color(player_color).name} despite having priests! Call stack should be checked.")
+        # logger.warning(f"move_would_leave_king_in_check called for {Color(player_color).name} despite having priests!")
         return False
 
     # Get move data
@@ -606,21 +632,26 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
     
     Returns None if cache miss (caller should fallback to slow check).
     """
-    mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-
     # Use move cache for optimal attack calculation
     if cache and hasattr(cache, 'move_cache'):
-        # ✅ UPDATED: Use get_pseudolegal_moves() to get occupancy-aware attacks
+        # ✅ OPTIMIZATION: First check for pre-cached attack mask
+        cached_mask = cache.move_cache.get_attack_mask(attacker_color)
+        if cached_mask is not None:
+            return cached_mask
+        
+        # Cache miss on mask - build from moves
         cached_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
         if cached_moves is None:
-            return None # Cache miss
+            return None  # Cache miss
 
+        mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+        
         if len(cached_moves) == 0:
             return mask
 
-        # ✅ OPTIMIZED: Vectorized attack mask building (replaces Python for-loop)
-        # Extract all destination coordinates at once
-        to_coords = cached_moves[:, 3:6].astype(np.int32)
+        # ✅ OPTIMIZED: Extract destination coordinates without conversion
+        # NumPy advanced indexing works with int16 (COORD_DTYPE)
+        to_coords = cached_moves[:, 3:6]
         
         # Vectorized bounds check
         valid = (to_coords[:, 0] >= 0) & (to_coords[:, 0] < SIZE) & \
@@ -634,7 +665,7 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
 
         return mask
 
-    return None # No cache available
+    return None  # No cache available
 
 
 def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None, use_move_cache=True) -> bool:
@@ -703,73 +734,126 @@ def square_attacked_by_incremental(
         from game3d.attacks.fast_attack import square_attacked_by_fast
         return square_attacked_by_fast(board, square, attacker_color, cache)
     
+    # ✅ FIX: Check if opponent moves are cached - if not, fall back to full check
+    # This handles the case where the move cache hasn't generated opponent moves yet
+    cached_opponent_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
+    if cached_opponent_moves is None:
+        # No cached moves - use fast_attack which regenerates from current occupancy
+        from game3d.attacks.fast_attack import square_attacked_by_fast
+        return square_attacked_by_fast(board, square, attacker_color, cache)
+    
     # Identify pieces affected by the move
     affected_ids, affected_coords, affected_keys = cache.move_cache.get_pieces_affected_by_move(
         from_coord, to_coord, attacker_color
     )
     
-    # ✅ OPTIMIZATION: Use piece cache directly for OLD moves (O(1) per piece)
-    old_affected_moves_list = []
-    
-    if len(affected_ids) > 0:
-        color_idx = 0 if attacker_color == Color.WHITE else 1
-        
-        with cache.move_cache._lock:
-            for piece_id in affected_ids:
-                if piece_id in cache.move_cache._piece_moves_cache:
-                    old_moves = cache.move_cache._piece_moves_cache[piece_id]
-                    if old_moves.size > 0:
-                        old_affected_moves_list.append(old_moves)
-    
-    old_affected_moves = np.concatenate(old_affected_moves_list, axis=0) if old_affected_moves_list else np.empty((0, 6), dtype=MOVE_DTYPE)
-    
-    # ✅ OPTIMIZED: Use lightweight proxy instead of full GameState
-    # This avoids the expensive GameState.__init__ overhead
-    from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
-    
-    # Generate new moves for affected pieces using lightweight proxy
+    # ✅ OPTIMIZATION: Simplified High-Performance Logic
+    # 1. FAST CHECK: Do any STABLE pieces attack?
+    # This checks the global attack matrix but masks out the 'affected' pieces.
+    # If a non-affected piece attacks, we are done (True).
+    if cache.move_cache.has_other_attackers(square, attacker_color, affected_keys):
+        return True
+
+    # 2. SLOW CHECK: Do any AFFECTED pieces attack?
+    # We must regenerate their moves because their attacks might have changed.
+    # Note: We only generate if stable check failed (lazy generation would be even better, 
+    # but we need to know IF they attack).
     if affected_coords.size > 0:
-        proxy_state = MinimalStateProxy(board, attacker_color, cache)
-        new_affected_moves = generate_pseudolegal_moves_batch(
-            proxy_state, affected_coords, np.empty((0, 3), dtype=COORD_DTYPE), ignore_occupancy=False
-        )
-    else:
-        new_affected_moves = np.empty((0, 6), dtype=MOVE_DTYPE)
-    
-    # Get base moves from cache
-    base_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
-    
-    if base_moves is None:
-        # No cached moves, use fast path
-        from game3d.attacks.fast_attack import square_attacked_by_fast
-        return square_attacked_by_fast(board, square, attacker_color, cache)
-    
-    # If no affected pieces, just use the cached attack mask directly
-    if len(affected_ids) == 0:
-        # Create attack mask from base moves (fast path - no regeneration needed)
-        attack_mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-        if base_moves.size > 0:
-            tx, ty, tz = base_moves[:, 3], base_moves[:, 4], base_moves[:, 5]
-            valid = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
-            attack_mask[tx[valid], ty[valid], tz[valid]] = True
+        from game3d.core.buffer import state_to_buffer_from_pieces
+        from game3d.core.generator_functional import generate_moves_subset
         
-        x, y, z = square[0], square[1], square[2]
-        return bool(attack_mask[x, y, z])
+        # Generator imports
+        occ_cache = cache.occupancy_cache
+        current_colors, current_types = occ_cache.batch_get_attributes_unsafe(affected_coords)
+        
+        # ✅ FIX: Apply the move to the affected state
+        # 1. Handle Captures: Use boolean indexing
+        # If an affected piece is at 'to_coord' and matches attacker_color, it is captured (removed).
+        # Actually, get_pieces_affected_by_move returns pieces of 'attacker_color'.
+        # If we (player) capture an opponent (attacker), that opponent piece is at to_coord.
+        # We must remove it.
+        
+        # Scalar compare for to_coord
+        tx, ty, tz = int(to_coord[0]), int(to_coord[1]), int(to_coord[2])
+        is_captured = (affected_coords[:, 0] == tx) & \
+                      (affected_coords[:, 1] == ty) & \
+                      (affected_coords[:, 2] == tz)
+                      
+        # 2. Handle Moving Piece: from_coord -> to_coord
+        fx, fy, fz = int(from_coord[0]), int(from_coord[1]), int(from_coord[2])
+        is_moving = (affected_coords[:, 0] == fx) & \
+                    (affected_coords[:, 1] == fy) & \
+                    (affected_coords[:, 2] == fz)
+        
+        # Apply filtering (remove captured)
+        # Note: A piece can't be both moving and captured in this context usually
+        valid_mask = ~is_captured
+        
+        if not np.any(valid_mask):
+             affected_coords = np.empty((0, 3), dtype=COORD_DTYPE)
+             current_types = np.empty(0, dtype=np.int8)
+             current_colors = np.empty(0, dtype=np.int8)
+        else:
+             affected_coords = affected_coords[valid_mask].copy() # Copy to modify
+             current_types = current_types[valid_mask]
+             current_colors = current_colors[valid_mask]
+             # Update moving piece coords
+             # Re-calculate is_moving for the filtered array
+             is_moving = (affected_coords[:, 0] == fx) & \
+                         (affected_coords[:, 1] == fy) & \
+                         (affected_coords[:, 2] == fz)
+             
+             if np.any(is_moving):
+                 affected_coords[is_moving] = to_coord
+
+        source = MinimalStateProxy(board, attacker_color, cache)
+        if affected_coords.size > 0:
+            buffer = state_to_buffer_from_pieces(
+                source, affected_coords, current_types, current_colors, readonly=True
+            )
+            
+            subset_indices = np.arange(len(affected_coords), dtype=np.int32)
+            scratch = _get_scratch_buffers()
+            new_affected_moves = generate_moves_subset(buffer, subset_indices, scratch_pad=scratch)
+        else:
+            new_affected_moves = _EMPTY_MOVES
+        
+        if new_affected_moves.size > 0:
+            tx, ty, tz = int(square[0]), int(square[1]), int(square[2])
+            # Vectorized check
+            hits = (new_affected_moves[:, 3] == tx) & \
+                   (new_affected_moves[:, 4] == ty) & \
+                   (new_affected_moves[:, 5] == tz)
+            if np.any(hits):
+                return True
+                
+    return False
+
+
+@njit(cache=True)
+def _can_capture_attacker(attacker_coord, defender_color, occupancy_grid, piece_type_grid):
+    # This function is a helper but ideally we should query attacks on the attacker_coord
+    # But for optimization in check scenarios, we might need direct logic.
+    # For now, let's focus on is_square_attacked.
+    pass
+
+def is_square_attacked(state, square_coord: np.ndarray, defender_color: Optional[int] = None) -> bool:
+    """
+    Check if a square is under attack by the opponent.
     
-    # Create attack mask from base moves
-    attack_mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-    if base_moves.size > 0:
-        tx, ty, tz = base_moves[:, 3], base_moves[:, 4], base_moves[:, 5]
-        valid = (tx >= 0) & (tx < SIZE) & (ty >= 0) & (ty < SIZE) & (tz >= 0) & (tz < SIZE)
-        attack_mask[tx[valid], ty[valid], tz[valid]] = True
+    OPTIMIZATION: Uses Bitboard cache from MoveCache if available.
+    """
+    if defender_color is None:
+        defender_color = state.color
     
-    # Apply delta: remove old affected moves and add new ones
-    cache.move_cache.remove_moves_from_mask(attack_mask, old_affected_moves)
-    cache.move_cache.add_moves_to_mask(attack_mask, new_affected_moves)
-    
-    # Check if target square is attacked
-    x, y, z = square[0], square[1], square[2]
-    return bool(attack_mask[x, y, z])
+    # 1. Try Cache First (Bitboard O(1))
+    # Check if 'defender_color' is under attack (implies attacker is opposite)
+    if state.cache_manager.move_cache.is_under_attack(square_coord, defender_color):
+        return True
+        
+    # If cache returns False (dirty or clean-safe), fall back to general check.
+    attacker_color = Color(defender_color).opposite().value
+    return square_attacked_by(state.board, state.color, square_coord, attacker_color, state.cache_manager)
 
 
 def _square_attacked_by_slow(board, square: np.ndarray, attacker_color: int, cache=None) -> bool:
@@ -787,17 +871,62 @@ def _square_attacked_by_slow(board, square: np.ndarray, attacker_color: int, cac
         # Fallback if no cache (shouldn't happen in this context)
         return False
 
-    # Import here to avoid circular imports
-    from game3d.movement.pseudolegal import generate_pseudolegal_moves_batch
+    # ✅ OPTIMIZED: Use stateless API with GameBuffer
+    from game3d.core.buffer import state_to_buffer
+    from game3d.core.api import generate_pseudolegal_moves
+    from game3d.common.coord_utils import coords_to_keys
+
+    # Create stateless buffer from current state (which has updated occupancy)
+    buffer = state_to_buffer(board) # Assuming board functions as state here, or we need to construct minimal state wrapper if board is just board array?
+    # Actually board argument in _square_attacked_by_slow is often passed as 'game_state.board' which is the board array, 
+    # BUT the callers pass 'board' as the first arg. 
+    # Let's check callers. In square_attacked_by_extended fallback, it passes 'board'. 
+    # In batch_moves_leave_king_in_check, it passes 'game_state.board'.
+    # state_to_buffer expects a GameState-like object with cache_manager.
     
-    # ✅ OPTIMIZED: Use lightweight proxy instead of full GameState creation
-    dummy_state = MinimalStateProxy(board, attacker_color, cache)
+    # We need a way to get a buffer.
+    # If board is just an array, we can't easily make a buffer without the cache manager.
+    # Fortunately, we have 'cache' argument which is the CacheManager.
+    # We can construct a minimal object to pass to state_to_buffer.
     
-    # Generate ALL raw moves for attacker
-    # This is expensive but correct.
-    moves = generate_pseudolegal_moves_batch(dummy_state, attacker_positions)
+    class BufferSource:
+        def __init__(self, cache_mgr, color):
+            self.cache_manager = cache_mgr
+            self.color = color
+            self.turn_number = 1 # Dummy
+            self.halfmove_clock = 0
+            
+    # However, 'board' arg might be the GameState object itself in some calls?
+    # No, type hint says 'board'.
     
-    # Check if any move targets the square
+    source = MinimalStateProxy(board, attacker_color, cache)
+    buffer = state_to_buffer(source)
+    
+    # Generate ALL moves for attacker color
+    all_moves = generate_pseudolegal_moves(buffer)
+    
+    if all_moves.size == 0:
+        return False
+        
+    # Filter for moves starting from attacker positions
+    # We already have attacker_positions from cache
+    # But generate_pseudolegal_moves returns ALL moves for that color.
+    # We can checking if any move lands on 'square'.
+    
+    target_x, target_y, target_z = square[0], square[1], square[2]
+    
+    # Check if any move destinations match target
+    # This automatically handles "attacker positions" because only pieces of 'attacker_color' move.
+    
+    # But wait, we only want to check if *intended* attackers generate the move? 
+    # actually square_attacked_by checks if *any* piece of attacker_color attacks square.
+    # So using all_moves is correct and even better (no need to filter by source).
+    
+    hits = (all_moves[:, 3] == target_x) & \
+           (all_moves[:, 4] == target_y) & \
+           (all_moves[:, 5] == target_z)
+           
+    return bool(np.any(hits))
     # moves is (N, 6) array: [fx, fy, fz, tx, ty, tz]
     if moves.size == 0:
         return False
@@ -944,11 +1073,116 @@ def get_check_summary(board, cache=None) -> Dict[str, Any]:
 
     return summary
 
+
+def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
+    """
+    Get a list of attackers targeting the current player's king.
+    
+    Uses cached moves to identify attackers, ensuring consistency with is_check().
+    
+    Returns:
+        List of strings, e.g., ["ROOK at (0,0,5)", "KNIGHT at (2,2,2)"]
+    """
+    cache = cache or getattr(game_state, 'cache_manager', None)
+    if not cache:
+        return [] # Cannot determine without cache
+
+    king_color = game_state.color
+    opponent_color = Color(king_color).opposite().value
+    
+    # 1. Find King
+    occ_cache = cache.occupancy_cache
+    king_pos = occ_cache.find_king(king_color)
+    if king_pos is None:
+        return [] # No king, no attackers (or handled elsewhere)
+        
+    king_pos_arr = king_pos.astype(COORD_DTYPE)
+    
+    # 2. Get Opponent Moves (pseudolegal is fine for attack detection)
+    move_cache = cache.move_cache
+    opponent_moves = move_cache.get_pseudolegal_moves(opponent_color)
+    
+    if opponent_moves is None:
+        # Cache miss - Force generation
+        from game3d.core.buffer import state_to_buffer
+        from game3d.core.api import generate_pseudolegal_moves
+        
+        # Use MinimalStateProxy to switch color without full GameState copy
+        dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
+        buffer = state_to_buffer(dummy_state, readonly=True)
+        opponent_moves = generate_pseudolegal_moves(buffer)
+        
+        # Store in cache for future use (and to generate attack mask)
+        move_cache.store_pseudolegal_moves(opponent_color, opponent_moves)
+    
+
+
+    # 3. Find attackers using JIT kernel
+    attacker_indices = _find_attackers_of_square(king_pos_arr, opponent_moves, opponent_moves[:, :3])
+    
+    if attacker_indices.size == 0:
+        # Fallback: If no attackers found via cache, force regeneration IGNORING cache
+        # This handles cases where cache might be desynced (empty but valid) while check actually exists
+        from game3d.core.buffer import state_to_buffer
+        from game3d.core.api import generate_pseudolegal_moves
+        
+        # Create fresh buffer from current board state
+        dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
+        buffer = state_to_buffer(dummy_state, readonly=True)
+        fresh_moves = generate_pseudolegal_moves(buffer)
+        
+        if fresh_moves.size > 0:
+            # Re-run detection on fresh moves
+            attacker_indices = _find_attackers_of_square(king_pos_arr, fresh_moves, fresh_moves[:, :3])
+            if attacker_indices.size > 0:
+                # Found attackers that cache missed!
+                opponent_moves = fresh_moves
+            else:
+                # Optionally log if fallback failed to find anything even after regen
+                # But typically returns empty list
+                pass
+        else:
+             # Fallback generated no moves
+             pass
+    
+    if attacker_indices.size == 0:
+        return []
+        
+    # 4. Format Output
+    attackers_info = []
+    attacker_moves = opponent_moves[attacker_indices]
+    
+    # Track unique attacker positions to avoid duplicates
+    seen_positions = set()
+    
+    # Retrieve piece types for logging
+    # We can get source coords and look up types in occ_cache
+    for move in attacker_moves:
+        src = move[:3]
+        pos_key = (int(src[0]), int(src[1]), int(src[2]))
+        
+        # Skip duplicate attacker positions
+        if pos_key in seen_positions:
+            continue
+        seen_positions.add(pos_key)
+        
+        # Get piece info - get_fast returns (ptype, color) tuple
+        ptype, color = occ_cache.get_fast(src)
+        if ptype > 0:
+            ptype_name = PieceType(ptype).name
+            attackers_info.append(f"{ptype_name} at {pos_key}")
+        else:
+            attackers_info.append(f"UNKNOWN at {pos_key}")
+             
+    return attackers_info
+
 # Update __all__ exports
+
 __all__ = [
     'CheckStatus', 'KingInCheckInfo',
     'king_in_check', 'get_check_status', 'get_all_pieces_in_check',
     'batch_king_check_detection', 'get_check_summary',
-    'square_attacked_by', 'square_attacked_by_incremental', 'move_would_leave_king_in_check'
+    'square_attacked_by', 'square_attacked_by_incremental', 'move_would_leave_king_in_check',
+    'batch_moves_leave_king_in_check'
 ]
 

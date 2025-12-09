@@ -26,7 +26,9 @@ from game3d.common.shared_types import (
     MAX_COORD_VALUE, MIN_COORD_VALUE, N_PIECE_TYPES
 )
 
-from game3d.common.coord_utils import CoordinateUtils
+
+
+from game3d.common.coord_utils import CoordinateUtils, coords_to_keys
 
 # Type aliases for clarity and consistency
 PIECE_EMPTY = EMPTY
@@ -34,6 +36,71 @@ PIECE_EMPTY = EMPTY
 # Optimize parallelization based on available CPU cores
 NUM_CORES = os.cpu_count() or 4
 PARALLEL_CHUNKS = min(NUM_CORES, SIZE if SIZE > 0 else 4)
+
+# ✅ OPTIMIZATION #5: Runtime-calibrated parallelization thresholds
+# These are calibrated at import time based on actual hardware performance
+_CALIBRATED_THRESHOLDS = {
+    'batch_occupied_serial_max': 2000,   # Default: use serial for batches < 2000
+    'batch_attributes_serial_max': 2000,  # Default: use serial for batches < 2000  
+    'tiny_batch_max': 10,                # Default: use numpy for batches < 10
+}
+
+def _calibrate_thresholds():
+    """Calibrate parallelization thresholds at import time.
+    
+    OPTIMIZATION #5: Runtime calibration for hardware-specific optimization.
+    Runs a quick benchmark to find optimal serial vs parallel crossover point.
+    """
+    import time
+    
+    try:
+        # Create test arrays
+        test_occ = np.zeros((SIZE, SIZE, SIZE), dtype=COLOR_DTYPE)
+        test_ptype = np.zeros((SIZE, SIZE, SIZE), dtype=PIECE_TYPE_DTYPE)
+        
+        # Test with different sizes to find crossover
+        sizes = [50, 100, 200, 500, 1000, 2000]
+        coords_list = [np.random.randint(0, SIZE, size=(s, 3)).astype(COORD_DTYPE) for s in sizes]
+        
+        # Warm up JIT
+        _ = _vectorized_batch_occupied_serial(test_occ, coords_list[0])
+        _ = _vectorized_batch_occupied(test_occ, coords_list[0])
+        
+        # Find crossover point
+        for i, (size, coords) in enumerate(zip(sizes, coords_list)):
+            # Time serial
+            t0 = time.perf_counter()
+            for _ in range(10):
+                _ = _vectorized_batch_occupied_serial(test_occ, coords)
+            t_serial = time.perf_counter() - t0
+            
+            # Time parallel
+            t0 = time.perf_counter()
+            for _ in range(10):
+                _ = _vectorized_batch_occupied(test_occ, coords)
+            t_parallel = time.perf_counter() - t0
+            
+            # If parallel becomes faster, set threshold
+            if t_parallel < t_serial and size > _CALIBRATED_THRESHOLDS['batch_occupied_serial_max']:
+                break
+            elif t_parallel < t_serial:
+                _CALIBRATED_THRESHOLDS['batch_occupied_serial_max'] = size
+                _CALIBRATED_THRESHOLDS['batch_attributes_serial_max'] = size
+                break
+                
+    except Exception:
+        # Calibration failed, use defaults
+        pass
+
+# Run calibration at import time (lazy - only if threshold values are accessed)
+_CALIBRATION_DONE = False
+
+def _ensure_calibrated():
+    """Ensure calibration has been done."""
+    global _CALIBRATION_DONE
+    if not _CALIBRATION_DONE:
+        _calibrate_thresholds()
+        _CALIBRATION_DONE = True
 
 @njit(cache=True, nogil=True, parallel=True)
 def _vectorized_batch_occupied(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
@@ -208,11 +275,42 @@ def _batch_occupied_numba(occ: np.ndarray, coords: np.ndarray) -> np.ndarray:
 
     return out
 
+@njit(cache=True, fastmath=True)
+def _extract_sparse_kernel(
+    occ_grid: np.ndarray,
+    ptype_grid: np.ndarray,
+    out_coords: np.ndarray,
+    out_types: np.ndarray,
+    out_colors: np.ndarray,
+) -> int:
+    """
+    Fused kernel to extract sparse data from dense grids.
+    Returns: count
+    """
+    count = 0
+    S = occ_grid.shape[0]
+    limit = out_coords.shape[0]
+    
+    for x in range(S):
+        for y in range(S):
+            for z in range(S):
+                color = occ_grid[x, y, z]
+                if color != 0:
+                    if count < limit:
+                        out_coords[count, 0] = x
+                        out_coords[count, 1] = y
+                        out_coords[count, 2] = z
+                        out_types[count] = ptype_grid[x, y, z]
+                        out_colors[count] = color
+                    count += 1
+    return count
+
 class OccupancyCache:
     __slots__ = ("_occ", "_ptype", "_priest_count", "_coord_dtype",
                  "_piece_type_count", "_memory_pool", "_flat_occ_view",
                  "_flat_indices_cache", "_king_positions", "_flat_view_lock",
-                 "_cache_size_limit", "_king_cache_misses")
+                 "_cache_size_limit", "_king_cache_misses",
+                 "_positions_cache", "_positions_dirty", "_positions_lock")
 
     def __init__(self, board_size=SIZE, piece_type_count=None) -> None:
         self._coord_dtype = COORD_DTYPE
@@ -239,6 +337,12 @@ class OccupancyCache:
         self._flat_view_lock = threading.Lock()
         self._cache_size_limit = 1000  # Prevent unbounded growth
         self._king_cache_misses = 0  # Track cache effectiveness
+        
+        # ✅ OPTIMIZATION: Cache for get_positions() results
+        # _positions_cache stores tuple (coords, keys) for [White, Black]
+        self._positions_cache = [None, None]
+        self._positions_dirty = [True, True]
+        self._positions_lock = threading.Lock()
         
     def _allocate_id(self) -> int:
         """Allocate a new piece ID (O(1))."""
@@ -445,10 +549,9 @@ class OccupancyCache:
         # We need to find unique coordinates, keeping the LAST occurrence
         
         # Convert coords to keys for uniqueness check (much faster than row-wise unique)
-        # Use simple integer packing: x | (y << 9) | (z << 18)
-        # CRITICAL FIX: Cast to INDEX_DTYPE (int32) to prevent overflow during shift
-        # COORD_DTYPE is int16, so << 18 would overflow/wrap to 0
-        keys = coords[:, 0].astype(INDEX_DTYPE) | (coords[:, 1].astype(INDEX_DTYPE) << 9) | (coords[:, 2].astype(INDEX_DTYPE) << 18)
+        # Convert coords to keys for uniqueness check (much faster than row-wise unique)
+        # Use centralized Numba-optimized function
+        keys = coords_to_keys(coords)
         
         # ✅ OPTIMIZATION: Use boolean mask for deduplication if batch size is large enough
         # and keys are within range (which they are for 9x9x9)
@@ -487,10 +590,10 @@ class OccupancyCache:
         pieces = pieces[last_indices]
         old_colors, old_types = self.batch_get_attributes(coords)
 
-        # Vectorized update (this is the core operation)
-        x = coords[:, 0].astype(INDEX_DTYPE)
-        y = coords[:, 1].astype(INDEX_DTYPE)
-        z = coords[:, 2].astype(INDEX_DTYPE)
+        # ✅ OPTIMIZED: No type conversion needed - NumPy indexing works with int16
+        x = coords[:, 0]
+        y = coords[:, 1]
+        z = coords[:, 2]
 
         # ✅ CRITICAL: Validate bounds before array access
         # This prevents cryptic IndexError and provides actionable debugging info
@@ -511,6 +614,27 @@ class OccupancyCache:
             )
 
         # Update occupancy and piece type arrays atomically
+        # ✅ CRITICAL: Enforce Type/Color Consistency
+        # We must check that we are not setting inconsistencies
+        # Check if type is 0 but color is not 0, or type is not 0 but color is 0
+        
+        target_types = pieces[:, 0]
+        target_colors = pieces[:, 1]
+        
+        # Check inconsistent pieces
+        inconsistent_mask = (target_types == 0) & (target_colors != 0)
+        if np.any(inconsistent_mask):
+             # Find first offender for debug message
+             idx = np.where(inconsistent_mask)[0][0]
+             bx, by, bz = x[idx], y[idx], z[idx]
+             raise ValueError(f"Inconsistent BatchSetPosition at index {idx} ({bx},{by},{bz}): Type=0, Color={target_colors[idx]}")
+             
+        inconsistent_mask_2 = (target_types != 0) & (target_colors == 0)
+        if np.any(inconsistent_mask_2):
+             idx = np.where(inconsistent_mask_2)[0][0]
+             bx, by, bz = x[idx], y[idx], z[idx]
+             raise ValueError(f"Inconsistent BatchSetPosition at index {idx} ({bx},{by},{bz}): Type={target_types[idx]}, Color=0")
+
         self._occ[x, y, z] = pieces[:, 1]  # colors
         self._ptype[x, y, z] = pieces[:, 0]  # piece types
 
@@ -542,6 +666,9 @@ class OccupancyCache:
 
         # Invalidate cached views
         self._flat_occ_view = None
+        
+        # ✅ OPTIMIZATION: Invalidate positions cache (assume both colors affected for batch)
+        self._positions_dirty = [True, True]
 
         # ✅ OPTIMIZATION: Selective cache invalidation instead of clearing everything
         # Clear flat indices cache for updated coordinates
@@ -562,21 +689,58 @@ class OccupancyCache:
 
 
     def get_positions(self, color: int) -> np.ndarray:
-        """Get all positions of color using vectorized operations."""
+        """Get all positions of color using vectorized operations with caching."""
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZATION: Return cached version if valid
+        if not self._positions_dirty[color_idx] and self._positions_cache[color_idx] is not None:
+            return self._positions_cache[color_idx][0]
+
+        # Rebuild cache
         mask = (self._occ == color)
-
         coords = np.argwhere(mask)
+        
         if coords.size == 0:
-            return np.empty((0, 3), dtype=self._coord_dtype)
+            coords = np.empty((0, 3), dtype=self._coord_dtype)
+            keys = np.empty(0, dtype=np.int64)
+        else:
+            # No reordering needed - argwhere returns (x, y, z)\n            # Use copy=False since argwhere returns fresh array\n            coords = coords.astype(self._coord_dtype, copy=False)
+            # Compute keys (needed for cache completeness) using optimized function
+            keys = coords_to_keys(coords)
+        
+        # Update cache
+        with self._positions_lock:
+             self._positions_cache[color_idx] = (coords, keys)
+             self._positions_dirty[color_idx] = False
+             
+        return coords
 
-        # No reordering needed - argwhere returns (x, y, z) from array indexed as [x, y, z]
-        return coords.astype(self._coord_dtype)
+    def get_positions_with_keys(self, color: int) -> tuple[np.ndarray, np.ndarray]:
+        """Get all positions of color with pre-computed coordinate keys.
+        
+        ✅ OPTIMIZATION: Returns cached coordinates and keys.
+        """
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # ✅ OPTIMIZATION: Return cached version if valid
+        if not self._positions_dirty[color_idx] and self._positions_cache[color_idx] is not None:
+            return self._positions_cache[color_idx]
+            
+        # If dirty, calling get_positions will rebuild the cache including keys
+        coords = self.get_positions(color)
+        
+        # Now cache is populated (or was empty)
+        return self._positions_cache[color_idx]
 
     def rebuild(self, coords: np.ndarray, types: np.ndarray, colors: np.ndarray) -> None:
         """Rebuild cache from coordinate arrays using vectorized operations."""
         self._occ.fill(0)
         self._ptype.fill(0)
         self._king_positions.fill(-1)  # Reset king cache
+        
+        # ✅ OPTIMIZATION: Reset positions cache
+        self._positions_cache = [None, None]
+        self._positions_dirty = [True, True]
 
         if len(coords) == 0:
             self._priest_count.fill(0)
@@ -586,9 +750,10 @@ class OccupancyCache:
         types = np.asarray(types, dtype=PIECE_TYPE_DTYPE)
         colors = np.asarray(colors, dtype=COLOR_DTYPE)
 
-        x = coords[:, 0].astype(INDEX_DTYPE)
-        y = coords[:, 1].astype(INDEX_DTYPE)
-        z = coords[:, 2].astype(INDEX_DTYPE)
+        # ✅ OPTIMIZED: No type conversion needed
+        x = coords[:, 0]
+        y = coords[:, 1]
+        z = coords[:, 2]
 
         self._occ[x, y, z] = colors
         self._ptype[x, y, z] = types
@@ -639,6 +804,66 @@ class OccupancyCache:
         
         return king_pos
 
+
+    def export_buffer_data(self, 
+                          out_coords: Optional[np.ndarray] = None,
+                          out_types: Optional[np.ndarray] = None,
+                          out_colors: Optional[np.ndarray] = None
+                          ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Export internal arrays for GameBuffer creation.
+        
+        Args:
+            out_coords: Optional pre-allocated buffer for coordinates (N, 3)
+            out_types: Optional pre-allocated buffer for types (N,)
+            out_colors: Optional pre-allocated buffer for colors (N,)
+            
+        Returns: (occupancy_array, piece_type_array, valid_coords, valid_types, valid_colors)
+        """
+        max_pieces = 512 
+        
+        # Use provided buffers or allocate new ones
+        if out_coords is not None:
+             coords = out_coords
+        else:
+             coords = np.empty((max_pieces, 3), dtype=self._coord_dtype)
+             
+        if out_types is not None:
+             types = out_types
+        else:
+             types = np.empty(max_pieces, dtype=PIECE_TYPE_DTYPE)
+             
+        if out_colors is not None:
+             colors = out_colors
+        else:
+             colors = np.empty(max_pieces, dtype=COLOR_DTYPE)
+        
+        count = _extract_sparse_kernel(
+            self._occ, self._ptype, 
+            coords, types, colors
+        )
+        
+        # If using external buffers, we return the slice view of them
+        valid_coords = coords[:count]
+        valid_types = types[:count]
+        valid_colors = colors[:count]
+        
+        return self._occ, self._ptype, valid_coords, valid_types, valid_colors
+
+    def get_flat_occ_view(self) -> np.ndarray:
+        """Get a cached flattened view of the occupancy array.
+        
+        ✅ OPTIMIZATION: Avoids repeated flatten(order='F') calls which create copies.
+        The flat view is lazily created and invalidated when board changes.
+        
+        Returns:
+            Flattened occupancy array (SIZE^3,) in Fortran order
+        """
+        with self._flat_view_lock:
+            if self._flat_occ_view is None:
+                # Create cached flat view (this is the one allocation we cache)
+                self._flat_occ_view = self._occ.flatten(order='F')
+            return self._flat_occ_view
 
     @property
     def count(self) -> int:
@@ -740,6 +965,49 @@ class OccupancyCache:
             'empty_squares_percent': ((total_squares - occupied_squares) / total_squares) * 100
         }
 
+    def validate_consistency(self) -> Tuple[bool, str]:
+        """
+        Validate internal consistency of occupancy arrays.
+        Checks:
+        1. Occupancy vs Piece Type consistency (must mismatch 0/0)
+        2. Priest count tracking
+        """
+        # 1. Check occ vs ptype consistency
+        occ_mask = self._occ != 0
+        type_mask = self._ptype != 0
+        
+        if not np.array_equal(occ_mask, type_mask):
+            mismatch = occ_mask != type_mask
+            count = np.sum(mismatch)
+            indices = np.argwhere(mismatch)
+            examples = indices[:min(5, count)].tolist()
+            
+            # Diagnostic detail
+            example_details = []
+            for idx in examples:
+                x, y, z = idx
+                c = self._occ[x, y, z]
+                t = self._ptype[x, y, z]
+                example_details.append(f"({x},{y},{z}: Color={c}, Type={t})")
+            
+            msg = (f"Consistency Error: {count} squares have mismatched occupancy/type. "
+                   f"Examples: {', '.join(example_details)}")
+            return False, msg
+            
+        # 2. Check priest count
+        real_white_priests = np.sum((self._ptype == PieceType.PRIEST.value) & (self._occ == Color.WHITE))
+        real_black_priests = np.sum((self._ptype == PieceType.PRIEST.value) & (self._occ == Color.BLACK))
+        
+        stored_white = self._priest_count[0]
+        stored_black = self._priest_count[1]
+        
+        if stored_white != real_white_priests:
+             return False, f"Priest Count Error (White): Stored {stored_white} vs Real {real_white_priests}"
+        if stored_black != real_black_priests:
+             return False, f"Priest Count Error (Black): Stored {stored_black} vs Real {real_black_priests}"
+
+        return True, "OK"
+
     def _normalize_coords(self, coords: np.ndarray) -> np.ndarray:
         """Normalize coordinates to (N,3)."""
         coords = np.asarray(coords, dtype=COORD_DTYPE)
@@ -759,6 +1027,13 @@ class OccupancyCache:
             coord = self._normalize_coords(coord)
             
         x, y, z = coord[0]
+
+        # ✅ CRITICAL: Enforce Type/Color Consistency
+        if piece is not None:
+             ptype, pcolor = piece[0], piece[1]
+             if (ptype == 0 and pcolor != 0) or (ptype != 0 and pcolor == 0):
+                 raise ValueError(f"Inconsistent SetPosition at ({x},{y},{z}): Type={ptype}, Color={pcolor}")
+
         old_color = self._occ[x, y, z]
         old_type = self._ptype[x, y, z]
 
@@ -792,6 +1067,15 @@ class OccupancyCache:
         # ✅ OPTIMIZATION (#4): Only invalidate flat view, not  entire indices cache
         # King cache is already selectively invalidated above when needed
         self._flat_occ_view = None
+        
+        # ✅ OPTIMIZATION: Invalidate positions cache
+        if old_color != 0:
+            c_idx = 0 if old_color == Color.WHITE else 1
+            self._positions_dirty[c_idx] = True
+            
+        if piece is not None:
+             p_idx = 0 if piece[1] == Color.WHITE else 1
+             self._positions_dirty[p_idx] = True
 
     def set_position_fast(self, coord: np.ndarray, piece_type: int, color: int) -> None:
         """Fast path set: updates arrays directly.
@@ -799,14 +1083,15 @@ class OccupancyCache:
         WARNING: Assumes coord is valid (3,) array within bounds.
         Does NOT update priest count or king cache (use only for simulation/revert).
         """
+        # ✅ CRITICAL: Enforce Type/Color Consistency
+        if (piece_type == 0 and color != 0) or (piece_type != 0 and color == 0):
+             raise ValueError(f"Inconsistent SetPositionFast: Type={piece_type}, Color={color}")
+
         x, y, z = coord[0], coord[1], coord[2]
         self._occ[x, y, z] = color
         self._ptype[x, y, z] = piece_type
 
-    @njit(cache=True, nogil=True)
-    def _coord_to_flat_idx(coord: np.ndarray) -> np.ndarray:
-        """Vectorized coord (N,3) → flat index."""
-        return coord[:, 0] + SIZE * coord[:, 1] + SIZE * SIZE * coord[:, 2]
+
 
     def get_flattened_occupancy(self) -> np.ndarray:
         """
@@ -831,10 +1116,8 @@ class OccupancyCache:
         key = coords.data.tobytes()
 
         if key not in self._flat_indices_cache:
-            # Vectorized calculation - matches array indexing [x, y, z] and ravel('C') order
-            self._flat_indices_cache[key] = (
-                coords[:, 0] + SIZE * coords[:, 1] + SIZE * SIZE * coords[:, 2]
-            ).astype(np.int32)
+            # Vectorized calculation using centralized utility
+            self._flat_indices_cache[key] = CoordinateUtils.coord_to_idx(coords)
 
         return self._flat_indices_cache[key]
 
@@ -856,12 +1139,13 @@ class OccupancyCache:
                     np.empty(0, dtype=COLOR_DTYPE))
 
         # No reordering needed - coords are already in (x, y, z) order
-        coords_xyz = coords.astype(self._coord_dtype)
+        coords_xyz = coords.astype(self._coord_dtype, copy=False)
 
         # Extract piece types and colors at these positions (vectorized)
+        # ✅ OPTIMIZED: No astype needed - grids already store data in correct dtypes
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        piece_types = self._ptype[x, y, z].astype(PIECE_TYPE_DTYPE)
-        colors = self._occ[x, y, z].astype(COLOR_DTYPE)
+        piece_types = self._ptype[x, y, z]
+        colors = self._occ[x, y, z]
         
         return coords_xyz, piece_types, colors
 

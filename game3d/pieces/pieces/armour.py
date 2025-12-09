@@ -4,39 +4,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import jit
 
-from game3d.common.shared_types import (
-    COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
-    SIZE, ARMOUR as ARMOUR_TYPE, get_empty_coord_batch
-)
-from game3d.common.registry import register
-from game3d.movement.jump_engine import get_jump_movement_generator
+from game3d.common.shared_types import *
 from game3d.common.shared_types import Color, PieceType, Result
 
-
-if TYPE_CHECKING:
-    from game3d.game.gamestate import GameState
-    from game3d.cache.manager import OptimizedCacheManager
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
-
-def generate_armour_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate legal armour moves (King-like + Buffs)."""
-    pos_arr = pos.astype(COORD_DTYPE)
-
-    jump_engine = get_jump_movement_generator()
-    return jump_engine.generate_jump_moves(
-        cache_manager=cache_manager,
-        color=color,
-        pos=pos_arr,
-        directions=KING_MOVEMENT_VECTORS,
-        allow_capture=True,
-        piece_type=PieceType.ARMOUR,
-        buffed_directions=BUFFED_KING_MOVEMENT_VECTORS
-    )
 
 def is_armour_protected(sq: np.ndarray, cache_manager: 'OptimizedCacheManager') -> bool:
     """Check if square contains an ARMOUR piece."""
@@ -49,7 +22,7 @@ def is_armour_protected(sq: np.ndarray, cache_manager: 'OptimizedCacheManager') 
 def batch_is_armour_protected(
     coords: np.ndarray,
     cache_manager: 'OptimizedCacheManager'
-) -> np.ndarray:
+):
     """Vectorized armour protection check."""
     coords_arr = np.atleast_2d(coords).astype(COORD_DTYPE)
     if coords_arr.shape[0] == 0:
@@ -60,7 +33,7 @@ def batch_is_armour_protected(
 def get_armoured_squares(
     cache_manager: 'OptimizedCacheManager',
     controller: Color
-) -> np.ndarray:
+):
     """Get all squares occupied by ARMOUR pieces of given color - fully vectorized."""
     # Get all pieces of the controller color - avoid list() conversion
     coords_list = []
@@ -126,16 +99,5 @@ def batch_check_armour_protection(
     # Use numba-optimized function for performance
     return _batch_check_armour_protection_numba(coords_arr, armoured_squares_arr)
 
-@register(PieceType.ARMOUR)
-def armour_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatcher for ARMOUR piece moves."""
-    return generate_armour_moves(state.cache_manager, state.color, pos)
+__all__ = []
 
-__all__ = [
-    "generate_armour_moves",
-    "is_armour_protected",
-    "batch_is_armour_protected",
-    "get_armoured_squares",
-    "batch_check_armour_protection",
-    "armour_move_dispatcher"
-]

@@ -11,14 +11,9 @@ from typing import List, TYPE_CHECKING
 
 from game3d.common.shared_types import Color, PieceType, Result, get_empty_coord_batch
 from game3d.common.shared_types import COORD_DTYPE, SIZE, SIZE_SQUARED, BOOL_DTYPE
-from game3d.common.registry import register
-from game3d.movement.movepiece import Move
-from game3d.movement.jump_engine import get_jump_movement_generator
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 from game3d.pieces.pieces.kinglike import KING_MOVEMENT_VECTORS, BUFFED_KING_MOVEMENT_VECTORS
 
@@ -30,7 +25,7 @@ def _generate_friendlytp_moves_fused(
     directions: np.ndarray,
     occ_3d: np.ndarray,
     my_color: int
-) -> np.ndarray:
+):
     """
     Fused kernel:
     1. Finds all valid network squares (empty neighbors of friendly pieces)
@@ -116,11 +111,6 @@ def _generate_friendlytp_moves_fused(
 
     return moves[:count]
 
-def generate_friendlytp_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
     """Generate friendly teleporter moves: king walks + network teleports."""
     pos_arr = pos.astype(COORD_DTYPE)
     
@@ -146,8 +136,5 @@ def generate_friendlytp_moves(
         color
     )
 
-@register(PieceType.FRIENDLYTELEPORTER)
-def friendlytp_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    return generate_friendlytp_moves(state.cache_manager, state.color, pos)
+__all__ = []
 
-__all__ = ["generate_friendlytp_moves"]

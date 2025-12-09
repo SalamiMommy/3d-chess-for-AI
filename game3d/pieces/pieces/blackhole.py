@@ -6,29 +6,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit, prange
 
-from game3d.common.registry import register
-from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move
-from game3d.common.shared_types import (
-    COORD_DTYPE, COLOR_DTYPE, Color, PieceType, BLACKHOLE, BLACKHOLE_PULL_RADIUS,
-    SIZE, SIZE_SQUARED, BOOL_DTYPE
-)
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
-
-
-
-
-def generate_blackhole_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate blackhole moves (king-like single steps)."""
-    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.BLACKHOLE)
+if TYPE_CHECKING: pass
 
 @njit(cache=True, fastmath=True, parallel=True)
 def _suck_candidates_numba(
@@ -139,7 +120,7 @@ def _suck_candidates_numba(
 def suck_candidates_vectorized(
     cache_manager: 'OptimizedCacheManager',
     controller: Color,
-) -> np.ndarray:
+):
     """Find enemies to pull toward blackholes - optimized with Numba."""
     # Get all friendly pieces
     all_coords = cache_manager.occupancy_cache.get_positions(controller)
@@ -176,11 +157,5 @@ def suck_candidates_vectorized(
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()
     return _suck_candidates_numba(enemy_coords, blackhole_coords, flattened_occ)
 
+__all__ = ['suck_candidates_vectorized']
 
-@register(PieceType.BLACKHOLE)
-def blackhole_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatch blackhole moves with numpy-native coordinates."""
-    return generate_blackhole_moves(state.cache_manager, state.color, pos)
-
-
-__all__ = ["generate_blackhole_moves", "suck_candidates_vectorized"]

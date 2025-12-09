@@ -4,36 +4,15 @@ from __future__ import annotations
 from typing import List, Set, TYPE_CHECKING
 import numpy as np
 
-from game3d.common.shared_types import (
-    COORD_DTYPE, COLOR_DTYPE, RADIUS_1_OFFSETS,
-    SPEEDER, SLOWER, Color, PieceType, Result
-)
-from game3d.common.registry import register
-from game3d.pieces.pieces.kinglike import generate_king_moves
-from game3d.movement.movepiece import Move
+from game3d.common.shared_types import *
 from game3d.common.coord_utils import in_bounds_vectorized
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
-
-
-
-
-def generate_speeder_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray
-) -> np.ndarray:
-    """Generate king-like moves for the Speeder piece."""
-    x, y, z = pos[0], pos[1], pos[2]
-    return generate_king_moves(cache_manager, color, pos, piece_type=PieceType.SPEEDER)
-
+if TYPE_CHECKING: pass
 
 def buffed_squares(
     cache_manager: 'OptimizedCacheManager',
     effect_color: int,
-) -> Set[bytes]:
+):
     """Get coordinates within 1-sphere of friendly Speeder pieces."""
     # Get all friendly pieces
     all_coords = cache_manager.occupancy_cache.get_positions(effect_color)
@@ -71,11 +50,5 @@ def buffed_squares(
     # Convert to set of bytes
     return {c.tobytes() for c in friendly_coords}
 
+__all__ = ['buffed_squares']
 
-@register(PieceType.SPEEDER)
-def speeder_move_dispatcher(state: 'GameState', pos: np.ndarray) -> np.ndarray:
-    """Dispatch Speeder moves from GameState."""
-    return generate_speeder_moves(state.cache_manager, state.color, pos)
-
-
-__all__ = ['generate_speeder_moves', 'buffed_squares']

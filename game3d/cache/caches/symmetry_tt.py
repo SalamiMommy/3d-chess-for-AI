@@ -162,13 +162,14 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
 
             # Transform move if needed
             canonical_move = best_move
-            if canonical_transform != "identity":
+            if canonical_transform != 0:
                 # Transform move coordinates
+                # canonical_transform is already the int index
                 from_coord = self._apply_transform_vectorized(
-                    best_move.from_coord, self._TMAP[canonical_transform]
+                    best_move.from_coord, canonical_transform
                 )
                 to_coord = self._apply_transform_vectorized(
-                    best_move.to_coord, self._TMAP[canonical_transform]
+                    best_move.to_coord, canonical_transform
                 )
                 canonical_move = type(best_move)(from_coord, to_coord, best_move.piece_type,
                                                best_move.is_capture, best_move.captured_type,

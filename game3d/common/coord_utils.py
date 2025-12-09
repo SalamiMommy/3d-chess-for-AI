@@ -131,20 +131,33 @@ class CoordinateUtils:
         
         return result
 
+# Moved out of class and modified as per instruction
     @staticmethod
-    @njit(cache=True, fastmath=True, parallel=True)
+    @njit(cache=True, nogil=True)
     def _idx_to_coord_batch_numba(indices: np.ndarray) -> np.ndarray:
         """Numba index to coordinate conversion."""
         n = indices.shape[0]
-        result = np.empty((n, 3), dtype=BATCH_COORD_DTYPE)
+        result = np.empty((n, 3), dtype=COORD_DTYPE)
         
-        for i in prange(n):
+        for i in range(n):
             idx = indices[i]
-            result[i, 0] = idx % SIZE
-            result[i, 1] = (idx // SIZE) % SIZE
-            result[i, 2] = idx // SIZE_SQUARED
-        
+            # Deinterleave bits (simple layout here actually)
+            # Layout: x + y*SIZE + z*SIZE*SIZE
+            w = SIZE
+            w2 = SIZE * SIZE
+            
+            z = idx // w2
+            rem = idx % w2
+            y = rem // w
+            x = rem % w
+            
+            result[i, 0] = x
+            result[i, 1] = y
+            result[i, 2] = z
+            
         return result
+
+
 
     @staticmethod
     def in_bounds(coords: np.ndarray) -> np.ndarray:
@@ -547,9 +560,39 @@ def get_path_between(start: np.ndarray, end: np.ndarray) -> np.ndarray:
     end = np.asarray(end, dtype=COORD_DTYPE)
     return _get_path_between_numba(start, end)
 
+@njit(cache=True, fastmath=True, parallel=True)
 def coords_to_keys(coords: np.ndarray) -> np.ndarray:
-    """Convert coordinates to cache keys using bit packing: x | (y << 9) | (z << 18)."""
-    return coords[:, 0] | (coords[:, 1] << 9) | (coords[:, 2] << 18)
+    """
+    Convert coordinates to cache keys using bit packing: x | (y << 9) | (z << 18).
+    
+    ✅ OPTIMIZED: Numba-compiled version avoids intermediate array allocation (astype)
+    and handles iteration efficiently.
+    """
+    n = coords.shape[0]
+    result = np.empty(n, dtype=np.int64)
+    for i in prange(n):
+        result[i] = int(coords[i, 0]) | (int(coords[i, 1]) << 9) | (int(coords[i, 2]) << 18)
+    return result
+
+
+# ✅ OPT 2.1: SIMD-friendly vectorized version for small batches
+def coords_to_keys_adaptive(coords: np.ndarray) -> np.ndarray:
+    """
+    Convert coordinates to cache keys with adaptive dispatch.
+    
+    ✅ OPTIMIZED: Uses pure NumPy for small batches (< 16) to avoid Numba overhead,
+    and Numba parallel version for larger batches.
+    """
+    n = coords.shape[0]
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    elif n < 16:
+        # Pure NumPy vectorized for small batches - avoids Numba dispatch overhead
+        return (coords[:, 0].astype(np.int64) | 
+                (coords[:, 1].astype(np.int64) << 9) | 
+                (coords[:, 2].astype(np.int64) << 18))
+    else:
+        return coords_to_keys(coords)
 
 @njit(cache=True, fastmath=True, inline='always')
 def coord_to_key_scalar(x: int, y: int, z: int) -> int:
@@ -565,7 +608,8 @@ def coord_to_key_scalar(x: int, y: int, z: int) -> int:
     Returns:
         Integer key: x | (y << 9) | (z << 18)
     """
-    return x | (y << 9) | (z << 18)
+    # Force 64-bit arithmetic to prevent overflow
+    return int(x) | (int(y) << 9) | (int(z) << 18)
 
 def get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
     """Get the 6 direct (orthogonal) neighbors of a single coordinate."""
@@ -577,4 +621,35 @@ def get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
 __all__.append('get_path_between')
 __all__.append('coord_to_key_scalar')
 __all__.append('coords_to_keys')
+__all__.append('coords_to_keys_adaptive')  # ✅ OPT 2.1
+__all__.append('pack_coords')
+__all__.append('unpack_coords')
+
+@njit(cache=True, nogil=True)
+def pack_coords(coords: np.ndarray) -> np.ndarray:
+    """
+    Pack (N, 3) coordinates into (N,) 64-bit integer keys.
+    Format: x | (y << 9) | (z << 18)
+    """
+    n = coords.shape[0]
+    keys = np.empty(n, dtype=INDEX_DTYPE)
+    for i in range(n):
+        x, y, z = coords[i]
+        keys[i] = x | (y << 9) | (z << 18)
+    return keys
+
+@njit(cache=True, nogil=True)
+def unpack_coords(keys: np.ndarray) -> np.ndarray:
+    """
+    Unpack (N,) keys into (N, 3) coordinates.
+    Format: x | (y << 9) | (z << 18)
+    """
+    n = keys.shape[0]
+    coords = np.empty((n, 3), dtype=COORD_DTYPE)
+    for i in range(n):
+        k = keys[i]
+        coords[i, 0] = k & 0x1FF
+        coords[i, 1] = (k >> 9) & 0x1FF
+        coords[i, 2] = (k >> 18) & 0x1FF
+    return coords
 

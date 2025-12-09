@@ -4,13 +4,8 @@ from typing import List, TYPE_CHECKING, Union
 import numpy as np
 
 from game3d.common.shared_types import Color, PieceType, COORD_DTYPE
-from game3d.common.registry import register
-from game3d.movement.slider_engine import get_slider_movement_generator
-from game3d.movement.movepiece import Move
 
-if TYPE_CHECKING:
-    from game3d.cache.manager import OptimizedCacheManager
-    from game3d.game.gamestate import GameState
+if TYPE_CHECKING: pass
 
 # Optimized 152 primitive directions using numpy operations
 def _vector_dirs_numpy() -> np.ndarray:
@@ -60,38 +55,5 @@ def _vector_dirs_numpy() -> np.ndarray:
 # Generate and cache the vector directions
 VECTOR_DIRECTIONS = _vector_dirs_numpy()
 
-def generate_vector_slider_moves(
-    cache_manager: 'OptimizedCacheManager',
-    color: int,
-    pos: np.ndarray,
-    max_steps: Union[int, np.ndarray] = 8,
-    ignore_occupancy: bool = False
-) -> np.ndarray:
-    """Generate vector slider moves from numpy-native position array."""
-    pos_arr = pos.astype(COORD_DTYPE)
-    
-    # Validate position
-    if pos_arr.ndim == 1:
-        # Lazy import to avoid circular dependency
-        from game3d.common.coord_utils import in_bounds_vectorized
-        if not in_bounds_vectorized(pos_arr.reshape(1, 3))[0]:
-            return np.empty((0, 6), dtype=COORD_DTYPE)
+__all__ = ['VECTOR_DIRECTIONS']
 
-    # Use the slider engine
-    slider_engine = get_slider_movement_generator()
-    return slider_engine.generate_slider_moves_array(
-        cache_manager=cache_manager,
-        color=color,
-        pos=pos_arr,
-        directions=VECTOR_DIRECTIONS,
-        max_distance=max_steps,
-        ignore_occupancy=ignore_occupancy
-    )
-
-@register(PieceType.VECTORSLIDER)
-def vectorslider_move_dispatcher(state: 'GameState', pos: np.ndarray, ignore_occupancy: bool = False) -> np.ndarray:
-    """Registered dispatcher for Vector Slider moves."""
-    """Registered dispatcher for Vector Slider moves."""
-    return generate_vector_slider_moves(state.cache_manager, state.color, pos, 8, ignore_occupancy)
-
-__all__ = ['VECTOR_DIRECTIONS', 'generate_vector_slider_moves', 'vectorslider_move_dispatcher']
