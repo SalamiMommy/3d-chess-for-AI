@@ -1330,6 +1330,29 @@ class MoveCache:
             matrix_slice = self._attack_matrix[color_idx]
             keys_array = _extract_targeting_pieces_for_squares(matrix_slice, target_flats, SIZE)
         
+        # ✅ FIX: Explicitly check for King adjacency
+        # Kings (and some other pieces) might "defend" friendly squares (e.g. Pawn at (5,3,4) blocked Black King at (5,4,4))
+        # but pseudolegal generator usually excludes friendly squares, so they are NOT in _attack_matrix.
+        # If the friendly piece is captured, the King MUST be regenerated to see the new attack line.
+        # We manually add the King to the keys list if it is within range (Chebyshev distance <= 1).
+        
+        occ_cache = getattr(self.cache_manager, 'occupancy_cache', None)
+        if occ_cache is not None and hasattr(occ_cache, 'find_king'):
+             king_pos = occ_cache.find_king(color)
+             if king_pos is not None:
+                 kx, ky, kz = int(king_pos[0]), int(king_pos[1]), int(king_pos[2])
+                 fx, fy, fz = int(from_coord[0]), int(from_coord[1]), int(from_coord[2])
+                 tx, ty, tz = int(to_coord[0]), int(to_coord[1]), int(to_coord[2])
+                 
+                 # Check adjacency (Chebyshev distance <= 1)
+                 dist_f = max(abs(kx - fx), abs(ky - fy), abs(kz - fz))
+                 dist_t = max(abs(kx - tx), abs(ky - ty), abs(kz - tz))
+                 
+                 if dist_f <= 1 or dist_t <= 1:
+                     king_key = kx | (ky << 9) | (kz << 18)
+                     # Append to keys_array
+                     keys_array = np.append(keys_array, np.int64(king_key))
+        
         # Deduplicate keys (outside lock) using Numba-accelerated unique
         if keys_array.size == 0:
             return ([], np.empty((0, 3), dtype=COORD_DTYPE), np.empty(0, dtype=np.int64))

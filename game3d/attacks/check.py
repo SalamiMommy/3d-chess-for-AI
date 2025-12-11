@@ -517,13 +517,7 @@ def batch_moves_leave_king_in_check_fused(
     )
     
     if attack_mask is None:
-        # No cached moves - use fast attack check
-        from game3d.attacks.fast_attack import square_attacked_by_fast
-        is_attacked = square_attacked_by_fast(game_state.board, king_pos_arr, opponent_color, cache)
-        if not is_attacked:
-            # King not in check - all moves are potentially safe
-            return np.zeros(len(moves), dtype=BOOL_DTYPE)
-        # Fallback to old behavior
+        # No cached moves - fallback to full check
         return batch_moves_leave_king_in_check(game_state, moves, cache)
     
     king_currently_attacked = attack_mask[kx, ky, kz]
@@ -554,6 +548,11 @@ def batch_moves_leave_king_in_check_fused(
                     results[idx] = move_would_leave_king_in_check(game_state, moves[idx], cache)
                 else:
                     results[idx] = True
+            else:
+                # Not in attack mask, but check for capture of defended piece
+                captured_ptype, _ = occ_cache.get_fast(dest) if hasattr(occ_cache, 'get_fast') else (0, 0)
+                if captured_ptype != 0:
+                    results[idx] = move_would_leave_king_in_check(game_state, moves[idx], cache)
         # Non-king moves are safe when not in check
         return results
     

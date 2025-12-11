@@ -133,10 +133,21 @@ class LegalMoveGenerator:
             color_mask = (all_occ_colors == state.color)
             global_indices = np.where(color_mask)[0]
             
-            target_global_indices = global_indices[dirty_indices].astype(np.int32)
+            # ✅ FIX: Validate indices before access to prevent crash
+            if isinstance(dirty_indices, list):
+                dirty_indices = np.array(dirty_indices, dtype=np.int32)
             
-            # Generate
-            batch_new_moves = generate_pseudolegal_moves_subset(buffer, target_global_indices)
+            valid_dirty = dirty_indices[dirty_indices < len(global_indices)]
+            if len(valid_dirty) < len(dirty_indices):
+                pass
+            
+            if len(valid_dirty) == 0:
+                 batch_new_moves = np.empty((0, 6), dtype=COORD_DTYPE)
+            else:
+                target_global_indices = global_indices[valid_dirty].astype(np.int32)
+                
+                # Generate
+                batch_new_moves = generate_pseudolegal_moves_subset(buffer, target_global_indices)
             
             if batch_new_moves.size > 0:
                 new_moves_list.append(batch_new_moves)
@@ -158,7 +169,8 @@ class LegalMoveGenerator:
         raw_moves = self._generate_raw_pseudolegal(state)
         
         # 2. Filter basic constraints (Frozen, Hive, Wall) but SKIP King Safety
-        filtered_moves = self._apply_all_filters(state, raw_moves, check_king_safety=False)
+        # ✅ FIX: is_attack_generation=True allows frozen/king-capture moves (for check detection)
+        filtered_moves = self._apply_all_filters(state, raw_moves, check_king_safety=False, is_attack_generation=True)
         
         # 3. Cache as Pseudolegal Moves (updates attack mask)
         # 3. Cache as Pseudolegal Moves (updates attack mask)
@@ -250,8 +262,8 @@ class LegalMoveGenerator:
             clean_moves = existing_moves[keep_mask]
             all_new_moves = np.concatenate(dirty_new_moves)
             
-            # Filter new moves for constraints
-            filtered_new = self._apply_all_filters(state, all_new_moves, check_king_safety=False)
+            # Filter new_moves: is_attack_generation=True ensures consistent attack mask
+            filtered_new = self._apply_all_filters(state, all_new_moves, check_king_safety=False, is_attack_generation=True)
             
             # Combine and store
             combined = np.vstack([clean_moves, filtered_new]) if clean_moves.size > 0 and filtered_new.size > 0 else (clean_moves if clean_moves.size > 0 else filtered_new)
@@ -323,7 +335,7 @@ class LegalMoveGenerator:
         return stats
 
 
-    def _apply_all_filters(self, state: 'GameState', moves: np.ndarray, check_king_safety: bool = True) -> np.ndarray:
+    def _apply_all_filters(self, state: 'GameState', moves: np.ndarray, check_king_safety: bool = True, is_attack_generation: bool = False) -> np.ndarray:
         """Apply all move filters (check, pin, wall capture, etc.)."""
         if moves.size == 0:
             return moves
@@ -339,17 +351,30 @@ class LegalMoveGenerator:
         has_priest = occ_cache.has_priest(state.color) if check_king_safety else False
 
         # 1. Filter: Frozen Pieces (Cheap - Vectorized Aura Check)
-
-        # 1. Filter: Frozen Pieces (Cheap - Vectorized Aura Check)
-        is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
-            moves[:, :3], state.turn_number, state.color
-        )
-        if np.any(is_frozen):
-            moves = moves[~is_frozen]
-            if moves.size == 0: 
-                logger.warning(f"[_apply_all_filters] ALL moves filtered by FROZEN (Initial: {initial_count})")
-                return moves
-            # logger.info(f"[_apply_all_filters] After Frozen: {moves.shape[0]}")
+        # ✅ LOGIC CHANGE: Frozen pieces DO generate attacks (for Check), but CANNOT move (for Play).
+        # So we skip this filter if is_attack_generation=True.
+        if not is_attack_generation:
+            is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
+                moves[:, :3], state.turn_number, state.color
+            )
+            if np.any(is_frozen):
+                moves = moves[~is_frozen]
+                if moves.size == 0: 
+                    # logger.warning(f"[_apply_all_filters] ALL moves filtered by FROZEN (Initial: {initial_count})")
+                    return moves
+                # logger.info(f"[_apply_all_filters] After Frozen: {moves.shape[0]}")
+        
+        # 2. Filter: King Capture Prevention (Standard Chess Rule)
+        # ✅ LOGIC CHANGE: King capture is a valid "Attack" (Check), but CANNOT be played.
+        # So we identify and remove moves capturing King only if NOT generating attacks.
+        if not is_attack_generation:
+            _, dest_types = occ_cache.batch_get_attributes_unsafe(moves[:, 3:])
+            king_capture_mask = dest_types == PieceType.KING
+            
+            if np.any(king_capture_mask):
+                moves = moves[~king_capture_mask]
+                if moves.size == 0:
+                    return moves
 
         # 2. Filter: Hive Movement History (Cheap - Set Lookup)
         if hasattr(state, '_moved_hive_positions') and state._moved_hive_positions:
