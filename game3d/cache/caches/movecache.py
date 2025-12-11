@@ -666,6 +666,10 @@ class MoveCache:
                 # check.py usually generates attacks if needed.
                 return False # Cannot determine if dirty/missing
             
+            # ✅ FIX: Check if we have pending updates for attacking pieces (stale bitboard)
+            if self._affected_keys_per_color[attacker_idx]:
+                 return False # Cache is stale due to dirty pieces
+            
             bb = self._attack_bitboards[attacker_idx]
             if bb is None:
                 return False
@@ -684,7 +688,7 @@ class MoveCache:
                 if piece_count > 0:
                     priest_count = self.cache_manager.occupancy_cache.get_priest_count(color)
                     
-                    logger.debug(f"No legal moves for {Color(color).name} - {piece_count} pieces (Priests: {priest_count})")
+                    # logger.debug(f"No legal moves for {Color(color).name} - {piece_count} pieces (Priests: {priest_count})")
                     
                     # Check cache consistency
                     is_valid, msg = self.cache_manager.occupancy_cache.validate_consistency()
@@ -800,6 +804,10 @@ class MoveCache:
         with self._lock_shards[color_idx % 4]:
             if self._bitboard_dirty[color_idx] or self._attack_bitboards[color_idx] is None:
                 return None
+            
+            # ✅ FIX: Check if we have pending updates (stale bitboard)
+            if self._affected_keys_per_color[color_idx]:
+                return None # Cache is stale due to dirty pieces
             
             # Check if we have a valid cached boolean mask
             if self._cached_boolean_mask[color_idx] is not None:
@@ -1097,6 +1105,11 @@ class MoveCache:
             self._update_reverse_map(piece_id, moves)
             self._piece_moves_cache[piece_id] = moves
             self._piece_moves_cache.move_to_end(piece_id)
+
+            # ✅ FIX: Invalidate global aggregates when individual piece moves change
+            # This prevents "Ghost Attacks" where bitboards retain old attacks
+            self.invalidate_pseudolegal_moves(color)
+            self.invalidate_legal_moves(color)
 
 
 

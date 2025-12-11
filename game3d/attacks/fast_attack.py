@@ -8,7 +8,7 @@ import numpy as np
 from numba import njit, prange
 from game3d.common.shared_types import (
     COORD_DTYPE, BOOL_DTYPE, SIZE, PieceType, Color,
-    PIECE_TYPE_DTYPE, COLOR_DTYPE
+    PIECE_TYPE_DTYPE, COLOR_DTYPE, RADIUS_2_OFFSETS
 )
 
 # =============================================================================
@@ -46,7 +46,7 @@ PIECE_ATTACK_REGISTRY = {
     PieceType.HIVE.value: (KING_VECTORS, MOVE_TYPE_JUMP),
     PieceType.ARMOUR.value: (KING_VECTORS, MOVE_TYPE_JUMP),
     PieceType.ARCHER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
-    PieceType.BOMB.value: (KING_VECTORS, MOVE_TYPE_JUMP),
+    PieceType.BOMB.value: (RADIUS_2_OFFSETS, MOVE_TYPE_JUMP),
     PieceType.SWAPPER.value: (KING_VECTORS, MOVE_TYPE_JUMP),
     PieceType.PANEL.value: (PANEL_MOVEMENT_VECTORS, MOVE_TYPE_JUMP),
     # Slider pieces

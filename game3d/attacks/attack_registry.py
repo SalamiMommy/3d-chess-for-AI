@@ -309,6 +309,13 @@ def _fast_attack_kernel_extended(
             dz = abs(tz - az)
             if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz > 0):
                 is_attacking = True
+
+        elif atype == 26: # BOMB (Radius 2)
+            dx = abs(tx - ax)
+            dy = abs(ty - ay)
+            dz = abs(tz - az)
+            if dx <= 2 and dy <= 2 and dz <= 2 and (dx + dy + dz > 0):
+                is_attacking = True
                 
         # --- 2. Generic Lookup ---
         else:

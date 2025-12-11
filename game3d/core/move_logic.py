@@ -87,7 +87,21 @@ def calculate_move_effects(move: np.ndarray, buffer: GameBuffer) -> MoveEffects:
             ptype = buffer.board_type[sq[0], sq[1], sq[2]]
             
             if ptype == PieceType.KING:
-                continue # King safe
+                # Check for Priest protection
+                target_king_color_val = buffer.board_color[sq[0], sq[1], sq[2]]
+                
+                # Determine priest count from metadata
+                # meta[6] = White Priests, meta[7] = Black Priests
+                # Map: Color.WHITE(1)->6, Color.BLACK(2)->7
+                if target_king_color_val == 1: # White
+                     priest_count = buffer.meta[6]
+                elif target_king_color_val == 2: # Black
+                     priest_count = buffer.meta[7]
+                else:
+                     priest_count = 0
+                     
+                if priest_count > 0:
+                    continue # King safe due to priests
                 
             if ptype == 0:
                 # Empty square, usually ignored unless we want to explicit clear
