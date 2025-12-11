@@ -326,6 +326,11 @@ def _game_worker_client(args):
             game._state._legal_moves_cache = None
             move_count += 1
 
+            # ✅ FIX: Check if game is over after move execution
+            if receipt.is_game_over:
+                worker_logger.debug(f"Worker {worker_id}: Game over detected via receipt (result={receipt.result})")
+                break
+
             # Observe
             opponent = opponents[game.state.color]
             if isinstance(opponent, OpponentBase):

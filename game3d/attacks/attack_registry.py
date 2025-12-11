@@ -445,6 +445,11 @@ def square_attacked_by_extended(
     # Use dummy history
     history = np.zeros(MAX_HISTORY_SIZE, dtype=HASH_DTYPE)
     
+    # Empty aura maps (not relevant for basic attack check)
+    is_buffed = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+    is_debuffed = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+    is_frozen = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+    
     # Create minimal buffer without copying dense arrays
     buffer = GameBuffer(
         occupied_coords,
@@ -454,6 +459,9 @@ def square_attacked_by_extended(
         ptype_grid,      # Read-only access to existing grid
         occ_grid,        # Read-only access to existing grid
         board_color_flat,
+        is_buffed,
+        is_debuffed,
+        is_frozen,
         meta,
         0, # zkey (unused)
         history,

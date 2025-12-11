@@ -739,8 +739,63 @@ def square_attacked_by_incremental(
     cached_opponent_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
     if cached_opponent_moves is None:
         # No cached moves - use fast_attack which regenerates from current occupancy
+        # ✅ FIX: Must apply the simulated move before fallback check, then revert
         from game3d.attacks.fast_attack import square_attacked_by_fast
-        return square_attacked_by_fast(board, square, attacker_color, cache)
+        
+        occ_cache = cache.occupancy_cache
+        
+        # Save original state
+        if hasattr(occ_cache, 'get_fast'):
+            from_ptype, from_color = occ_cache.get_fast(from_coord)
+            to_ptype, to_color = occ_cache.get_fast(to_coord)
+        else:
+            from_data = occ_cache.get(from_coord)
+            from_ptype = from_data['piece_type'] if from_data else 0
+            from_color = from_data['color'] if from_data else 0
+            to_data = occ_cache.get(to_coord)
+            to_ptype = to_data['piece_type'] if to_data else 0
+            to_color = to_data['color'] if to_data else 0
+        
+        # Apply simulated move
+        if hasattr(occ_cache, 'set_position_fast'):
+            occ_cache.set_position_fast(from_coord, 0, 0)  # Clear source
+            if from_ptype != 0:
+                occ_cache.set_position_fast(to_coord, from_ptype, from_color)  # Piece moves to dest
+            # ✅ FIX: Mark positions cache as dirty so get_positions returns fresh data
+            occ_cache._positions_dirty[0] = True
+            occ_cache._positions_dirty[1] = True
+        else:
+            occ_cache.set_position(from_coord, None)
+            if from_ptype != 0:
+                occ_cache.set_position(to_coord, np.array([from_ptype, from_color]))
+        
+        try:
+            result = square_attacked_by_fast(board, square, attacker_color, cache)
+        finally:
+            # Revert the simulated move
+            if hasattr(occ_cache, 'set_position_fast'):
+                if from_ptype != 0:
+                    occ_cache.set_position_fast(from_coord, from_ptype, from_color)
+                else:
+                    occ_cache.set_position_fast(from_coord, 0, 0)
+                if to_ptype != 0:
+                    occ_cache.set_position_fast(to_coord, to_ptype, to_color)
+                else:
+                    occ_cache.set_position_fast(to_coord, 0, 0)
+                # ✅ FIX: Mark positions cache dirty again so original positions are re-read
+                occ_cache._positions_dirty[0] = True
+                occ_cache._positions_dirty[1] = True
+            else:
+                if from_ptype != 0:
+                    occ_cache.set_position(from_coord, np.array([from_ptype, from_color]))
+                else:
+                    occ_cache.set_position(from_coord, None)
+                if to_ptype != 0:
+                    occ_cache.set_position(to_coord, np.array([to_ptype, to_color]))
+                else:
+                    occ_cache.set_position(to_coord, None)
+        
+        return result
     
     # Identify pieces affected by the move
     affected_ids, affected_coords, affected_keys = cache.move_cache.get_pieces_affected_by_move(
@@ -1098,22 +1153,43 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
         
     king_pos_arr = king_pos.astype(COORD_DTYPE)
     
-    # 2. Get Opponent Moves (pseudolegal is fine for attack detection)
-    move_cache = cache.move_cache
-    opponent_moves = move_cache.get_pseudolegal_moves(opponent_color)
+    # 2. ✅ FIX: ALWAYS regenerate fresh moves for attacker identification
+    # Cached moves may have stale source coordinates from pieces that moved/were captured
+    # This is terminal logging, not performance-critical, so correctness matters most
+    from game3d.core.buffer import state_to_buffer, GameBuffer
+    from game3d.core.api import generate_pseudolegal_moves
     
-    if opponent_moves is None:
-        # Cache miss - Force generation
-        from game3d.core.buffer import state_to_buffer
-        from game3d.core.api import generate_pseudolegal_moves
-        
-        # Use MinimalStateProxy to switch color without full GameState copy
-        dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
-        buffer = state_to_buffer(dummy_state, readonly=True)
-        opponent_moves = generate_pseudolegal_moves(buffer)
-        
-        # Store in cache for future use (and to generate attack mask)
-        move_cache.store_pseudolegal_moves(opponent_color, opponent_moves)
+    # Use MinimalStateProxy to switch color without full GameState copy
+    dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
+    buffer = state_to_buffer(dummy_state, readonly=True)
+    
+    # ✅ FIX: Create buffer with EMPTY freeze map for attack detection
+    # Frozen pieces can't MOVE, but they still ATTACK squares!
+    # Without this fix, frozen pieces are skipped and not detected as attackers,
+    # leading to "Attackers: Unknown" in checkmate logs.
+    empty_frozen = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+    buffer = GameBuffer(
+        buffer.occupied_coords,
+        buffer.occupied_types,
+        buffer.occupied_colors,
+        buffer.occupied_count,
+        buffer.board_type,
+        buffer.board_color,
+        buffer.board_color_flat,
+        buffer.is_buffed,
+        buffer.is_debuffed,
+        empty_frozen,  # ← Override freeze map to allow frozen pieces to "attack"
+        buffer.meta,
+        buffer.zkey,
+        buffer.history,
+        buffer.history_count
+    )
+    
+    opponent_moves = generate_pseudolegal_moves(buffer)
+    
+    if opponent_moves.size == 0:
+        logger.warning(f"get_attackers: No opponent moves generated (opponent={Color(opponent_color).name}, buffer.occupied_count={buffer.occupied_count})")
+        return []
     
 
 
@@ -1121,31 +1197,7 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
     attacker_indices = _find_attackers_of_square(king_pos_arr, opponent_moves, opponent_moves[:, :3])
     
     if attacker_indices.size == 0:
-        # Fallback: If no attackers found via cache, force regeneration IGNORING cache
-        # This handles cases where cache might be desynced (empty but valid) while check actually exists
-        from game3d.core.buffer import state_to_buffer
-        from game3d.core.api import generate_pseudolegal_moves
-        
-        # Create fresh buffer from current board state
-        dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
-        buffer = state_to_buffer(dummy_state, readonly=True)
-        fresh_moves = generate_pseudolegal_moves(buffer)
-        
-        if fresh_moves.size > 0:
-            # Re-run detection on fresh moves
-            attacker_indices = _find_attackers_of_square(king_pos_arr, fresh_moves, fresh_moves[:, :3])
-            if attacker_indices.size > 0:
-                # Found attackers that cache missed!
-                opponent_moves = fresh_moves
-            else:
-                # Optionally log if fallback failed to find anything even after regen
-                # But typically returns empty list
-                pass
-        else:
-             # Fallback generated no moves
-             pass
-    
-    if attacker_indices.size == 0:
+        logger.warning(f"get_attackers: {opponent_moves.shape[0]} moves generated but none target king at {king_pos_arr}")
         return []
         
     # 4. Format Output
