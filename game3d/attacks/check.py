@@ -1132,14 +1132,15 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
     """
     Get a list of attackers targeting the current player's king.
     
-    Uses cached moves to identify attackers, ensuring consistency with is_check().
+    Uses geometric attack detection (same as is_check) to identify attackers.
+    This ensures consistency with how check was detected.
     
     Returns:
         List of strings, e.g., ["ROOK at (0,0,5)", "KNIGHT at (2,2,2)"]
     """
     cache = cache or getattr(game_state, 'cache_manager', None)
     if not cache:
-        return [] # Cannot determine without cache
+        return []
 
     king_color = game_state.color
     opponent_color = Color(king_color).opposite().value
@@ -1148,84 +1149,109 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
     occ_cache = cache.occupancy_cache
     king_pos = occ_cache.find_king(king_color)
     if king_pos is None:
-        return [] # No king, no attackers (or handled elsewhere)
+        return []
         
     king_pos_arr = king_pos.astype(COORD_DTYPE)
     
-    # 2. ✅ FIX: ALWAYS regenerate fresh moves for attacker identification
-    # Cached moves may have stale source coordinates from pieces that moved/were captured
-    # This is terminal logging, not performance-critical, so correctness matters most
-    from game3d.core.buffer import state_to_buffer, GameBuffer
-    from game3d.core.api import generate_pseudolegal_moves
-    
-    # Use MinimalStateProxy to switch color without full GameState copy
-    dummy_state = MinimalStateProxy(game_state.board, opponent_color, cache)
-    buffer = state_to_buffer(dummy_state, readonly=True)
-    
-    # ✅ FIX: Create buffer with EMPTY freeze map for attack detection
-    # Frozen pieces can't MOVE, but they still ATTACK squares!
-    # Without this fix, frozen pieces are skipped and not detected as attackers,
-    # leading to "Attackers: Unknown" in checkmate logs.
-    empty_frozen = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
-    buffer = GameBuffer(
-        buffer.occupied_coords,
-        buffer.occupied_types,
-        buffer.occupied_colors,
-        buffer.occupied_count,
-        buffer.board_type,
-        buffer.board_color,
-        buffer.board_color_flat,
-        buffer.is_buffed,
-        buffer.is_debuffed,
-        empty_frozen,  # ← Override freeze map to allow frozen pieces to "attack"
-        buffer.meta,
-        buffer.zkey,
-        buffer.history,
-        buffer.history_count
+    # 2. ✅ FIX: Use GEOMETRIC attack detection (same as is_check)
+    # Get all opponent pieces and check which ones can attack the king geometrically
+    from game3d.attacks.attack_registry import (
+        _fast_attack_kernel_extended,
+        _JUMP_MOVES_FLAT, _JUMP_SQ_OFFSETS, _JUMP_TYPE_MAP,
+        _SLIDER_RAYS_FLAT, _SLIDER_RAY_OFFSETS, _SLIDER_SQ_OFFSETS, _SLIDER_TYPE_MAP
     )
     
-    opponent_moves = generate_pseudolegal_moves(buffer)
-    
-    if opponent_moves.size == 0:
-        logger.warning(f"get_attackers: No opponent moves generated (opponent={Color(opponent_color).name}, buffer.occupied_count={buffer.occupied_count})")
+    attacker_positions = occ_cache.get_positions(opponent_color)
+    if attacker_positions.shape[0] == 0:
         return []
     
-
-
-    # 3. Find attackers using JIT kernel
-    attacker_indices = _find_attackers_of_square(king_pos_arr, opponent_moves, opponent_moves[:, :3])
-    
-    if attacker_indices.size == 0:
-        logger.warning(f"get_attackers: {opponent_moves.shape[0]} moves generated but none target king at {king_pos_arr}")
-        return []
-        
-    # 4. Format Output
+    # 3. Check each opponent piece individually for geometric attack on king
     attackers_info = []
-    attacker_moves = opponent_moves[attacker_indices]
+    occ_grid = occ_cache._occ
+    ptype_grid = occ_cache._ptype
     
-    # Track unique attacker positions to avoid duplicates
-    seen_positions = set()
+    for i in range(attacker_positions.shape[0]):
+        pos = attacker_positions[i:i+1]  # Keep as (1, 3) shape
+        ax, ay, az = int(pos[0, 0]), int(pos[0, 1]), int(pos[0, 2])
+        
+        # Use the same attack kernel as square_attacked_by_extended
+        skipped_indices = np.empty(2, dtype=np.int32)
+        skipped_indices[0] = 0
+        
+        result = _fast_attack_kernel_extended(
+            king_pos_arr.astype(COORD_DTYPE),
+            pos.astype(COORD_DTYPE),
+            ptype_grid,
+            occ_grid,
+            int(opponent_color),
+            _JUMP_MOVES_FLAT, _JUMP_SQ_OFFSETS, _JUMP_TYPE_MAP,
+            _SLIDER_RAYS_FLAT, _SLIDER_RAY_OFFSETS, _SLIDER_SQ_OFFSETS, _SLIDER_TYPE_MAP,
+            skipped_indices
+        )
+        
+        if result == 1:
+            # This piece attacks the king!
+            ptype = ptype_grid[ax, ay, az]
+            if ptype > 0:
+                ptype_name = PieceType(ptype).name
+                attackers_info.append(f"{ptype_name} at ({ax},{ay},{az})")
+            else:
+                attackers_info.append(f"UNKNOWN at ({ax},{ay},{az})")
+        elif skipped_indices[0] > 0:
+            # Piece was skipped by fast kernel - use fallback move check
+            # This handles exotic piece types not in the precomputed tables
+            from game3d.core.buffer import state_to_buffer, GameBuffer
+            from game3d.core.api import generate_pseudolegal_moves
+            
+            # Create minimal buffer for just this piece
+            ptype = ptype_grid[ax, ay, az]
+            if ptype > 0:
+                # Generate moves for just this piece and check if any target king
+                from game3d.common.shared_types import PIECE_TYPE_DTYPE, COLOR_DTYPE, INDEX_DTYPE, HASH_DTYPE, MAX_HISTORY_SIZE
+                
+                occupied_coords = np.zeros((1, 3), dtype=COORD_DTYPE)
+                occupied_coords[0] = pos[0]
+                occupied_types = np.array([ptype], dtype=PIECE_TYPE_DTYPE)
+                occupied_colors = np.array([opponent_color], dtype=COLOR_DTYPE)
+                
+                meta = np.zeros(10, dtype=INDEX_DTYPE)
+                meta[0] = opponent_color
+                
+                is_buffed = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+                is_debuffed = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+                is_frozen = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
+                history = np.zeros(MAX_HISTORY_SIZE, dtype=HASH_DTYPE)
+                
+                buffer = GameBuffer(
+                    occupied_coords,
+                    occupied_types,
+                    occupied_colors,
+                    1,
+                    ptype_grid,
+                    occ_grid,
+                    occ_grid.flatten(order='F'),
+                    is_buffed,
+                    is_debuffed,
+                    is_frozen,
+                    meta,
+                    0,
+                    history,
+                    0
+                )
+                
+                moves = generate_pseudolegal_moves(buffer)
+                if moves.size > 0:
+                    kx, ky, kz = king_pos_arr[0], king_pos_arr[1], king_pos_arr[2]
+                    hits = (moves[:, 3] == kx) & (moves[:, 4] == ky) & (moves[:, 5] == kz)
+                    if np.any(hits):
+                        ptype_name = PieceType(ptype).name
+                        attackers_info.append(f"{ptype_name} at ({ax},{ay},{az})")
     
-    # Retrieve piece types for logging
-    # We can get source coords and look up types in occ_cache
-    for move in attacker_moves:
-        src = move[:3]
-        pos_key = (int(src[0]), int(src[1]), int(src[2]))
+    if not attackers_info:
+        logger.warning(f"get_attackers: No attackers found geometrically for king at {king_pos_arr}")
         
-        # Skip duplicate attacker positions
-        if pos_key in seen_positions:
-            continue
-        seen_positions.add(pos_key)
-        
-        # Get piece info - get_fast returns (ptype, color) tuple
-        ptype, color = occ_cache.get_fast(src)
-        if ptype > 0:
-            ptype_name = PieceType(ptype).name
-            attackers_info.append(f"{ptype_name} at {pos_key}")
-        else:
-            attackers_info.append(f"UNKNOWN at {pos_key}")
-             
     return attackers_info
+
 
 # Update __all__ exports
 

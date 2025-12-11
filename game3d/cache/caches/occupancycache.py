@@ -23,12 +23,12 @@ from game3d.cache.unified_memory_pool import get_memory_pool
 from game3d.common.shared_types import (
     SIZE, VOLUME, Color, PieceType, COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY, EMPTY,
     COORD_DTYPE, INDEX_DTYPE, BOOL_DTYPE, COLOR_DTYPE, PIECE_TYPE_DTYPE, FLOAT_DTYPE,
-    MAX_COORD_VALUE, MIN_COORD_VALUE, N_PIECE_TYPES
+    MAX_COORD_VALUE, MIN_COORD_VALUE, N_PIECE_TYPES, SIZE_SQUARED
 )
 
 
 
-from game3d.common.coord_utils import CoordinateUtils, coords_to_keys
+from game3d.common.coord_utils import CoordinateUtils, coords_to_keys, unpack_coords, coord_to_key_scalar
 
 # Type aliases for clarity and consistency
 PIECE_EMPTY = EMPTY
@@ -310,7 +310,8 @@ class OccupancyCache:
                  "_piece_type_count", "_memory_pool", "_flat_occ_view",
                  "_flat_indices_cache", "_king_positions", "_flat_view_lock",
                  "_cache_size_limit", "_king_cache_misses",
-                 "_positions_cache", "_positions_dirty", "_positions_lock")
+                 "_positions_cache", "_positions_dirty", "_positions_lock",
+                 "_positions_indices")
 
     def __init__(self, board_size=SIZE, piece_type_count=None) -> None:
         self._coord_dtype = COORD_DTYPE
@@ -338,11 +339,14 @@ class OccupancyCache:
         self._cache_size_limit = 1000  # Prevent unbounded growth
         self._king_cache_misses = 0  # Track cache effectiveness
         
-        # ✅ OPTIMIZATION: Cache for get_positions() results
         # _positions_cache stores tuple (coords, keys) for [White, Black]
         self._positions_cache = [None, None]
         self._positions_dirty = [True, True]
         self._positions_lock = threading.Lock()
+        
+        # ✅ INCREMENTAL TRACKING: Sets of flat indices for occupied squares
+        # [White Set, Black Set]
+        self._positions_indices = [set(), set()]
         
     def _allocate_id(self) -> int:
         """Allocate a new piece ID (O(1))."""
@@ -641,6 +645,33 @@ class OccupancyCache:
         # Note: King tracking is now done via direct lookup in find_king()
         # No need to maintain a separate king position cache
 
+        # ✅ INCREMENTAL UPDATE: Update position sets
+        # Flatten coords to indices for set operations
+        indices = coords_to_keys(coords)
+        
+        # Iterate through updates
+        # This loop is Python-level but batch sizes are usually small in move application (1-2)
+        # For larger batches (board setup), overhead is negligible compared to full scan
+        white_set = self._positions_indices[0]
+        black_set = self._positions_indices[1]
+        
+        for i in range(len(indices)):
+            idx = int(indices[i])
+            old_c = int(old_colors[i])
+            new_c = int(target_colors[i])
+            
+            # Remove from old color set
+            if old_c == Color.WHITE:
+                white_set.discard(idx)
+            elif old_c == Color.BLACK:
+                black_set.discard(idx)
+                
+            # Add to new color set
+            if new_c == Color.WHITE:
+                white_set.add(idx)
+            elif new_c == Color.BLACK:
+                black_set.add(idx)
+
 
 
         # ✅ OPTIMIZATION (#6): Lazy Priest Validation
@@ -689,27 +720,32 @@ class OccupancyCache:
 
 
     def get_positions(self, color: int) -> np.ndarray:
-        """Get all positions of color using vectorized operations with caching."""
+        """Get all positions of color using incremental sets (O(1) access)."""
         color_idx = 0 if color == Color.WHITE else 1
         
         # ✅ OPTIMIZATION: Return cached version if valid
         if not self._positions_dirty[color_idx] and self._positions_cache[color_idx] is not None:
             return self._positions_cache[color_idx][0]
 
-        # Rebuild cache
-        mask = (self._occ == color)
-        coords = np.argwhere(mask)
+        # ✅ OPTIMIZATION: Reconstruct from incremental set
+        # This avoids the O(SIZE^3) scan of the board
+        indices_set = self._positions_indices[color_idx]
         
-        if coords.size == 0:
+        if not indices_set:
             coords = np.empty((0, 3), dtype=self._coord_dtype)
             keys = np.empty(0, dtype=np.int64)
         else:
-            # No reordering needed - argwhere returns (x, y, z)\n            # Use copy=False since argwhere returns fresh array\n            coords = coords.astype(self._coord_dtype, copy=False)
-            # Compute keys (needed for cache completeness) using optimized function
-            keys = coords_to_keys(coords)
+            # Convert set to NumPy array of indices
+            keys = np.fromiter(indices_set, dtype=np.int64)
+            # Sort keys for consistent order (important for determinism)
+            keys.sort()
+            
+            # Use optimized unpacker from coord_utils
+            coords = unpack_coords(keys)
         
         # Update cache
         with self._positions_lock:
+             # Store both coords and keys
              self._positions_cache[color_idx] = (coords, keys)
              self._positions_dirty[color_idx] = False
              
@@ -741,6 +777,7 @@ class OccupancyCache:
         # ✅ OPTIMIZATION: Reset positions cache
         self._positions_cache = [None, None]
         self._positions_dirty = [True, True]
+        self._positions_indices = [set(), set()]  # Reset sets
 
         if len(coords) == 0:
             self._priest_count.fill(0)
@@ -767,6 +804,23 @@ class OccupancyCache:
                 color_idx = 0 if king_colors[i] == Color.WHITE else 1
                 self._king_positions[color_idx] = king_coords[i]
 
+
+        # ✅ REBUILD INCREMENTAL SETS
+        # Much faster to do this in bulk during rebuild
+        
+        # White
+        white_mask = (colors == Color.WHITE)
+        if np.any(white_mask):
+            white_coords = coords[white_mask]
+            white_keys = coords_to_keys(white_coords)
+            self._positions_indices[0] = set(white_keys.tolist())
+            
+        # Black
+        black_mask = (colors == Color.BLACK)
+        if np.any(black_mask):
+            black_coords = coords[black_mask]
+            black_keys = coords_to_keys(black_coords)
+            self._positions_indices[1] = set(black_keys.tolist())
 
         self._priest_count = _parallel_count_priests(self._occ, self._ptype, PARALLEL_CHUNKS)
 
@@ -890,11 +944,21 @@ class OccupancyCache:
         self.set_position(coord, piece)
 
     def clear(self) -> None:
-        """Clear all occupancy data."""
+        """Clear the cache efficiently."""
         self._occ.fill(0)
         self._ptype.fill(0)
         self._priest_count.fill(0)
         self._king_positions.fill(-1)
+        
+        # Reset internal caches
+        self._flat_occ_view = None
+        self._flat_indices_cache = {}
+        
+        # ✅ RESET POSITIONS CACHE
+        self._positions_cache = [None, None]
+        self._positions_dirty = [True, True]
+        with self._positions_lock:
+             self._positions_indices = [set(), set()]
 
     def close(self):
         """Cleanup memory pool."""
@@ -1046,28 +1110,50 @@ class OccupancyCache:
         if piece is None:
             self._occ[x, y, z] = 0
             self._ptype[x, y, z] = 0
+            
+            # Update priest count
             if old_type == PieceType.PRIEST.value:
-                color_idx = 0 if old_color == Color.WHITE else 1
-                self._priest_count[color_idx] -= 1
+                idx = 0 if old_color == Color.WHITE else 1
+                self._priest_count[idx] -= 1
         else:
             self._occ[x, y, z] = piece[1]
             self._ptype[x, y, z] = piece[0]
-            if old_type == PieceType.PRIEST.value:
-                color_idx = 0 if old_color == Color.WHITE else 1
-                self._priest_count[color_idx] -= 1
-            if piece[0] == PieceType.PRIEST.value:
-                color_idx = 0 if piece[1] == Color.WHITE else 1
-                self._priest_count[color_idx] += 1
             
-            # ✅ CRITICAL FIX: Update king cache when king is placed
+            # Update priest count
+            if old_type == PieceType.PRIEST.value:
+                idx = 0 if old_color == Color.WHITE else 1
+                self._priest_count[idx] -= 1
+            if piece[0] == PieceType.PRIEST.value:
+                idx = 0 if piece[1] == Color.WHITE else 1
+                self._priest_count[idx] += 1
+
+            # Update king cache
             if piece[0] == PieceType.KING.value:
                 color_idx = 0 if piece[1] == Color.WHITE else 1
-                self._king_positions[color_idx] = coord[0].copy()
+                self._king_positions[color_idx] = coord[0]
 
-        # ✅ OPTIMIZATION (#4): Only invalidate flat view, not  entire indices cache
-        # King cache is already selectively invalidated above when needed
-        self._flat_occ_view = None
+        # ✅ INCREMENTAL UPDATE
+        idx_flat = coord_to_key_scalar(x, y, z)
         
+        if old_color == Color.WHITE:
+            self._positions_indices[0].discard(idx_flat)
+        elif old_color == Color.BLACK:
+            self._positions_indices[1].discard(idx_flat)
+            
+        if piece is not None:
+            new_c = piece[1]
+            if new_c == Color.WHITE:
+                self._positions_indices[0].add(idx_flat)
+            elif new_c == Color.BLACK:
+                self._positions_indices[1].add(idx_flat)
+
+        # Invalidate flat view
+        self._flat_occ_view = None
+        self._flat_indices_cache = {}
+        
+        # ✅ OPTIMIZATION: Invalidate positions cache
+        self._positions_dirty = [True, True]
+        self._positions_cache = [None, None]       
         # ✅ OPTIMIZATION: Invalidate positions cache
         if old_color != 0:
             c_idx = 0 if old_color == Color.WHITE else 1
@@ -1081,15 +1167,47 @@ class OccupancyCache:
         """Fast path set: updates arrays directly.
         
         WARNING: Assumes coord is valid (3,) array within bounds.
-        Does NOT update priest count or king cache (use only for simulation/revert).
+        Does NOT update priest count (use only for simulation/revert).
+        DOES update king position cache for consistency.
         """
         # ✅ CRITICAL: Enforce Type/Color Consistency
         if (piece_type == 0 and color != 0) or (piece_type != 0 and color == 0):
              raise ValueError(f"Inconsistent SetPositionFast: Type={piece_type}, Color={color}")
 
         x, y, z = coord[0], coord[1], coord[2]
+        old_color = self._occ[x, y, z]
+        old_ptype = self._ptype[x, y, z]
+        
         self._occ[x, y, z] = color
         self._ptype[x, y, z] = piece_type
+        
+        # ✅ INCREMENTAL UPDATE
+        idx = coord_to_key_scalar(x, y, z)
+        
+        if old_color == Color.WHITE:
+            self._positions_indices[0].discard(idx)
+        elif old_color == Color.BLACK:
+            self._positions_indices[1].discard(idx)
+            
+        if color == Color.WHITE:
+            self._positions_indices[0].add(idx)
+        elif color == Color.BLACK:
+            self._positions_indices[1].add(idx)
+        
+        # ✅ FIX: Update king position cache to prevent desync
+        # If we're removing a king, invalidate its cached position
+        if old_ptype == PieceType.KING.value and old_color != 0:
+            old_color_idx = 0 if old_color == Color.WHITE else 1
+            self._king_positions[old_color_idx].fill(-1)
+        
+        # If we're placing a king, update its cached position
+        if piece_type == PieceType.KING.value and color != 0:
+            color_idx = 0 if color == Color.WHITE else 1
+            self._king_positions[color_idx] = coord.astype(COORD_DTYPE)
+            
+        # Mark cache clean/dirty logic is handled by caller mostly (set_position_fast is often used in isolation)
+        # But consistent with batch_set_positions, we should mark dirty
+        self._positions_dirty = [True, True]
 
 
 

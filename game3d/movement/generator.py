@@ -535,7 +535,7 @@ class LegalMoveGenerator:
             if np.any(leaves_check):
                 moves = moves[~leaves_check]
                 if moves.size == 0:
-                    logger.warning(f"[_apply_all_filters] ALL moves filtered by KING_SAFETY")
+                    # logger.warning(f"[_apply_all_filters] ALL moves filtered by KING_SAFETY")
                     return moves
 
         return moves
