@@ -642,8 +642,20 @@ class OccupancyCache:
         self._occ[x, y, z] = pieces[:, 1]  # colors
         self._ptype[x, y, z] = pieces[:, 0]  # piece types
 
-        # Note: King tracking is now done via direct lookup in find_king()
-        # No need to maintain a separate king position cache
+        # ✅ FIX: Update king position cache to prevent desync with find_king()
+        # Check if any kings are being removed
+        old_king_mask = (old_types == PieceType.KING.value)
+        if np.any(old_king_mask):
+            for i in np.where(old_king_mask)[0]:
+                old_color_idx = 0 if old_colors[i] == Color.WHITE else 1
+                self._king_positions[old_color_idx].fill(-1)
+        
+        # Check if any kings are being placed
+        new_king_mask = (target_types == PieceType.KING.value)
+        if np.any(new_king_mask):
+            for i in np.where(new_king_mask)[0]:
+                color_idx = 0 if target_colors[i] == Color.WHITE else 1
+                self._king_positions[color_idx] = coords[i].astype(COORD_DTYPE)
 
         # ✅ INCREMENTAL UPDATE: Update position sets
         # Flatten coords to indices for set operations
