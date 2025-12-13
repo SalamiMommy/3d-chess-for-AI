@@ -336,51 +336,50 @@ class LegalMoveGenerator:
 
 
     def _apply_all_filters(self, state: 'GameState', moves: np.ndarray, check_king_safety: bool = True, is_attack_generation: bool = False) -> np.ndarray:
-        """Apply all move filters (check, pin, wall capture, etc.)."""
+        """
+        Apply all move filters using single-pass combined masking.
+        
+        ✅ OPTIMIZED: Computes all filter conditions upfront and combines them
+        into a single mask before array slicing. Reduces 7 potential array 
+        allocations to 1.
+        """
         if moves.size == 0:
             return moves
             
-        initial_count = moves.shape[0]
-        # logger.info(f"[_apply_all_filters] Initial: {initial_count}")
-
+        n_moves = moves.shape[0]
         occ_cache = state.cache_manager.occupancy_cache
         
         # ✅ OPTIMIZATION: Early return if Priest protects King
-        # With Priest immunity, the King cannot be captured, so check-related
-        # filters are unnecessary. Still need to apply Frozen/Hive/Wall filters.
         has_priest = occ_cache.has_priest(state.color) if check_king_safety else False
 
-        # 1. Filter: Frozen Pieces (Cheap - Vectorized Aura Check)
-        # ✅ LOGIC CHANGE: Frozen pieces DO generate attacks (for Check), but CANNOT move (for Play).
-        # So we skip this filter if is_attack_generation=True.
+        # =========================================================================
+        # PHASE 1: Compute all independent filter masks upfront (no array slicing)
+        # =========================================================================
+        
+        # Start with all moves valid
+        keep_mask = np.ones(n_moves, dtype=bool)
+        
+        # --- Filter 1: Frozen Pieces ---
         if not is_attack_generation:
             is_frozen = state.cache_manager.consolidated_aura_cache.batch_is_frozen(
                 moves[:, :3], state.turn_number, state.color
             )
-            if np.any(is_frozen):
-                moves = moves[~is_frozen]
-                if moves.size == 0: 
-                    # logger.warning(f"[_apply_all_filters] ALL moves filtered by FROZEN (Initial: {initial_count})")
-                    return moves
-                # logger.info(f"[_apply_all_filters] After Frozen: {moves.shape[0]}")
+            keep_mask &= ~is_frozen
         
-        # 2. Filter: King Capture Prevention (Standard Chess Rule)
-        # ✅ LOGIC CHANGE: King capture is a valid "Attack" (Check), but CANNOT be played.
-        # So we identify and remove moves capturing King only if NOT generating attacks.
+        # --- Pre-fetch attributes (used by multiple filters) ---
+        # Get source attributes once
+        _, source_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
+        # Get destination attributes once  
+        dest_colors, dest_types = occ_cache.batch_get_attributes_unsafe(moves[:, 3:])
+        
+        # --- Filter 2: King Capture Prevention ---
         if not is_attack_generation:
-            _, dest_types = occ_cache.batch_get_attributes_unsafe(moves[:, 3:])
             king_capture_mask = dest_types == PieceType.KING
-            
-            if np.any(king_capture_mask):
-                moves = moves[~king_capture_mask]
-                if moves.size == 0:
-                    return moves
+            keep_mask &= ~king_capture_mask
 
-        # 2. Filter: Hive Movement History (Cheap - Set Lookup)
+        # --- Filter 3: Hive Movement History ---
         if hasattr(state, '_moved_hive_positions') and state._moved_hive_positions:
-            _, piece_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
-            hive_mask = piece_types == PieceType.HIVE
-
+            hive_mask = source_types == PieceType.HIVE
             if np.any(hive_mask):
                 hive_indices = np.where(hive_mask)[0]
                 
@@ -398,55 +397,28 @@ class LegalMoveGenerator:
                 is_already_moved = np.isin(source_keys, moved_keys)
                 
                 if np.any(is_already_moved):
-                     keep_mask = np.ones(len(moves), dtype=bool)
-                     keep_mask[hive_indices[is_already_moved]] = False
-                     moves = moves[keep_mask]
-                     if moves.size == 0: 
-                         logger.warning(f"[_apply_all_filters] ALL moves filtered by HIVE")
-                         return moves
-            # logger.info(f"[_apply_all_filters] After Hive: {moves.shape[0]}")
+                    keep_mask[hive_indices[is_already_moved]] = False
 
-        # 3. Filter: Wall Capture Restrictions (Cheap - Type Check)
-        # Identify moves that capture a WALL
-        _, dest_types = occ_cache.batch_get_attributes_unsafe(moves[:, 3:])
+        # --- Filter 4: Wall Capture Restrictions ---
         wall_capture_mask = dest_types == PieceType.WALL
-        
         if np.any(wall_capture_mask):
-            # Get indices of moves capturing walls
             capture_indices = np.where(wall_capture_mask)[0]
             
-            # Get wall colors to determine "front" direction
-            # Note: All parts of a wall share the same Z, so we can check dest Z directly
-            dest_colors, _ = occ_cache.batch_get_attributes_unsafe(moves[capture_indices, 3:])
-            
+            # Use pre-fetched dest_colors for wall color check
             attacker_z = moves[capture_indices, 2]
             wall_z = moves[capture_indices, 5]
             
-            is_white_wall = (dest_colors == Color.WHITE)
-            is_black_wall = (dest_colors == Color.BLACK)
+            is_white_wall = (dest_colors[capture_indices] == Color.WHITE)
+            is_black_wall = (dest_colors[capture_indices] == Color.BLACK)
             
-            # Invalid if: (White Wall AND Attacker Z > Wall Z) OR (Black Wall AND Attacker Z < Wall Z)
             invalid_capture = (is_white_wall & (attacker_z > wall_z)) | \
                               (is_black_wall & (attacker_z < wall_z))
             
             if np.any(invalid_capture):
-                # Remove invalid captures
-                # We need to map back to original moves array
-                indices_to_remove = capture_indices[invalid_capture]
-                
-                keep_mask = np.ones(len(moves), dtype=bool)
-                keep_mask[indices_to_remove] = False
-                
-                moves = moves[keep_mask]
-                if moves.size == 0: 
-                    logger.warning(f"[_apply_all_filters] ALL moves filtered by WALL_CAPTURE")
-                    return moves
-            # logger.info(f"[_apply_all_filters] After Wall: {moves.shape[0]}")
+                keep_mask[capture_indices[invalid_capture]] = False
 
-        # 4. Filter: Trailblazer Counter Avoidance (Cheap - Cache Lookup)
-        _, piece_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
-        king_mask = piece_types == PieceType.KING
-        
+        # --- Filter 5: Trailblazer Counter Avoidance (King-specific) ---
+        king_mask = source_types == PieceType.KING
         if np.any(king_mask):
             king_indices = np.where(king_mask)[0]
             king_positions = moves[king_mask, :3]
@@ -458,85 +430,56 @@ class LegalMoveGenerator:
             if np.any(danger_mask):
                 dangerous_dests = king_destinations[danger_mask]
                 
-                # Vectorized trail check
                 hits_trail = state.cache_manager.trailblaze_cache.batch_check_trail_intersection(
                     dangerous_dests, avoider_color=state.color
                 )
                 
                 if np.any(hits_trail):
-                    keep_mask = np.ones(len(moves), dtype=bool)
                     dangerous_king_indices = king_indices[danger_mask]
-                    
                     for local_idx, global_idx in enumerate(dangerous_king_indices):
                         if hits_trail[local_idx]:
                             keep_mask[global_idx] = False
-                    
-                    moves = moves[keep_mask]
-                    if moves.size == 0: 
-                        logger.warning(f"[_apply_all_filters] ALL moves filtered by TRAILBLAZER")
-                        return moves
 
-        # 5. Filter: Swapper-Wall Swap Prevention (Guards against stale cache)
-        # Swapper cannot swap with Wall pieces (would fragment 2x2 structure)
-        # Note: Swapper moves target FRIENDLY pieces only (by design), so any Wall target
-        # in a Swapper move must be a friendly Wall. We block ALL such moves.
-        _, source_types = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
+        # --- Filter 6: Swapper-Wall Swap Prevention ---
         swapper_mask = source_types == PieceType.SWAPPER
-        
         if np.any(swapper_mask):
             swapper_indices = np.where(swapper_mask)[0]
-            
-            # Get destination types for swapper moves
-            _, dest_types_for_swapper = occ_cache.batch_get_attributes_unsafe(moves[swapper_indices, 3:])
-            
-            # Check if any swapper is targeting a Wall - block ALL Wall targets
-            # (Swapper moves are generated only for friendly pieces, so any Wall here is friendly)
-            wall_dest_mask = dest_types_for_swapper == PieceType.WALL
+            # Use pre-fetched dest_types
+            wall_dest_mask = dest_types[swapper_indices] == PieceType.WALL
             
             if np.any(wall_dest_mask):
-                indices_to_remove = swapper_indices[wall_dest_mask]
-                keep_mask = np.ones(len(moves), dtype=bool)
-                keep_mask[indices_to_remove] = False
-                moves = moves[keep_mask]
-                if moves.size == 0:
-                    logger.warning(f"[_apply_all_filters] ALL moves filtered by SWAPPER_WALL")
-                    return moves
+                keep_mask[swapper_indices[wall_dest_mask]] = False
 
-        # 6. Filter: Wall Edge Bounds Prevention (Guards against stale cache)
-        # Wall is 2x2 in x-y plane, so destination anchor must have x,y < SIZE-1
-        _, source_types_wall = occ_cache.batch_get_attributes_unsafe(moves[:, :3])
-        wall_source_mask = source_types_wall == PieceType.WALL
-        
+        # --- Filter 7: Wall Edge Bounds Prevention ---
+        wall_source_mask = source_types == PieceType.WALL
         if np.any(wall_source_mask):
             wall_indices = np.where(wall_source_mask)[0]
             wall_dest_x = moves[wall_indices, 3]
             wall_dest_y = moves[wall_indices, 4]
             
-            # Invalid if destination x >= SIZE-1 or y >= SIZE-1
             invalid_wall_dest_mask = (wall_dest_x >= SIZE - 1) | (wall_dest_y >= SIZE - 1)
             
             if np.any(invalid_wall_dest_mask):
-                indices_to_remove = wall_indices[invalid_wall_dest_mask]
-                keep_mask = np.ones(len(moves), dtype=bool)
-                keep_mask[indices_to_remove] = False
-                moves = moves[keep_mask]
-                if moves.size == 0:
-                    logger.warning(f"[_apply_all_filters] ALL moves filtered by WALL_BOUNDS")
-                    return moves
+                keep_mask[wall_indices[invalid_wall_dest_mask]] = False
 
-        # 7. Filter: King Safety (CRITICAL - Filter moves leaving king in check)
-        # This is the most expensive filter, so we do it last and only when no priests
-        if check_king_safety and not has_priest:
+        # =========================================================================
+        # PHASE 2: Apply combined mask (SINGLE array allocation)
+        # =========================================================================
+        if not np.all(keep_mask):
+            moves = moves[keep_mask]
+            if moves.size == 0:
+                return moves
+
+        # =========================================================================
+        # PHASE 3: King Safety Filter (expensive, done last, after reduction)
+        # =========================================================================
+        if check_king_safety and not has_priest and moves.size > 0:
             from game3d.attacks.check import batch_moves_leave_king_in_check_fused
             
-            # Use fused batch check for efficiency
             leaves_check = batch_moves_leave_king_in_check_fused(state, moves, state.cache_manager)
             
             if np.any(leaves_check):
                 moves = moves[~leaves_check]
-                if moves.size == 0:
-                    # logger.warning(f"[_apply_all_filters] ALL moves filtered by KING_SAFETY")
-                    return moves
 
         return moves
 
