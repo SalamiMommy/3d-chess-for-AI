@@ -74,7 +74,7 @@ class MoveCacheConfig:
     enable_transposition_table: bool = True
 
 from numba import njit
-@njit
+@njit(cache=True, nogil=True)
 def _extract_bits_indices(blocks):
     """Extract set bit indices from blocks array."""
     indices = []
