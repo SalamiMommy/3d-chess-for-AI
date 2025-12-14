@@ -602,21 +602,46 @@ def batch_moves_leave_king_in_check_fused(
             # is_safe_batch returns True for SAFE ("blocks/captures")
             results[non_king_indices] = ~is_safe_batch
     
-    # Check king moves - must move to unattacked square
+    # =========================================================================
+    # King moves - vectorized safety check
+    # =========================================================================
     king_indices = np.where(king_move_mask)[0]
-    for idx in king_indices:
-        dest = moves[idx, 3:6].astype(np.int32)
-        dx, dy, dz = int(dest[0]), int(dest[1]), int(dest[2])
+    if king_indices.size > 0:
+        king_dests = moves[king_indices, 3:6].astype(np.int32)
         
-        if not (0 <= dx < SIZE and 0 <= dy < SIZE and 0 <= dz < SIZE):
-            results[idx] = True
-            continue
+        # Bounds check (vectorized)
+        valid_bounds = (
+            (king_dests[:, 0] >= 0) & (king_dests[:, 0] < SIZE) &
+            (king_dests[:, 1] >= 0) & (king_dests[:, 1] < SIZE) &
+            (king_dests[:, 2] >= 0) & (king_dests[:, 2] < SIZE)
+        )
         
-        # Check if destination is attacked
-        # Note: We need to account for the king leaving its current position
-        # which might open up new attacks or remove some
-        # For safety, simulate for king moves
-        results[idx] = move_would_leave_king_in_check(game_state, moves[idx], cache)
+        # Mark out-of-bounds moves as unsafe
+        results[king_indices[~valid_bounds]] = True
+        
+        # For valid bounds, check attack mask
+        valid_indices = king_indices[valid_bounds]
+        valid_dests = king_dests[valid_bounds]
+        
+        if valid_indices.size > 0:
+            # Vectorized attack mask lookup
+            dest_attacked = attack_mask[valid_dests[:, 0], valid_dests[:, 1], valid_dests[:, 2]]
+            
+            # Check if move captures a piece (potential attacker removal)
+            dest_colors, dest_types = occ_cache.batch_get_attributes_unsafe(valid_dests)
+            is_capture = dest_types > 0
+            
+            # Safe if: (not attacked) OR (capture AND destination only attacked by captured piece)
+            # For simplicity, mark attacked destinations as unsafe unless capturing the sole attacker
+            for local_idx, global_idx in enumerate(valid_indices):
+                if dest_attacked[local_idx]:
+                    if is_capture[local_idx]:
+                        # Check if captured piece is the only attacker of this square
+                        # Use fallback for accuracy in complex capture scenarios
+                        results[global_idx] = move_would_leave_king_in_check(game_state, moves[global_idx], cache)
+                    else:
+                        results[global_idx] = True
+                # else: destination not attacked = safe (results[global_idx] stays False)
     
     return results
 

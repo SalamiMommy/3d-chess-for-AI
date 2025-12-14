@@ -625,3 +625,91 @@ RuntimeError: no compiled object yet for <Library '_compute_distance_rewards_ser
 2025-12-13 18:18:09,932 - __main__ - INFO - Training interrupted by user
 2025-12-13 18:18:10,122 - __main__ - INFO - 🧹 Clearing all caches...
 2025-12-13 18:18:12,893 - __main__ - INFO - Final model saved to model_checkpoints/train_huge_20251213_181557/model_final.pt
+2025-12-13 18:22:47,583 - __main__ - INFO - [SEARCH] Validating game system integrity...
+2025-12-13 18:22:48,235 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:22:48,236 - __main__ - INFO - Testing move generation...
+2025-12-13 18:23:06,258 - __main__ - INFO - [OK] Generated 2594 moves
+2025-12-13 18:23:06,258 - __main__ - INFO - Testing GameState caching...
+2025-12-13 18:23:06,259 - __main__ - INFO - [OK] GameState caching works (via MoveCache)
+2025-12-13 18:23:06,259 - __main__ - INFO - Testing MoveCache persistence...
+2025-12-13 18:23:06,259 - __main__ - INFO - [OK] MoveCache works correctly
+2025-12-13 18:23:06,259 - __main__ - INFO - Final cache stats: {'legal_hit_rate': np.float64(0.75), 'pseudolegal_hit_rate': np.float64(0.0), 'piece_hit_rate': np.float64(0.0), 'total_moves_cached': np.int32(2594), 'piece_moves_cache_size': 130, 'prune_operations': 0, 'cache_hits': np.int32(3), 'cache_misses': np.int32(1)}
+2025-12-13 18:23:07,511 - __main__ - INFO - Saved temporary checkpoint: model_checkpoints/train_huge_20251213_182243/temp_model_for_selfplay.pt
+2025-12-13 18:23:07,511 - training.parallel_self_play - INFO - Starting Client-Server Self-Play: 60 games, 10 workers
+2025-12-13 18:23:10,304 - training.parallel_self_play - INFO - Launching workers...
+2025-12-13 18:23:23,136 - InferenceServer - INFO - Starting Server on cuda (Batch Size: 10)
+2025-12-13 18:23:30,455 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,456 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140053904546336
+2025-12-13 18:23:30,494 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,496 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139996560118768
+2025-12-13 18:23:30,504 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,506 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140109097425536
+2025-12-13 18:23:30,539 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,540 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139765809371104
+2025-12-13 18:23:30,546 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,547 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140124132957280
+2025-12-13 18:23:30,548 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,549 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140078021811248
+2025-12-13 18:23:30,589 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,590 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 139733199690320
+2025-12-13 18:23:30,605 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,607 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140445700808784
+2025-12-13 18:23:30,632 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,633 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140328226725440
+2025-12-13 18:23:30,647 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:23:30,648 - game3d.cache.manager - DEBUG - Created cache manager #1 for board 140598564314976
+2025-12-13 18:23:31,491 - InferenceServer - INFO - Detected compiled model (OptimizedModule). Loading weights into underlying _orig_mod.
+2025-12-13 18:23:31,495 - InferenceServer - INFO - Model already compiled (or compilation unavailable), skipping re-compile.
+2025-12-13 18:23:31,495 - InferenceServer - INFO - Server Ready. Listening...
+2025-12-13 18:23:31,499 - InferenceServer - INFO - Processing first batch (this may trigger compilation)...
+2025-12-13 18:23:33,910 - InferenceServer - INFO - First batch processed.
+2025-12-13 18:23:53,017 - filelock - DEBUG - Attempting to acquire lock 139667628347408 on /tmp/torchinductor_salamimommy/locks/c6nc4c3n23q243hd35kjssaeh4b477sbyifhui2oulilbs56pbkq.lock
+2025-12-13 18:23:53,017 - filelock - DEBUG - Lock 139667628347408 acquired on /tmp/torchinductor_salamimommy/locks/c6nc4c3n23q243hd35kjssaeh4b477sbyifhui2oulilbs56pbkq.lock
+2025-12-13 18:23:54,444 - filelock - DEBUG - Attempting to release lock 139667628347408 on /tmp/torchinductor_salamimommy/locks/c6nc4c3n23q243hd35kjssaeh4b477sbyifhui2oulilbs56pbkq.lock
+2025-12-13 18:23:54,444 - filelock - DEBUG - Lock 139667628347408 released on /tmp/torchinductor_salamimommy/locks/c6nc4c3n23q243hd35kjssaeh4b477sbyifhui2oulilbs56pbkq.lock
+2025-12-13 18:23:54,446 - filelock - DEBUG - Attempting to acquire lock 139667333709520 on /tmp/torchinductor_salamimommy/locks/cs3ckc3nlqqdamg25egnlvhwshkaajnyvlnz3pdsyqpygf3w3pxa.lock
+2025-12-13 18:23:54,446 - filelock - DEBUG - Lock 139667333709520 acquired on /tmp/torchinductor_salamimommy/locks/cs3ckc3nlqqdamg25egnlvhwshkaajnyvlnz3pdsyqpygf3w3pxa.lock
+2025-12-13 18:23:54,446 - filelock - DEBUG - Attempting to release lock 139667333709520 on /tmp/torchinductor_salamimommy/locks/cs3ckc3nlqqdamg25egnlvhwshkaajnyvlnz3pdsyqpygf3w3pxa.lock
+2025-12-13 18:23:54,446 - filelock - DEBUG - Lock 139667333709520 released on /tmp/torchinductor_salamimommy/locks/cs3ckc3nlqqdamg25egnlvhwshkaajnyvlnz3pdsyqpygf3w3pxa.lock
+2025-12-13 18:24:07,142 - game3d.game.turnmove - INFO - Move 100: WHITE ORBITER [0 4 0]->[3 5 1] (Capture)
+2025-12-13 18:24:07,185 - game3d.game.turnmove - INFO - Move 100: WHITE PAWN [2 0 2]->[2 0 4] (Move)
+2025-12-13 18:24:07,185 - game3d.game.turnmove - INFO - Move 100: WHITE ORBITER [0 4 0]->[3 5 1] (Capture)
+2025-12-13 18:24:07,186 - game3d.game.turnmove - INFO - Move 100: WHITE BISHOP [0 4 1]->[5 4 6] (Capture)
+2025-12-13 18:24:07,244 - game3d.game.turnmove - INFO - Move 100: WHITE QUEEN [0 3 1]->[1 4 0] (Move)
+2025-12-13 18:24:07,246 - game3d.game.turnmove - INFO - Move 100: BLACK GEOMANCER [3 8 7]->[6 7 5] (Move)
+2025-12-13 18:24:08,331 - game3d.game.turnmove - INFO - Move 100: BLACK KNIGHT32 [5 7 2]->[4 6 1] (Capture)
+2025-12-13 18:24:08,484 - game3d.game.turnmove - INFO - Move 100: BLACK PAWN [6 5 6]->[5 6 5] (Capture)
+2025-12-13 18:24:15,896 - game3d.game.turnmove - INFO - Move 200: BLACK FREEZER [7 8 6]->[6 8 5] (Capture)
+2025-12-13 18:24:15,935 - game3d.game.turnmove - INFO - Move 200: BLACK ECHO [5 5 8]->[5 6 5] (Move)
+2025-12-13 18:24:16,870 - game3d.game.turnmove - INFO - Move 200: BLACK YZQUEEN [5 7 6]->[5 6 5] (Capture)
+2025-12-13 18:24:22,582 - game3d.game.turnmove - INFO - Move 300: WHITE KNIGHT31 [4 5 3]->[3 5 6] (Capture)
+2025-12-13 18:24:24,567 - game3d.game.turnmove - INFO - Move 200: WHITE PAWN [8 7 2]->[7 8 3] (Capture)
+2025-12-13 18:24:28,832 - game3d.game.turnmove - INFO - Move 100: WHITE EDGEROOK [2 8 0]->[5 8 1] (Capture)
+2025-12-13 18:24:30,080 - game3d.game.turnmove - INFO - Move 300: BLACK PAWN [7 1 6]->[7 1 4] (Move)
+2025-12-13 18:24:31,660 - game3d.game.terminal - WARNING - Game over: Checkmate (Winner: WHITE, Turn: 370)
+2025-12-13 18:24:31,660 - game3d.game.terminal - WARNING -   - White: Priests=0, King=(4,4,0)
+2025-12-13 18:24:31,661 - game3d.game.terminal - WARNING -   - Black: Priests=0, King=(3,2,5)
+2025-12-13 18:24:31,661 - game3d.game.terminal - WARNING -   - Attackers: XYQUEEN at (3,3,4)
+2025-12-13 18:24:31,664 - worker.3 - DEBUG - Worker 3: Game over detected via receipt (result=1)
+2025-12-13 18:24:31,900 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:24:31,901 - game3d.cache.manager - DEBUG - Created cache manager #2 for board 140119125147024
+2025-12-13 18:24:32,100 - game3d.game.turnmove - INFO - Move 100: BLACK PAWN [3 0 6]->[3 0 4] (Move)
+2025-12-13 18:24:38,544 - game3d.game.turnmove - INFO - Move 200: BLACK QUEEN [0 3 7]->[5 8 2] (Capture)
+2025-12-13 18:24:40,608 - game3d.game.turnmove - INFO - Move 100: WHITE XYQUEEN [4 3 2]->[5 4 3] (Capture)
+2025-12-13 18:24:41,305 - game3d.game.turnmove - INFO - Move 200: BLACK YZQUEEN [3 5 2]->[3 5 1] (Capture)
+2025-12-13 18:24:42,924 - game3d.game.turnmove - INFO - Move 200: WHITE XYQUEEN [4 5 1]->[5 5 2] (Move)
+2025-12-13 18:24:43,144 - game3d.game.turnmove - INFO - Move 300: WHITE XYQUEEN [3 2 3]->[5 4 3] (Move)
+2025-12-13 18:24:43,613 - game3d.game.terminal - WARNING - Game over: Checkmate (Winner: BLACK, Turn: 216)
+2025-12-13 18:24:43,613 - game3d.game.terminal - WARNING -   - White: Priests=0, King=(5,7,5)
+2025-12-13 18:24:43,613 - game3d.game.terminal - WARNING -   - Black: Priests=1, King=(4,4,8)
+2025-12-13 18:24:43,613 - game3d.game.terminal - WARNING -   - Attackers: KNIGHT at (6,5,5), PAWN at (4,6,6), ARMOUR at (4,8,6), BLACKHOLE at (5,8,6), PAWN at (6,8,6), ORBITER at (4,8,8)
+2025-12-13 18:24:43,616 - worker.7 - DEBUG - Worker 7: Game over detected via receipt (result=2)
+2025-12-13 18:24:43,766 - game3d.cache.manager - INFO - Initialized occupancy cache from board setup: 486 pieces
+2025-12-13 18:24:43,766 - game3d.cache.manager - DEBUG - Created cache manager #2 for board 139727353645520
+2025-12-13 18:24:44,322 - game3d.game.turnmove - INFO - Move 200: BLACK PRIEST [5 2 6]->[5 2 5] (Capture)
+2025-12-13 18:24:49,131 - game3d.game.turnmove - INFO - Move 300: BLACK PAWN [0 2 4]->[1 2 3] (Capture)
+2025-12-13 18:24:49,377 - game3d.game.turnmove - INFO - Move 200: WHITE SPEEDER [8 1 1]->[7 2 0] (Move)
+2025-12-13 18:24:50,332 - InferenceServer - INFO - Server shutting down.
+2025-12-13 18:24:50,334 - training.parallel_self_play - INFO - Stopping Server...
+2025-12-13 18:24:51,090 - __main__ - INFO - Training interrupted by user
+2025-12-13 18:24:51,327 - __main__ - INFO - 🧹 Clearing all caches...

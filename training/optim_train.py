@@ -668,7 +668,12 @@ def train_with_self_play(config: TrainingConfig, num_games: int = 10) -> Dict[st
 
 
 class GraphTransformerDataset(Dataset):
-    """Dataset optimized for Graph Transformer - keeps data on GPU."""
+    """
+    Dataset optimized for Graph Transformer - pre-batched tensor storage.
+    
+    ✅ OPTIMIZATION #6: Pre-stacks all tensors during initialization.
+    Returns slices instead of individual tensors, reducing GPU kernel launches.
+    """
 
     def __init__(self, examples: List[TrainingExample], device: str = 'cuda'):
         self.examples = examples
@@ -676,30 +681,47 @@ class GraphTransformerDataset(Dataset):
         self._preprocess_data()
 
     def _preprocess_data(self):
-        """Preprocess data to minimize device transfers."""
+        """
+        Preprocess data by stacking all tensors upfront.
+        
+        ✅ OPTIMIZATION: Stack once during init, slice during iteration.
+        """
         # Validate examples first
         for i, ex in enumerate(self.examples):
             if not ex.validate():
                 raise ValueError(f"Example {i} failed validation: {ex}")
 
-        self.states = []
-        self.from_targets = []
-        self.to_targets = []
-        self.value_targets = []
+        # Collect tensors in lists first
+        states_list = []
+        from_targets_list = []
+        to_targets_list = []
+        value_targets_list = []
 
         for ex in self.examples:
-            # Use the TrainingExample's built-in tensor conversion
             tensor_dict = ex.to_tensor(self.device)
+            states_list.append(tensor_dict['state'])
+            from_targets_list.append(tensor_dict['from_target'])
+            to_targets_list.append(tensor_dict['to_target'])
+            value_targets_list.append(tensor_dict['value_target'])
 
-            self.states.append(tensor_dict['state'])
-            self.from_targets.append(tensor_dict['from_target'])
-            self.to_targets.append(tensor_dict['to_target'])
-            self.value_targets.append(tensor_dict['value_target'])
+        # ✅ OPTIMIZATION: Stack all tensors once (single GPU kernel per tensor type)
+        if states_list:
+            self.states = torch.stack(states_list, dim=0)
+            self.from_targets = torch.stack(from_targets_list, dim=0)
+            self.to_targets = torch.stack(to_targets_list, dim=0)
+            self.value_targets = torch.stack(value_targets_list, dim=0)
+        else:
+            # Empty dataset fallback
+            self.states = torch.empty(0, device=self.device)
+            self.from_targets = torch.empty(0, device=self.device)
+            self.to_targets = torch.empty(0, device=self.device)
+            self.value_targets = torch.empty(0, device=self.device)
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
+        """Return slices from pre-stacked tensors (O(1) indexing)."""
         return (
             self.states[idx],
             self.from_targets[idx],
@@ -710,6 +732,8 @@ class GraphTransformerDataset(Dataset):
     def get_batch_tensor(self, indices: List[int]) -> BatchData:
         """
         Get a batch of training examples as tensors.
+        
+        ✅ OPTIMIZED: Uses array slicing on pre-stacked tensors.
 
         Args:
             indices: List of indices to include in the batch
@@ -717,8 +741,14 @@ class GraphTransformerDataset(Dataset):
         Returns:
             BatchData container with all tensors
         """
-        batch_examples = [self.examples[i] for i in indices]
-        return convert_examples_to_tensors(batch_examples, self.device)
+        # Use direct indexing on stacked tensors (GPU-efficient)
+        idx_tensor = torch.tensor(indices, device=self.device, dtype=torch.long)
+        return BatchData(
+            state=self.states[idx_tensor],
+            from_target=self.from_targets[idx_tensor],
+            to_target=self.to_targets[idx_tensor],
+            value_target=self.value_targets[idx_tensor]
+        )
 
 if __name__ == "__main__":
     config = TrainingConfig(batch_size=BATCH_SIZE)
