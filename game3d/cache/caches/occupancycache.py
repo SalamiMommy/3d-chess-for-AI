@@ -1221,9 +1221,112 @@ class OccupancyCache:
         # But consistent with batch_set_positions, we should mark dirty
         self._positions_dirty = [True, True]
 
+    # =========================================================================
+    # ✅ OPTIMIZATION: BATCH SIMULATION MODE (No auxiliary updates)
+    # =========================================================================
 
+    def batch_simulate_moves(self, moves: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Simulate multiple moves WITHOUT updating auxiliary caches.
+        
+        ✅ OPTIMIZATION: Only touches _occ and _ptype arrays directly.
+        Skips: Python sets, king cache, dirty flags, priest counts.
+        
+        Use for batch legality checks where moves are immediately reverted.
+        
+        Args:
+            moves: (N, 6) array of moves [from_x, from_y, from_z, to_x, to_y, to_z]
+            
+        Returns:
+            (from_types, from_colors, to_types, to_colors) - original data for reversal
+        """
+        n = moves.shape[0]
+        if n == 0:
+            empty = np.empty(0, dtype=PIECE_TYPE_DTYPE)
+            return empty, empty.view(COLOR_DTYPE), empty, empty.view(COLOR_DTYPE)
+        
+        # Extract coordinates
+        fx, fy, fz = moves[:, 0], moves[:, 1], moves[:, 2]
+        tx, ty, tz = moves[:, 3], moves[:, 4], moves[:, 5]
+        
+        # Store original data for reversal
+        from_types = self._ptype[fx, fy, fz].copy()
+        from_colors = self._occ[fx, fy, fz].copy()
+        to_types = self._ptype[tx, ty, tz].copy()
+        to_colors = self._occ[tx, ty, tz].copy()
+        
+        # Apply moves directly to arrays (no auxiliary updates)
+        # Clear source squares
+        self._ptype[fx, fy, fz] = 0
+        self._occ[fx, fy, fz] = 0
+        
+        # Move pieces to destinations
+        self._ptype[tx, ty, tz] = from_types
+        self._occ[tx, ty, tz] = from_colors
+        
+        return from_types, from_colors, to_types, to_colors
+
+    def batch_revert_moves(
+        self, 
+        moves: np.ndarray,
+        from_types: np.ndarray,
+        from_colors: np.ndarray,
+        to_types: np.ndarray,
+        to_colors: np.ndarray
+    ) -> None:
+        """Revert moves simulated by batch_simulate_moves.
+        
+        ✅ OPTIMIZATION: Restores original state without auxiliary updates.
+        """
+        if moves.shape[0] == 0:
+            return
+            
+        fx, fy, fz = moves[:, 0], moves[:, 1], moves[:, 2]
+        tx, ty, tz = moves[:, 3], moves[:, 4], moves[:, 5]
+        
+        self._ptype[fx, fy, fz] = from_types
+        self._occ[fx, fy, fz] = from_colors
+        self._ptype[tx, ty, tz] = to_types
+        self._occ[tx, ty, tz] = to_colors
+
+    def simulate_single_move_fast(self, move: np.ndarray) -> tuple[int, int, int, int]:
+        """Simulate a single move WITHOUT auxiliary updates.
+        
+        Returns (from_type, from_color, to_type, to_color) for reversal.
+        """
+        fx, fy, fz = int(move[0]), int(move[1]), int(move[2])
+        tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
+        
+        from_type = int(self._ptype[fx, fy, fz])
+        from_color = int(self._occ[fx, fy, fz])
+        to_type = int(self._ptype[tx, ty, tz])
+        to_color = int(self._occ[tx, ty, tz])
+        
+        self._ptype[fx, fy, fz] = 0
+        self._occ[fx, fy, fz] = 0
+        self._ptype[tx, ty, tz] = from_type
+        self._occ[tx, ty, tz] = from_color
+        
+        return from_type, from_color, to_type, to_color
+
+    def revert_single_move_fast(
+        self,
+        move: np.ndarray,
+        from_type: int,
+        from_color: int,
+        to_type: int,
+        to_color: int
+    ) -> None:
+        """Revert a move simulated by simulate_single_move_fast."""
+        fx, fy, fz = int(move[0]), int(move[1]), int(move[2])
+        tx, ty, tz = int(move[3]), int(move[4]), int(move[5])
+        
+        self._ptype[fx, fy, fz] = from_type
+        self._occ[fx, fy, fz] = from_color
+        self._ptype[tx, ty, tz] = to_type
+        self._occ[tx, ty, tz] = to_color
 
     def get_flattened_occupancy(self) -> np.ndarray:
+
         """
         Return cached flattened view of color occupancy (O(1), thread-safe).
         0 = empty, Color.WHITE.value = white, Color.BLACK.value = black

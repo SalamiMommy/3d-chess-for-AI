@@ -1086,8 +1086,16 @@ class MoveCache:
             return bool(is_attacked)
 
 
-    def store_piece_moves(self, color: int, coord_key: Union[int, bytes], moves: np.ndarray) -> None:
-        """Cache moves for a specific piece - USE INTEGER KEYS."""
+    def store_piece_moves(self, color: int, coord_key: Union[int, bytes], moves: np.ndarray, skip_attack_matrix: bool = False) -> None:
+        """Cache moves for a specific piece - USE INTEGER KEYS.
+        
+        Args:
+            color: Piece color
+            coord_key: Coordinate key (integer or bytes)
+            moves: Move array to cache
+            skip_attack_matrix: If True, skip _update_reverse_map for performance.
+                               Use during temporary simulations where moves will be reverted.
+        """
         color_idx = 0 if color == Color.WHITE else 1
 
         if isinstance(coord_key, (int, np.integer)):
@@ -1102,7 +1110,10 @@ class MoveCache:
             if len(self._piece_moves_cache) >= self._max_piece_entries:
                 self._prune_piece_cache()
 
-            self._update_reverse_map(piece_id, moves)
+            # ✅ OPTIMIZATION: Skip attack matrix updates during simulations
+            if not skip_attack_matrix:
+                self._update_reverse_map(piece_id, moves)
+            
             self._piece_moves_cache[piece_id] = moves
             self._piece_moves_cache.move_to_end(piece_id)
 
@@ -1110,6 +1121,7 @@ class MoveCache:
             # This prevents "Ghost Attacks" where bitboards retain old attacks
             self.invalidate_pseudolegal_moves(color)
             self.invalidate_legal_moves(color)
+
 
 
 

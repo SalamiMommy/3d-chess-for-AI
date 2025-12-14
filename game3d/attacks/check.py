@@ -88,66 +88,62 @@ def move_would_leave_king_in_check(game_state: 'GameState', move: np.ndarray, ca
 
     # ✅ CENTRALIZED PRIEST CHECK: All moves are safe if player has priests
     if occ_cache.has_priest(player_color):
-        # logger.warning(f"move_would_leave_king_in_check called for {Color(player_color).name} despite having priests!")
         return False
 
     # Get move data
     from_coord, to_coord = move[:3], move[3:]
     
     # ✅ OPTIMIZATION: Use get_fast for speed (coords from move array are trusted)
-    if hasattr(occ_cache, 'get_fast'):
-        ptype, color = occ_cache.get_fast(from_coord)
-        if ptype == 0: # Empty
-             return False
+    ptype, color = occ_cache.get_fast(from_coord)
+    if ptype == 0:  # Empty
+        return False
+    
+    is_king_move = (ptype == PieceType.KING.value)
+
+    # ✅ OPTIMIZATION: Use fast simulation that skips auxiliary updates
+    # For king moves, we need to track the position manually
+    if hasattr(occ_cache, 'simulate_single_move_fast') and not is_king_move:
+        # Fast path: bypass all auxiliary updates (sets, king cache, dirty flags)
+        from_type, from_color, to_type, to_color = occ_cache.simulate_single_move_fast(move)
         
+        try:
+            king_pos = occ_cache.find_king(player_color)
+            if king_pos is None:
+                is_check = True
+            else:
+                is_check = square_attacked_by_incremental(
+                    game_state.board,
+                    king_pos,
+                    Color(player_color).opposite().value,
+                    cache,
+                    from_coord,
+                    to_coord
+                )
+        finally:
+            occ_cache.revert_single_move_fast(move, from_type, from_color, to_type, to_color)
+    else:
+        # Slow path for king moves (need king cache update) or legacy code
         captured_ptype, captured_color = occ_cache.get_fast(to_coord)
         captured_data = None if captured_ptype == 0 else {'piece_type': captured_ptype, 'color': captured_color}
-        
         piece_data = {'piece_type': ptype, 'color': color}
-    else:
-        piece_data = occ_cache.get(from_coord)
-        if piece_data is None:
-            return False  # Invalid move (no piece at source)
-        captured_data = occ_cache.get(to_coord)
-
-    # Simulate move
-    # ✅ OPTIMIZATION: Use set_position_fast if available
-    # BUT skip for King moves as it doesn't update king cache
-    is_king_move = (piece_data['piece_type'] == PieceType.KING)
-
-    if hasattr(occ_cache, 'set_position_fast') and not is_king_move:
-        occ_cache.set_position_fast(from_coord, 0, 0) # Clear source
-        occ_cache.set_position_fast(to_coord, piece_data['piece_type'], piece_data['color'])
-    else:
+        
         occ_cache.set_position(from_coord, None)
         occ_cache.set_position(to_coord, np.array([piece_data['piece_type'], piece_data['color']]))
 
-    try:
-        # Check if king is in check using INCREMENTAL delta updates
-        # This only regenerates moves for pieces affected by the simulated move
-        king_pos = occ_cache.find_king(player_color)
-        if king_pos is None:
-             is_check = True # Assume worst if king missing
-        else:
-             # ✅ OPTIMIZED: Use incremental delta updates instead of full regeneration
-             # This is 10-20x faster than the slow path
-             is_check = square_attacked_by_incremental(
-                 game_state.board,
-                 king_pos,
-                 Color(player_color).opposite().value, # Opponent color
-                 cache,
-                 from_coord,
-                 to_coord
-             )
-    finally:
-        # Always revert move (even if exception occurs)
-        if hasattr(occ_cache, 'set_position_fast') and not is_king_move:
-            occ_cache.set_position_fast(from_coord, piece_data['piece_type'], piece_data['color'])
-            if captured_data:
-                occ_cache.set_position_fast(to_coord, captured_data['piece_type'], captured_data['color'])
+        try:
+            king_pos = occ_cache.find_king(player_color)
+            if king_pos is None:
+                is_check = True
             else:
-                occ_cache.set_position_fast(to_coord, 0, 0)
-        else:
+                is_check = square_attacked_by_incremental(
+                    game_state.board,
+                    king_pos,
+                    Color(player_color).opposite().value,
+                    cache,
+                    from_coord,
+                    to_coord
+                )
+        finally:
             occ_cache.set_position(from_coord, np.array([piece_data['piece_type'], piece_data['color']]))
             if captured_data:
                 occ_cache.set_position(to_coord, np.array([captured_data['piece_type'], captured_data['color']]))
@@ -155,6 +151,8 @@ def move_would_leave_king_in_check(game_state: 'GameState', move: np.ndarray, ca
                 occ_cache.set_position(to_coord, None)
 
     return is_check
+
+
 
 def _get_priest_count(board, king_color: Optional[Color] = None, cache: Any = None) -> int:
     """Get count of priests for the given king color."""
@@ -763,63 +761,38 @@ def square_attacked_by_incremental(
     cached_opponent_moves = cache.move_cache.get_pseudolegal_moves(attacker_color)
     if cached_opponent_moves is None:
         # No cached moves - use fast_attack which regenerates from current occupancy
-        # ✅ FIX: Must apply the simulated move before fallback check, then revert
+        # ✅ OPTIMIZATION: Use direct array manipulation (no auxiliary updates)
         from game3d.attacks.fast_attack import square_attacked_by_fast
         
         occ_cache = cache.occupancy_cache
         
-        # Save original state
-        if hasattr(occ_cache, 'get_fast'):
-            from_ptype, from_color = occ_cache.get_fast(from_coord)
-            to_ptype, to_color = occ_cache.get_fast(to_coord)
-        else:
-            from_data = occ_cache.get(from_coord)
-            from_ptype = from_data['piece_type'] if from_data else 0
-            from_color = from_data['color'] if from_data else 0
-            to_data = occ_cache.get(to_coord)
-            to_ptype = to_data['piece_type'] if to_data else 0
-            to_color = to_data['color'] if to_data else 0
+        # Save original state via direct array access
+        fx, fy, fz = int(from_coord[0]), int(from_coord[1]), int(from_coord[2])
+        tx, ty, tz = int(to_coord[0]), int(to_coord[1]), int(to_coord[2])
         
-        # Apply simulated move
-        if hasattr(occ_cache, 'set_position_fast'):
-            occ_cache.set_position_fast(from_coord, 0, 0)  # Clear source
-            if from_ptype != 0:
-                occ_cache.set_position_fast(to_coord, from_ptype, from_color)  # Piece moves to dest
-            # ✅ FIX: Mark positions cache as dirty so get_positions returns fresh data
-            occ_cache._positions_dirty[0] = True
-            occ_cache._positions_dirty[1] = True
-        else:
-            occ_cache.set_position(from_coord, None)
-            if from_ptype != 0:
-                occ_cache.set_position(to_coord, np.array([from_ptype, from_color]))
+        from_ptype = int(occ_cache._ptype[fx, fy, fz])
+        from_color = int(occ_cache._occ[fx, fy, fz])
+        to_ptype = int(occ_cache._ptype[tx, ty, tz])
+        to_color = int(occ_cache._occ[tx, ty, tz])
+        
+        # Apply simulated move (direct array manipulation - no auxiliary updates)
+        occ_cache._ptype[fx, fy, fz] = 0
+        occ_cache._occ[fx, fy, fz] = 0
+        if from_ptype != 0:
+            occ_cache._ptype[tx, ty, tz] = from_ptype
+            occ_cache._occ[tx, ty, tz] = from_color
         
         try:
             result = square_attacked_by_fast(board, square, attacker_color, cache)
         finally:
-            # Revert the simulated move
-            if hasattr(occ_cache, 'set_position_fast'):
-                if from_ptype != 0:
-                    occ_cache.set_position_fast(from_coord, from_ptype, from_color)
-                else:
-                    occ_cache.set_position_fast(from_coord, 0, 0)
-                if to_ptype != 0:
-                    occ_cache.set_position_fast(to_coord, to_ptype, to_color)
-                else:
-                    occ_cache.set_position_fast(to_coord, 0, 0)
-                # ✅ FIX: Mark positions cache dirty again so original positions are re-read
-                occ_cache._positions_dirty[0] = True
-                occ_cache._positions_dirty[1] = True
-            else:
-                if from_ptype != 0:
-                    occ_cache.set_position(from_coord, np.array([from_ptype, from_color]))
-                else:
-                    occ_cache.set_position(from_coord, None)
-                if to_ptype != 0:
-                    occ_cache.set_position(to_coord, np.array([to_ptype, to_color]))
-                else:
-                    occ_cache.set_position(to_coord, None)
+            # Revert directly (no auxiliary updates needed)
+            occ_cache._ptype[fx, fy, fz] = from_ptype
+            occ_cache._occ[fx, fy, fz] = from_color
+            occ_cache._ptype[tx, ty, tz] = to_ptype
+            occ_cache._occ[tx, ty, tz] = to_color
         
         return result
+
     
     # Identify pieces affected by the move
     affected_ids, affected_coords, affected_keys = cache.move_cache.get_pieces_affected_by_move(
