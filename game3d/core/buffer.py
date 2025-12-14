@@ -6,7 +6,7 @@ This module defines the raw data structure that holds the entire game state.
 
 import numpy as np
 import threading
-from typing import NamedTuple, Tuple
+from typing import NamedTuple, Tuple, Optional
 from numba import njit
 from game3d.common.shared_types import (
     COORD_DTYPE, PIECE_TYPE_DTYPE, COLOR_DTYPE,
@@ -19,6 +19,9 @@ _BUFFER_POOL = threading.local()
 _SUBSET_POOL = threading.local()  # ✅ OPTIMIZATION #5: Separate pool for subset operations
 _POOL_MAX_PIECES = 1024 # Increased to cover full board (729 squares)
 
+# ✅ OPTIMIZATION #2: Buffer caching - avoid recreating identical buffers
+# Cache key: (state_id, color, move_counter) -> GameBuffer
+_BUFFER_CACHE = threading.local()
 
 class GameBuffer(NamedTuple):
     """
@@ -107,6 +110,8 @@ def state_to_buffer(state, readonly: bool = False) -> GameBuffer:
     """
     Convert a GameState to a GameBuffer for stateless processing.
     
+    ✅ OPTIMIZATION #2: Returns cached buffer if state hasn't changed.
+    
     Args:
         state: GameState instance
         readonly: If True, reuse existing arrays from cache without copying.
@@ -115,13 +120,42 @@ def state_to_buffer(state, readonly: bool = False) -> GameBuffer:
     Returns:
         GameBuffer with data copied from state
     """
+    # =========================================================================
+    # PHASE 0: Check buffer cache (O(1) lookup)
+    # =========================================================================
+    # Only cache non-readonly buffers (readonly shares arrays that get overwritten)
+    cache_manager = state.cache_manager
+    
+    use_cache = not readonly  # Readonly buffers share _BUFFER_POOL arrays
+    cached_buffer = None
+    cache_key = None
+    
+    if use_cache:
+        move_counter = cache_manager._move_counter
+        color = state.color
+        turn_number = state.turn_number
+        state_id = id(state)
+        
+        # Build cache key: (state_id, color, move_counter, turn_number)
+        cache_key = (state_id, color, move_counter, turn_number)
+        
+        # Check thread-local cache
+        if not hasattr(_BUFFER_CACHE, 'data'):
+            _BUFFER_CACHE.data = {}
+        
+        if cache_key in _BUFFER_CACHE.data:
+            # Cache hit - return existing buffer
+            return _BUFFER_CACHE.data[cache_key]
+    
+    # =========================================================================
+    # PHASE 1: Create new buffer (cache miss)
+    # =========================================================================
     from game3d.core.hashing import compute_hash_from_buffer
     
     # Get piece data from cache
-    cache = state.cache_manager.occupancy_cache
+    cache = cache_manager.occupancy_cache
     
     # ✅ OPTIMIZATION: Zero-Copy Setup
-    # We must setup the pool BEFORE calling export_buffer_data to pass the buffers in.
     
     occupied_coords = None
     occupied_types = None
@@ -232,8 +266,8 @@ def state_to_buffer(state, readonly: bool = False) -> GameBuffer:
         history_count
     )
     
-    # Return buffer with correct hash
-    return GameBuffer(
+    # Create final buffer
+    final_buffer = GameBuffer(
         buffer.occupied_coords,
         buffer.occupied_types,
         buffer.occupied_colors,
@@ -249,6 +283,19 @@ def state_to_buffer(state, readonly: bool = False) -> GameBuffer:
         buffer.history,
         buffer.history_count
     )
+    
+    # =========================================================================
+    # PHASE 2: Store in cache (with size limit) - only for non-readonly
+    # =========================================================================
+    if use_cache and cache_key is not None:
+        # Limit cache to 16 entries to avoid memory bloat
+        if len(_BUFFER_CACHE.data) >= 16:
+            # Clear oldest entries (simple LRU-like behavior)
+            _BUFFER_CACHE.data.clear()
+        
+        _BUFFER_CACHE.data[cache_key] = final_buffer
+    
+    return final_buffer
 
 def state_to_buffer_with_indices(state, indices: list[int], coords: np.ndarray, 
                                 types: np.ndarray, colors: np.ndarray, 
