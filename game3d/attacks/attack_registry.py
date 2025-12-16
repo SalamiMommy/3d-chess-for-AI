@@ -328,8 +328,10 @@ def _fast_attack_kernel_extended(
                 if dz == -1 and abs(tx - ax) == 1 and abs(ty - ay) == 1:
                     is_attacking = True
                     
-        elif atype == 6: # KING (Always attacks Range 1, or Range 2 if buffed)
-            # Check buff status
+        elif atype == 6: # KING (Attacks Range 1, or Range 2 if buffed)
+            # ✅ FIX: Kings ALWAYS attack adjacent squares, regardless of priest count
+            # The priest count only determines if the VICTIM King is "in check" (handled elsewhere)
+            # Not whether the King can attack a square for move legality purposes
             is_buffed = False
             if is_buffed_grid is not None:
                 is_buffed = is_buffed_grid[ax, ay, az]
@@ -343,7 +345,7 @@ def _fast_attack_kernel_extended(
                 if dx <= 2 and dy <= 2 and dz <= 2 and (dx + dy + dz > 0):
                     is_attacking = True
             else:
-                # Standard King: Range 1 (Always an attacker)
+                # Standard King: Range 1 (ALWAYS attacks adjacent squares)
                 if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz > 0):
                     is_attacking = True
 
@@ -440,17 +442,10 @@ def square_attacked_by_extended(
                      if victim_counters[flat_idx] > 2:
                          return True
 
-    # ✅ NEW: Try Cache Fast Path if available and valid
-    # This avoids iterating all attackers when the move cache is fresh
-    if hasattr(cache, 'move_cache') and cache.move_cache is not None:
-        # Determine defender color (opposite of attacker)
-        # Assuming attacker_color is 1 (White) or 2 (Black)
-        defender_color = 2 if attacker_color == 1 else 1 
-        
-        # Returns True/False if known, None if unknown/dirty
-        is_attacked = cache.move_cache.is_king_attacked_fast_path(square, defender_color)
-        if is_attacked is not None:
-            return is_attacked
+    # ✅ REMOVED: Cache fast path was causing stale results to bypass geometric validation.
+    # This function is meant to be the geometric fallback - square_attacked_by in check.py
+    # calls us specifically to validate cache results with geometric detection.
+    # The cache fast path would short-circuit that validation, causing "Attackers: Unknown" bugs.
 
     # Get all attackers
     attacker_positions = cache.occupancy_cache.get_positions(attacker_color)

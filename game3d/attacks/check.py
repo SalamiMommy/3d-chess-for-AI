@@ -33,6 +33,63 @@ def _get_scratch_buffers() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarr
     )
 
 
+@njit(cache=True, fastmath=True)
+def _check_special_attacker_in_range_kernel(
+    positions: np.ndarray,
+    types: np.ndarray,
+    tx: int, ty: int, tz: int
+) -> bool:
+    """Check if any Bomb (26, radius 2) or Archer (25, dist 2) is in range of target."""
+    n = positions.shape[0]
+    for i in range(n):
+        ptype = types[i]
+        if ptype == 26:  # BOMB - radius 2 (Chebyshev distance)
+            dx = abs(positions[i, 0] - tx)
+            dy = abs(positions[i, 1] - ty)
+            dz = abs(positions[i, 2] - tz)
+            if dx <= 2 and dy <= 2 and dz <= 2:
+                return True
+        elif ptype == 25:  # ARCHER - attack distance 2 (squared Euclidean = 4)
+            dx = positions[i, 0] - tx
+            dy = positions[i, 1] - ty
+            dz = positions[i, 2] - tz
+            dist_sq = dx*dx + dy*dy + dz*dz
+            if dist_sq == 4:
+                return True
+    return False
+
+
+def _special_attacker_in_range(occ_cache, attacker_color: int, square: np.ndarray) -> bool:
+    """
+    ✅ OPTIMIZATION: Check if any special attacker (Bomb/Archer) is within range.
+    
+    This avoids falling back to full geometric check when special attackers exist
+    but are far from the target square.
+    """
+    positions = occ_cache.get_positions(attacker_color)
+    if positions.size == 0:
+        return False
+    
+    # Get types for positioned pieces
+    types = occ_cache.batch_get_types_only(positions)
+    
+    # Filter to only Bomb (26) and Archer (25)
+    special_mask = (types == 25) | (types == 26)
+    if not np.any(special_mask):
+        return False
+    
+    special_positions = positions[special_mask]
+    special_types = types[special_mask]
+    
+    tx, ty, tz = int(square[0]), int(square[1]), int(square[2])
+    
+    return _check_special_attacker_in_range_kernel(
+        special_positions.astype(COORD_DTYPE),
+        special_types.astype(np.int8),
+        tx, ty, tz
+    )
+
+
 from game3d.common.shared_types import (
     PieceType, Color, SIZE, COLOR_WHITE, COLOR_BLACK, COLOR_EMPTY,
     COORD_DTYPE, BOOL_DTYPE, INDEX_DTYPE, MAX_COORD_VALUE, MIN_COORD_VALUE,
@@ -718,46 +775,46 @@ def square_attacked_by(board, current_player: Color, square: np.ndarray, attacke
             x, y, z = square[0], square[1], square[2]
             cache_says_attacked = bool(attacked_mask[x, y, z])
             
-            # ✅ FIX: If cache says attacked, validate with geometric detection
-            # This prevents false checkmates from stale cache data
+            # ✅ OPTIMIZATION: Trust cache when it's clean (no dirty pieces)
+            # Only validate with geometric when there might be stale data
             if cache_says_attacked:
-                from game3d.attacks.fast_attack import square_attacked_by_fast
-                geometric_result = square_attacked_by_fast(board, square, attacker_color, cache)
-                if not geometric_result:
-                    # Cache is stale - log and return correct result
-                    logger.debug(f"Cache/geometric mismatch at {square}: cache=True, geometric=False (using geometric)")
-                return geometric_result
+                # Check if cache is reliable (no dirty/affected pieces for this color)
+                cache_is_clean = True
+                if hasattr(cache, 'move_cache'):
+                    affected = cache.move_cache.get_affected_pieces(attacker_color)
+                    cache_is_clean = (affected.size == 0)
+                
+                if cache_is_clean:
+                    return True  # Trust the cache
+                else:
+                    # Dirty cache - validate with geometric
+                    from game3d.attacks.fast_attack import square_attacked_by_fast
+                    return square_attacked_by_fast(board, square, attacker_color, cache)
             else:
                 # Cache says not attacked.
                 # ✅ FIX: Check for implicit threats (Bomb, Archer, Environmental)
-                # These might not be represented in move-based attack masks.
                 
                 # 1. Environmental Hazards (Trailblazer Counters) - ALWAYS UNSAFE
                 if cache and hasattr(cache, 'trailblaze_cache') and cache.trailblaze_cache is not None:
-                     if hasattr(cache.trailblaze_cache, 'get_counter'):
+                     if hasattr(cache.trailblaze_cache, 'get_counter_fast'):
+                         ctr = cache.trailblaze_cache.get_counter_fast(
+                             int(square[0]), int(square[1]), int(square[2])
+                         )
+                         if ctr > 2:
+                             return True
+                     elif hasattr(cache.trailblaze_cache, 'get_counter'):
                          ctr = cache.trailblaze_cache.get_counter(square)
                          if ctr > 2:
-                             return True # Lethal environment
+                             return True
                 
-                # 2. Check for Special Ranged Pieces (Bomb/Archer)
-                # If attacker has these, we MUST use geometric check as they may target empty squares
-                # without generating "moves" in the move logic.
-                from game3d.attacks.fast_attack import square_attacked_by_fast
-                
-                has_special_threats = False
-                attacker_positions = None
-                
+                # 2. Check for Special Ranged Pieces (Bomb/Archer) - ✅ OPTIMIZED: Distance filter
+                # Only fallback if special attackers are actually in range
                 if cache and hasattr(cache, 'occupancy_cache'):
-                    attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
-                    if attacker_positions.size > 0:
-                        # Fast scan for Bomb (26) or Archer (25)
-                        types = cache.occupancy_cache.batch_get_types_only(attacker_positions)
-                        # Check checks
-                        if np.any(types == 26) or np.any(types == 25):
-                            has_special_threats = True
-                
-                if has_special_threats:
-                    return square_attacked_by_fast(board, square, attacker_color, cache)
+                    occ_cache = cache.occupancy_cache
+                    if hasattr(occ_cache, 'has_special_attacker') and occ_cache.has_special_attacker(attacker_color):
+                        if _special_attacker_in_range(occ_cache, attacker_color, square):
+                            from game3d.attacks.fast_attack import square_attacked_by_fast
+                            return square_attacked_by_fast(board, square, attacker_color, cache)
                 
                 return False
     
@@ -811,26 +868,30 @@ def square_attacked_by_incremental(
     # ✅ FIX: Check implicit threats (Trailblazer, Archer, Bomb) using Post-Move state
     # This must be done before incremental logic because move-based masks miss these threats.
     
-    # 1. Trailblazer (Environmental)
+    # 1. Trailblazer (Environmental) - ✅ OPTIMIZED: Use scalar fast path
     if hasattr(cache, 'trailblaze_cache') and cache.trailblaze_cache is not None:
-         # Direct check for lethal counter
-         if hasattr(cache.trailblaze_cache, 'get_counter'):
+         # ✅ OPTIMIZATION: Use get_counter_fast for scalar access (avoids array overhead)
+         if hasattr(cache.trailblaze_cache, 'get_counter_fast'):
+             ctr = cache.trailblaze_cache.get_counter_fast(
+                 int(square[0]), int(square[1]), int(square[2])
+             )
+             if ctr > 2:
+                 return True
+         elif hasattr(cache.trailblaze_cache, 'get_counter'):
              ctr = cache.trailblaze_cache.get_counter(square)
              if ctr > 2:
-                 # logger.debug(f"Combined Check: Trailblazer lethal at {square} (cnt={ctr})")
                  return True 
 
-    # 2. Special Pieces (Bomb/Archer)
-    # If these exist, we fallback to geometric check (or we could optimize to just check them).
-    # For robust correctness, we verify with geometric if dangerous pieces are present.
+    # 2. Special Pieces (Bomb/Archer) - ✅ OPTIMIZED: Only fallback if in range
+    # Bomb has radius 2, Archer has attack distance 2 (squared distance 4)
+    # Only fallback to geometric if these pieces are actually in range of the target
     if hasattr(cache, 'occupancy_cache'):
-        attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
-        if attacker_positions.size > 0:
-            types = cache.occupancy_cache.batch_get_types_only(attacker_positions)
-            # Archer(25) or Bomb(26)
-            if np.any(types == 26) or np.any(types == 25):
-                 from game3d.attacks.fast_attack import square_attacked_by_fast
-                 return square_attacked_by_fast(board, square, attacker_color, cache)
+        occ_cache = cache.occupancy_cache
+        if hasattr(occ_cache, 'has_special_attacker') and occ_cache.has_special_attacker(attacker_color):
+            # Check if any special attacker is within range of the target square
+            if _special_attacker_in_range(occ_cache, attacker_color, square):
+                from game3d.attacks.fast_attack import square_attacked_by_fast
+                return square_attacked_by_fast(board, square, attacker_color, cache)
     
     # ✅ FIX: Check if opponent moves are cached - if not, fall back to full check
     # This handles the case where the move cache hasn't generated opponent moves yet
@@ -990,27 +1051,10 @@ def square_attacked_by_incremental(
                     
                     ptype, _ = occ_cache.get_fast(np.array([fx, fy, fz]))
                     
-                    if ptype == 6: # KING
-                        # Check conditions
-                        # 1. Priest Check
-                        priest_count = 0
-                        if hasattr(occ_cache, 'get_priest_count'):
-                            priest_count = occ_cache.get_priest_count(attacker_color)
-                            
-                        # 2. Buff Check
-                        is_buffed = False
-                        if hasattr(cache, 'buff_manager') and cache.buff_manager:
-                            if hasattr(cache.buff_manager, 'is_buffed'):
-                                is_buffed = cache.buff_manager.is_buffed[fx, fy, fz]
-                        
-                        if priest_count > 0 or (is_buffed and is_buffed[fx, fy, fz]): # Fixed indexing for single value check? No, is_buffed is grid.
-                             return True # Valid attack
-                        
-                        # Else: Invalid King attack, ignore
-                    else:
-                        return True # Non-King attack is always valid
-                        
-                return False # Only invalid attacks found
+                    # ✅ FIX: Kings ALWAYS attack adjacent squares, regardless of priest count
+                    # The priest check only determines if the VICTIM King is "in check" (handled elsewhere)
+                    # All pieces, including Kings, are valid attackers for move legality purposes
+                    return True  # Any piece (including King) attacking = unsafe
                 
     return False
 

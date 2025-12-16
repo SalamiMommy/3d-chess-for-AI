@@ -476,6 +476,18 @@ class OccupancyCache:
             return self._type_counts[color_idx, piece_type] > 0
         return False
 
+    def has_special_attacker(self, color: int) -> bool:
+        """Check if color has Archer (25) or Bomb (26) pieces - O(1).
+        
+        ✅ OPTIMIZATION: Uses _type_counts for O(1) lookup instead of
+        batch_get_types_only + np.any() which is O(N) per call.
+        
+        These pieces have special attack mechanics that require geometric fallback
+        in the check detection pipeline.
+        """
+        color_idx = 0 if color == Color.WHITE else 1
+        return self._type_counts[color_idx, 25] > 0 or self._type_counts[color_idx, 26] > 0
+
     def get_color_at(self, x: int, y: int, z: int) -> int:
         """Scalar accessor for piece color - avoids array creation."""
         if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:
