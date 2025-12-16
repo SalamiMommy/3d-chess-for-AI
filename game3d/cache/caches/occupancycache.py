@@ -248,7 +248,7 @@ def _vectorized_batch_update(occ: np.ndarray, ptype: np.ndarray,
 @njit(cache=True, nogil=True, parallel=True)
 def _parallel_piece_counts(occ: np.ndarray, ptype: np.ndarray, color_code: COLOR_DTYPE) -> np.ndarray:
     """Parallel piece counting by type."""
-    max_piece_types = 11  # Support 0-10 piece types
+    max_piece_types = 64  # Support all piece types (was 11)
     type_counts = np.zeros(max_piece_types, dtype=INDEX_DTYPE)
 
     for x in prange(SIZE):  # Iterate x first for (x, y, z) order
@@ -306,7 +306,7 @@ def _extract_sparse_kernel(
     return count
 
 class OccupancyCache:
-    __slots__ = ("_occ", "_ptype", "_priest_count", "_coord_dtype",
+    __slots__ = ("_occ", "_ptype", "_priest_count", "_type_counts", "_coord_dtype",
                  "_piece_type_count", "_memory_pool", "_flat_occ_view",
                  "_flat_indices_cache", "_king_positions", "_flat_view_lock",
                  "_cache_size_limit", "_king_cache_misses",
@@ -323,7 +323,10 @@ class OccupancyCache:
         # Piece type array: PIECE_TYPE_DTYPE at each position
         self._ptype = np.zeros((board_size, board_size, board_size), dtype=PIECE_TYPE_DTYPE)
 
-        # Priest count for white and black
+        # ✅ NEW: Type counts per color [White, Black][Type]
+        self._type_counts = np.zeros((2, 64), dtype=INDEX_DTYPE)
+
+        # Priest count for white and black (Legacy/Fast Access)
         self._priest_count = np.zeros(2, dtype=INDEX_DTYPE)
 
         # ✅ KING POSITION CACHE: [white, black] coordinates
@@ -465,6 +468,13 @@ class OccupancyCache:
         if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:
             return self._ptype[x, y, z]
         return 0
+
+    def has_type(self, color: int, piece_type: int) -> bool:
+        """Check if a specific piece type of a given color exists on board (O(1))."""
+        color_idx = 0 if color == Color.WHITE else 1
+        if 0 <= piece_type < 64:
+            return self._type_counts[color_idx, piece_type] > 0
+        return False
 
     def get_color_at(self, x: int, y: int, z: int) -> int:
         """Scalar accessor for piece color - avoids array creation."""
@@ -686,26 +696,26 @@ class OccupancyCache:
 
 
 
-        # ✅ OPTIMIZATION (#6): Lazy Priest Validation
-        # Skip expensive priest counting if no priests exist on board
-        if self._priest_count.sum() == 0 and not np.any(pieces[:, 0] == PieceType.PRIEST.value):
-            # Fast path: no priests to track
-            pass
-        else:
-            # ✅ CRITICAL FIX: Update priest count for removed/added priests
-            # Decrement count for old priests being removed/replaced
-            old_priest_mask = (old_types == PieceType.PRIEST.value)
-            if np.any(old_priest_mask):
-                for i in np.where(old_priest_mask)[0]:
-                    color_idx = 0 if old_colors[i] == Color.WHITE else 1
-                    self._priest_count[color_idx] -= 1
-            
-            # Increment count for new priests being added
-            new_priest_mask = (pieces[:, 0] == PieceType.PRIEST.value)
-            if np.any(new_priest_mask):
-                for i in np.where(new_priest_mask)[0]:
-                    color_idx = 0 if pieces[i, 1] == Color.WHITE else 1
-                    self._priest_count[color_idx] += 1
+        # ✅ CRITICAL FIX: Update priest count and type counts
+        # Decrement count for old pieces
+        for i in range(len(old_types)):
+            ot = old_types[i]
+            if ot > 0:
+                c_idx = 0 if old_colors[i] == Color.WHITE else 1
+                if ot < 64:
+                    self._type_counts[c_idx, ot] -= 1
+                if ot == PieceType.PRIEST.value:
+                    self._priest_count[c_idx] -= 1
+        
+        # Increment count for new pieces
+        for i in range(len(target_types)):
+            nt = target_types[i]
+            if nt > 0:
+                c_idx = 0 if target_colors[i] == Color.WHITE else 1
+                if nt < 64:
+                    self._type_counts[c_idx, nt] += 1
+                if nt == PieceType.PRIEST.value:
+                    self._priest_count[c_idx] += 1
 
         # Invalidate cached views
         self._flat_occ_view = None
@@ -793,6 +803,7 @@ class OccupancyCache:
 
         if len(coords) == 0:
             self._priest_count.fill(0)
+            self._type_counts.fill(0)
             return
 
         coords = self._normalize_coords(coords)
@@ -834,7 +845,26 @@ class OccupancyCache:
             black_keys = coords_to_keys(black_coords)
             self._positions_indices[1] = set(black_keys.tolist())
 
-        self._priest_count = _parallel_count_priests(self._occ, self._ptype, PARALLEL_CHUNKS)
+        # Rebuild type counts
+        wc = _parallel_piece_counts(self._occ, self._ptype, Color.WHITE)
+        bc = _parallel_piece_counts(self._occ, self._ptype, Color.BLACK)
+        
+        # Ensure result size matches _type_counts
+        if len(wc) < 64:
+             tmp_wc = np.zeros(64, dtype=INDEX_DTYPE)
+             tmp_wc[:len(wc)] = wc
+             wc = tmp_wc
+        if len(bc) < 64:
+             tmp_bc = np.zeros(64, dtype=INDEX_DTYPE)
+             tmp_bc[:len(bc)] = bc
+             bc = tmp_bc
+             
+        self._type_counts[0] = wc
+        self._type_counts[1] = bc
+        
+        # Update legacy priest count
+        self._priest_count[0] = self._type_counts[0, PieceType.PRIEST.value]
+        self._priest_count[1] = self._type_counts[1, PieceType.PRIEST.value]
 
         # King positions are now found via direct lookup, no cache warming needed
 
@@ -940,6 +970,17 @@ class OccupancyCache:
         """Check if color has any priests."""
         color_idx = 0 if color == Color.WHITE else 1
         return int(self._priest_count[color_idx]) > 0
+        
+    def has_type(self, color: int, piece_type: int) -> bool:
+        """Check if color has any pieces of specific type.
+        
+        O(1) lookup using incrementally maintained counts.
+        """
+        if piece_type < 0 or piece_type >= 64:
+            return False
+            
+        color_idx = 0 if color == Color.WHITE else 1
+        return int(self._type_counts[color_idx, piece_type]) > 0
 
     def get_priest_count(self, color: int) -> int:
         """Get the number of priests for a color."""
@@ -960,6 +1001,7 @@ class OccupancyCache:
         self._occ.fill(0)
         self._ptype.fill(0)
         self._priest_count.fill(0)
+        self._type_counts.fill(0)
         self._king_positions.fill(-1)
         
         # Reset internal caches
@@ -1127,6 +1169,11 @@ class OccupancyCache:
             if old_type == PieceType.PRIEST.value:
                 idx = 0 if old_color == Color.WHITE else 1
                 self._priest_count[idx] -= 1
+
+            # Update type counts
+            if old_type > 0 and old_type < 64:
+                idx = 0 if old_color == Color.WHITE else 1
+                self._type_counts[idx, old_type] -= 1
         else:
             self._occ[x, y, z] = piece[1]
             self._ptype[x, y, z] = piece[0]
@@ -1135,9 +1182,20 @@ class OccupancyCache:
             if old_type == PieceType.PRIEST.value:
                 idx = 0 if old_color == Color.WHITE else 1
                 self._priest_count[idx] -= 1
+                
+            # Update type counts
+            if old_type > 0 and old_type < 64:
+                idx = 0 if old_color == Color.WHITE else 1
+                self._type_counts[idx, old_type] -= 1
+                
             if piece[0] == PieceType.PRIEST.value:
                 idx = 0 if piece[1] == Color.WHITE else 1
                 self._priest_count[idx] += 1
+                
+            # Update type counts
+            if piece[0] > 0 and piece[0] < 64:
+                idx = 0 if piece[1] == Color.WHITE else 1
+                self._type_counts[idx, piece[0]] += 1
 
             # Update king cache
             if piece[0] == PieceType.KING.value:

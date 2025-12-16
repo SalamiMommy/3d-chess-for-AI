@@ -23,6 +23,19 @@ from game3d.core.api import generate_pseudolegal_moves
 
 _PRECOMPUTED_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'movement', 'precomputed')
 
+# ✅ OPTIMIZATION: Thread-local scratch buffer
+import threading
+_REGISTRY_SCRATCH = threading.local()
+
+def _get_registry_scratch(min_size: int) -> np.ndarray:
+    """Get thread-local scratch buffer for skipped indices."""
+    if not hasattr(_REGISTRY_SCRATCH, 'skipped_indices') or _REGISTRY_SCRATCH.skipped_indices.size < min_size:
+        # Allocate with growth factor
+        new_size = max(512, min_size)
+        _REGISTRY_SCRATCH.skipped_indices = np.empty(new_size, dtype=np.int32)
+    return _REGISTRY_SCRATCH.skipped_indices
+
+
 # Constants for array sizes
 _MAX_PIECE_TYPE = 64
 _SIZE_CUBED_PLUS_ONE = VOLUME + 1
@@ -427,6 +440,18 @@ def square_attacked_by_extended(
                      if victim_counters[flat_idx] > 2:
                          return True
 
+    # ✅ NEW: Try Cache Fast Path if available and valid
+    # This avoids iterating all attackers when the move cache is fresh
+    if hasattr(cache, 'move_cache') and cache.move_cache is not None:
+        # Determine defender color (opposite of attacker)
+        # Assuming attacker_color is 1 (White) or 2 (Black)
+        defender_color = 2 if attacker_color == 1 else 1 
+        
+        # Returns True/False if known, None if unknown/dirty
+        is_attacked = cache.move_cache.is_king_attacked_fast_path(square, defender_color)
+        if is_attacked is not None:
+            return is_attacked
+
     # Get all attackers
     attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
     if attacker_positions.shape[0] == 0:
@@ -438,8 +463,8 @@ def square_attacked_by_extended(
 
 
     # Prepare skipped array
-    # ✅ OPTIMIZED: Use empty (faster than zeros) + manual init of counter
-    skipped_indices = np.empty(attacker_positions.shape[0] + 1, dtype=np.int32)
+    # ✅ OPTIMIZED: Use thread-local scratch buffer
+    skipped_indices = _get_registry_scratch(attacker_positions.shape[0] + 1)
     skipped_indices[0] = 0
     
     # ✅ FIX: Get Priest Count and Buff Status
