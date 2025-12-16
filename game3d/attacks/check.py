@@ -669,7 +669,12 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
         mask = np.zeros((SIZE, SIZE, SIZE), dtype=BOOL_DTYPE)
         
         if len(cached_moves) == 0:
-            return mask
+            # ✅ FIX: Check if attacker has pieces - if so, return None to trigger fallback
+            # Empty cached moves with existing pieces means cache is stale/incomplete
+            attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
+            if len(attacker_positions) > 0:
+                return None  # Trigger fallback to direct kernel
+            return mask  # Genuinely no attackers
 
         # ✅ OPTIMIZED: Extract destination coordinates without conversion
         # NumPy advanced indexing works with int16 (COORD_DTYPE)
@@ -691,7 +696,11 @@ def _get_attacked_squares_from_move_cache(board, attacker_color: int, cache=None
 
 
 def square_attacked_by(board, current_player: Color, square: np.ndarray, attacker_color: int, cache=None, use_move_cache=True) -> bool:
-    """Check if a square is attacked by a specific color."""
+    """Check if a square is attacked by a specific color.
+    
+    ✅ FIX: Now validates cache results with geometric detection to prevent
+    false positives from stale cache data causing "Attackers: Unknown" checkmates.
+    """
     square = square.astype(COORD_DTYPE)
 
     # Vectorized bounds checking
@@ -707,7 +716,50 @@ def square_attacked_by(board, current_player: Color, square: np.ndarray, attacke
         attacked_mask = _get_attacked_squares_from_move_cache(board, attacker_color, cache)
         if attacked_mask is not None:
             x, y, z = square[0], square[1], square[2]
-            return bool(attacked_mask[x, y, z])
+            cache_says_attacked = bool(attacked_mask[x, y, z])
+            
+            # ✅ FIX: If cache says attacked, validate with geometric detection
+            # This prevents false checkmates from stale cache data
+            if cache_says_attacked:
+                from game3d.attacks.fast_attack import square_attacked_by_fast
+                geometric_result = square_attacked_by_fast(board, square, attacker_color, cache)
+                if not geometric_result:
+                    # Cache is stale - log and return correct result
+                    logger.debug(f"Cache/geometric mismatch at {square}: cache=True, geometric=False (using geometric)")
+                return geometric_result
+            else:
+                # Cache says not attacked.
+                # ✅ FIX: Check for implicit threats (Bomb, Archer, Environmental)
+                # These might not be represented in move-based attack masks.
+                
+                # 1. Environmental Hazards (Trailblazer Counters) - ALWAYS UNSAFE
+                if cache and hasattr(cache, 'trailblaze_cache') and cache.trailblaze_cache is not None:
+                     if hasattr(cache.trailblaze_cache, 'get_counter'):
+                         ctr = cache.trailblaze_cache.get_counter(square)
+                         if ctr > 2:
+                             return True # Lethal environment
+                
+                # 2. Check for Special Ranged Pieces (Bomb/Archer)
+                # If attacker has these, we MUST use geometric check as they may target empty squares
+                # without generating "moves" in the move logic.
+                from game3d.attacks.fast_attack import square_attacked_by_fast
+                
+                has_special_threats = False
+                attacker_positions = None
+                
+                if cache and hasattr(cache, 'occupancy_cache'):
+                    attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
+                    if attacker_positions.size > 0:
+                        # Fast scan for Bomb (26) or Archer (25)
+                        types = cache.occupancy_cache.batch_get_types_only(attacker_positions)
+                        # Check checks
+                        if np.any(types == 26) or np.any(types == 25):
+                            has_special_threats = True
+                
+                if has_special_threats:
+                    return square_attacked_by_fast(board, square, attacker_color, cache)
+                
+                return False
     
     # Fallback: Fast inverse check (was slow dynamic check)
     from game3d.attacks.fast_attack import square_attacked_by_fast
@@ -755,6 +807,30 @@ def square_attacked_by_incremental(
         # Fallback if cache not available
         from game3d.attacks.fast_attack import square_attacked_by_fast
         return square_attacked_by_fast(board, square, attacker_color, cache)
+        
+    # ✅ FIX: Check implicit threats (Trailblazer, Archer, Bomb) using Post-Move state
+    # This must be done before incremental logic because move-based masks miss these threats.
+    
+    # 1. Trailblazer (Environmental)
+    if hasattr(cache, 'trailblaze_cache') and cache.trailblaze_cache is not None:
+         # Direct check for lethal counter
+         if hasattr(cache.trailblaze_cache, 'get_counter'):
+             ctr = cache.trailblaze_cache.get_counter(square)
+             if ctr > 2:
+                 # logger.debug(f"Combined Check: Trailblazer lethal at {square} (cnt={ctr})")
+                 return True 
+
+    # 2. Special Pieces (Bomb/Archer)
+    # If these exist, we fallback to geometric check (or we could optimize to just check them).
+    # For robust correctness, we verify with geometric if dangerous pieces are present.
+    if hasattr(cache, 'occupancy_cache'):
+        attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
+        if attacker_positions.size > 0:
+            types = cache.occupancy_cache.batch_get_types_only(attacker_positions)
+            # Archer(25) or Bomb(26)
+            if np.any(types == 26) or np.any(types == 25):
+                 from game3d.attacks.fast_attack import square_attacked_by_fast
+                 return square_attacked_by_fast(board, square, attacker_color, cache)
     
     # ✅ FIX: Check if opponent moves are cached - if not, fall back to full check
     # This handles the case where the move cache hasn't generated opponent moves yet
@@ -872,12 +948,69 @@ def square_attacked_by_incremental(
         
         if new_affected_moves.size > 0:
             tx, ty, tz = int(square[0]), int(square[1]), int(square[2])
-            # Vectorized check
-            hits = (new_affected_moves[:, 3] == tx) & \
-                   (new_affected_moves[:, 4] == ty) & \
-                   (new_affected_moves[:, 5] == tz)
-            if np.any(hits):
-                return True
+            
+            # ✅ FIX: Filter out King moves if unbuffed/priestless
+            # Identify which moves are hitting the square
+            hits_mask = (new_affected_moves[:, 3] == tx) & \
+                        (new_affected_moves[:, 4] == ty) & \
+                        (new_affected_moves[:, 5] == tz)
+            
+            if np.any(hits_mask):
+                # Check if the hitting moves are from Kings
+                hitting_indices = np.where(hits_mask)[0]
+                
+                # Get usage of pieces in these moves?
+                # new_affected_moves is (from_x, from_y, from_z, to_x, to_y, to_z)
+                # We need to know WHAT piece moved.
+                # We can look up the source square in the buffer or original cache?
+                # The move source is in new_affected_moves[:, :3].
+                # We can look up type in occ_cache (which has the *current* state before move?)
+                # Wait, square_attacked_by_incremental simulates a move.
+                # But 'affected' pieces are re-generated from the simulated state buffer.
+                # So we need to look up in the buffer?
+                # The buffer is passed to generate_moves_subset.
+                # We don't have easy access to buffer here (it's created inside the block).
+                
+                # But we know affected_lines come from get_pieces_affected_by_move -> affected_coords.
+                # And we know the type from current_types array we constructed buffer with?
+                # Actually, simply checking the attacker_color's priest count and buff status globally 
+                # might be enough if we assume ALL Kings of that color share the property.
+                # (Priest count is global per color). Buffs are per piece.
+                
+                # Let's verify hit validity
+                for idx in hitting_indices:
+                    fx, fy, fz = new_affected_moves[idx, :3]
+                    # Look up piece type at source (in the simulated context)
+                    # We can use the 'current_types' array if we can map back to it?
+                    # Or just use occ_cache.get_fast(src)?
+                    # The simulator updated occ_cache! (lines 801-806)
+                    # EXCEPT for the pieces we are regenerating moves for?
+                    # No, occ_cache reflects the state AFTER the primary move.
+                    # The affected pieces are then moved *again*? No, we generate moves FROM them.
+                    
+                    ptype, _ = occ_cache.get_fast(np.array([fx, fy, fz]))
+                    
+                    if ptype == 6: # KING
+                        # Check conditions
+                        # 1. Priest Check
+                        priest_count = 0
+                        if hasattr(occ_cache, 'get_priest_count'):
+                            priest_count = occ_cache.get_priest_count(attacker_color)
+                            
+                        # 2. Buff Check
+                        is_buffed = False
+                        if hasattr(cache, 'buff_manager') and cache.buff_manager:
+                            if hasattr(cache.buff_manager, 'is_buffed'):
+                                is_buffed = cache.buff_manager.is_buffed[fx, fy, fz]
+                        
+                        if priest_count > 0 or (is_buffed and is_buffed[fx, fy, fz]): # Fixed indexing for single value check? No, is_buffed is grid.
+                             return True # Valid attack
+                        
+                        # Else: Invalid King attack, ignore
+                    else:
+                        return True # Non-King attack is always valid
+                        
+                return False # Only invalid attacks found
                 
     return False
 
@@ -1172,10 +1305,27 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
         pos = attacker_positions[i:i+1]  # Keep as (1, 3) shape
         ax, ay, az = int(pos[0, 0]), int(pos[0, 1]), int(pos[0, 2])
         
-        # Use the same attack kernel as square_attacked_by_extended
+        if ptype_grid[ax, ay, az] == PieceType.KING.value:
+            # We must check if the King can attack (priest > 0 or buffed)
+            # If we don't check here, we rely on the kernel to return 0.
+            # But we want to avoid calling the kernel if we can just skip unknown types.
+            # Actually, the kernel now handles the check. We just need to pass the info.
+            pass
+        
+        # Build skipped indices array
         skipped_indices = np.empty(2, dtype=np.int32)
         skipped_indices[0] = 0
         
+        # Fetch status for this specific check
+        attacker_priest_count = 0
+        if hasattr(occ_cache, 'get_priest_count'):
+            attacker_priest_count = occ_cache.get_priest_count(opponent_color)
+            
+        is_buffed_grid = None
+        if hasattr(cache, 'buff_manager') and cache.buff_manager is not None:
+             if hasattr(cache.buff_manager, 'is_buffed'):
+                 is_buffed_grid = cache.buff_manager.is_buffed
+
         result = _fast_attack_kernel_extended(
             king_pos_arr.astype(COORD_DTYPE),
             pos.astype(COORD_DTYPE),
@@ -1184,7 +1334,9 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
             int(opponent_color),
             _JUMP_MOVES_FLAT, _JUMP_SQ_OFFSETS, _JUMP_TYPE_MAP,
             _SLIDER_RAYS_FLAT, _SLIDER_RAY_OFFSETS, _SLIDER_SQ_OFFSETS, _SLIDER_TYPE_MAP,
-            skipped_indices
+            skipped_indices,
+            attacker_priest_count=attacker_priest_count,
+            is_buffed_grid=is_buffed_grid
         )
         
         if result == 1:

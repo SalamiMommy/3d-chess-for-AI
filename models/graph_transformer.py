@@ -182,6 +182,17 @@ class GraphTransformer3D(nn.Module):
         # 3D positional encoding
         self.pos_encoding = PositionalEncoding3D(dim, max_size=self.SIZE)
 
+        # Coordinate grid caching
+        # Create grid once on CPU, register as buffer (will move to device with model)
+        coords = torch.stack(torch.meshgrid(
+            torch.arange(self.SIZE),
+            torch.arange(self.SIZE),
+            torch.arange(self.SIZE),
+            indexing='ij'
+        ), dim=-1).float()  # (SIZE, SIZE, SIZE, 3)
+        coords = coords.reshape(-1, 3).unsqueeze(0) # (1, num_nodes, 3)
+        self.register_buffer('cached_coords', coords)
+
         # Graph transformer layers
         self.layers = nn.ModuleList([
             GraphTransformerBlock(dim, heads, dim_head, ff_mult, dropout)
@@ -223,19 +234,6 @@ class GraphTransformer3D(nn.Module):
             nn.init.constant_(module.bias, 0)
             nn.init.constant_(module.weight, 1.0)
 
-    def _create_coordinate_grid(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Create 3D coordinate grid for positional encoding."""
-        coords = torch.stack(torch.meshgrid(
-            torch.arange(self.SIZE, device=device),
-            torch.arange(self.SIZE, device=device),
-            torch.arange(self.SIZE, device=device),
-            indexing='ij'
-        ), dim=-1).float()  # (9, 9, 9, 3)
-
-        coords = coords.reshape(-1, 3)  # (729, 3)
-        coords = coords.unsqueeze(0).expand(batch_size, -1, -1)  # (batch_size, 729, 3)
-        return coords
-
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the Graph Transformer.
@@ -249,7 +247,7 @@ class GraphTransformer3D(nn.Module):
             value_pred: Value prediction (batch_size, 1)
         """
         batch_size = x.shape[0]
-        device = x.device
+        # device = x.device # Not needed for coords anymore
 
         # Clone input immediately to prevent CUDA Graphs overwrites
         # This is critical when using torch.compile() with CUDA Graphs
@@ -261,8 +259,10 @@ class GraphTransformer3D(nn.Module):
         # Project input features
         node_features = self.input_proj(x_flat)  # (batch_size, 729, dim)
 
-        # Add positional encoding - create fresh coordinate grid to avoid CUDA Graphs issues
-        coords = self._create_coordinate_grid(batch_size, device)
+        # Add positional encoding
+        # Expand cached coordinates to batch size
+        coords = self.cached_coords.expand(batch_size, -1, -1)
+        
         pos_enc = self.pos_encoding(coords)  # (batch_size, 729, dim)
 
         # Combine features and positional encoding

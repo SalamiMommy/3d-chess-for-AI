@@ -181,7 +181,7 @@ class TrainingConfig:
     # Model configuration
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     model_type: str = "transformer"
-    model_size: str = "huge"
+    model_size: str = "large"
 
     # Training hyperparameters
     learning_rate: float = 1e-4  # Scaled down for larger batch size

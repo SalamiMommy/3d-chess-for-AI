@@ -18,6 +18,12 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+try:
+    import setproctitle
+except ImportError:
+    setproctitle = None
+
+
 # =============================================================================
 # INFERENCE SERVER
 # =============================================================================
@@ -40,7 +46,10 @@ def _inference_server_loop(
     import torch
 
     server_logger = logging.getLogger("InferenceServer")
+    if setproctitle:
+        setproctitle.setproctitle("3dchess: server")
     server_logger.info(f"Starting Server on {device} (Batch Size: {batch_size})")
+
 
     try:
         # 1. Load Model (Single Copy in VRAM)
@@ -202,6 +211,9 @@ def _game_worker_client(args):
     ) = args
 
     worker_logger = logging.getLogger(f"worker.{worker_id}")
+    if setproctitle:
+        setproctitle.setproctitle(f"3dchess: worker {worker_id}")
+
 
     try:
         # Initialize game (Low memory footprint)

@@ -275,13 +275,25 @@ def _fast_attack_kernel_extended(
     # Generic Slider Tables
     slider_rays: np.ndarray, slider_ray_offsets: np.ndarray, slider_sq_offsets: np.ndarray, slider_map: np.ndarray,
     # Output
-    skipped_indices: np.ndarray
+    skipped_indices: np.ndarray,
+    # ✅ FIX: Conditional Attack Flags
+    attacker_priest_count: int = 0,
+    is_buffed_grid: Optional[np.ndarray] = None,
+    victim_counters: Optional[np.ndarray] = None
 ) -> int:
     """
     Consolidated attack kernel handling all pieces via generic lookup or inline logic.
     """
     n = attacker_coords.shape[0]
     tx, ty, tz = target[0], target[1], target[2]
+    
+    # 0. Check Environmental Hazards (Trailblazer Counters)
+    # If the square has lethal counters, it is effectively "attacked" (unsafe to enter).
+    if victim_counters is not None:
+        flat_idx = tx + SIZE * ty + SIZE * SIZE * tz
+        # If counter is >= 2, entering it increments to 3 -> Capture.
+        if victim_counters[flat_idx] > 2:
+            return 1
     
     skipped_count = 0
     
@@ -303,7 +315,26 @@ def _fast_attack_kernel_extended(
                 if dz == -1 and abs(tx - ax) == 1 and abs(ty - ay) == 1:
                     is_attacking = True
                     
-        elif atype == 6 or atype == 7: # KING, PRIEST (Simple Range 1 adjacent)
+        elif atype == 6: # KING (Always attacks Range 1, or Range 2 if buffed)
+            # Check buff status
+            is_buffed = False
+            if is_buffed_grid is not None:
+                is_buffed = is_buffed_grid[ax, ay, az]
+            
+            dx = abs(tx - ax)
+            dy = abs(ty - ay)
+            dz = abs(tz - az)
+            
+            if is_buffed:
+                # Buffed King: Range 2
+                if dx <= 2 and dy <= 2 and dz <= 2 and (dx + dy + dz > 0):
+                    is_attacking = True
+            else:
+                # Standard King: Range 1 (Always an attacker)
+                if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz > 0):
+                    is_attacking = True
+
+        elif atype == 7: # PRIEST (Simple Range 1 adjacent)
             dx = abs(tx - ax)
             dy = abs(ty - ay)
             dz = abs(tz - az)
@@ -315,6 +346,14 @@ def _fast_attack_kernel_extended(
             dy = abs(ty - ay)
             dz = abs(tz - az)
             if dx <= 2 and dy <= 2 and dz <= 2 and (dx + dy + dz > 0):
+                is_attacking = True
+        
+        elif atype == 25: # ARCHER (Distance 2, Squared Distance 4)
+            dx = abs(tx - ax)
+            dy = abs(ty - ay)
+            dz = abs(tz - az)
+            dist_sq = dx*dx + dy*dy + dz*dz
+            if dist_sq == 4:
                 is_attacking = True
                 
         # --- 2. Generic Lookup ---
@@ -371,7 +410,23 @@ def square_attacked_by_extended(
     if cache is None or not hasattr(cache, 'occupancy_cache'):
         from game3d.attacks.check import _square_attacked_by_slow
         return _square_attacked_by_slow(board, square, attacker_color, cache)
-        
+    
+    # 0. Check Environmental Hazards (Trailblazer Counters) - ALWAYS UNSAFE
+    # Check this BEFORE checking attacker pieces, because counters kill even if no enemies exist.
+    victim_counters = None
+    if hasattr(cache, 'trailblaze_cache') and cache.trailblaze_cache is not None:
+        if hasattr(cache.trailblaze_cache, '_victim_counters'):
+             victim_counters = cache.trailblaze_cache._victim_counters
+             if victim_counters is not None:
+                 # Calculate flat index properly
+                 # square is (3,)
+                 sx, sy, sz = int(square[0]), int(square[1]), int(square[2])
+                 # Check bounds just in case
+                 if 0 <= sx < SIZE and 0 <= sy < SIZE and 0 <= sz < SIZE:
+                     flat_idx = sx + SIZE * sy + SIZE * SIZE * sz
+                     if victim_counters[flat_idx] > 2:
+                         return True
+
     # Get all attackers
     attacker_positions = cache.occupancy_cache.get_positions(attacker_color)
     if attacker_positions.shape[0] == 0:
@@ -387,6 +442,29 @@ def square_attacked_by_extended(
     skipped_indices = np.empty(attacker_positions.shape[0] + 1, dtype=np.int32)
     skipped_indices[0] = 0
     
+    # ✅ FIX: Get Priest Count and Buff Status
+    # Priest count: we can get this from OccupancyCache if it tracks it (it does)
+    # But get_priest_count takes 'color' argument (enum or int)
+    attacker_priest_count = 0
+    if hasattr(cache.occupancy_cache, 'get_priest_count'):
+        attacker_priest_count = cache.occupancy_cache.get_priest_count(attacker_color)
+
+    # Buff status: Check if cache manager has buff_manager
+    is_buffed_grid = None
+    if hasattr(cache, 'buff_manager') and cache.buff_manager is not None:
+         if hasattr(cache.buff_manager, 'is_buffed'):
+             is_buffed_grid = cache.buff_manager.is_buffed
+    elif hasattr(board, 'buff_manager') and board.buff_manager is not None:
+         # Fallback to board if cache doesn't have it (rare)
+         if hasattr(board.buff_manager, 'is_buffed'):
+             is_buffed_grid = board.buff_manager.is_buffed
+    
+    # Trailblazer Counters (Already checked above, but passed for completeness if kernel needs it)
+    # Actually, if we checked above, we don't strictly need to pass it, but kernel supports it.
+    # We can pass it to catch edge cases or if we remove the early check.
+    # For now, we keep it passed.
+
+
     # Run generic kernel
     result = _fast_attack_kernel_extended(
         square.astype(COORD_DTYPE),
@@ -396,7 +474,10 @@ def square_attacked_by_extended(
         int(attacker_color),
         _JUMP_MOVES_FLAT, _JUMP_SQ_OFFSETS, _JUMP_TYPE_MAP,
         _SLIDER_RAYS_FLAT, _SLIDER_RAY_OFFSETS, _SLIDER_SQ_OFFSETS, _SLIDER_TYPE_MAP,
-        skipped_indices
+        skipped_indices,
+        attacker_priest_count=attacker_priest_count,
+        is_buffed_grid=is_buffed_grid,
+        victim_counters=victim_counters
     )
     
     if result == 1:

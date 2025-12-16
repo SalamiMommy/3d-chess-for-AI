@@ -81,7 +81,7 @@ if __name__ == "__main__":
         mp.set_start_method("spawn", force=True)
 
     # Now safe to import modules (logging is ready)
-    from training.optim_train import ChessTrainer
+    from training.optim_train import ChessTrainer, get_optimal_batch_size
     from training.parallel_self_play import generate_training_data_parallel
     from training.training_types import TrainingConfig, TrainingExample, clear_policy_pool, clear_state_pool, ReplayBuffer
     from training.opponents import AVAILABLE_OPPONENTS, create_opponent
@@ -102,8 +102,8 @@ if __name__ == "__main__":
 
     # CLI configuration
     parser = argparse.ArgumentParser()
-    parser.add_argument("--games-per-iter", type=int, default=60)  # Increased from 24 for more data
-    parser.add_argument("--num-parallel", type=int, default=10)  # Optimized for 6-core CPU
+    parser.add_argument("--games-per-iter", type=int, default=120)  # Increased from 24 for more data
+    parser.add_argument("--num-parallel", type=int, default=12)  # Optimized for 6-core CPU
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
     parser.add_argument("--max-replay", type=int, default=500000)  # Increased to utilize 64GB RAM
@@ -115,9 +115,9 @@ if __name__ == "__main__":
     parser.add_argument("--resume-from", type=str, default=None)
     parser.add_argument("--load-model", type=str, default=None)
     parser.add_argument("--training-mode", type=str, default="fresh", choices=["fresh", "resume"])
-    parser.add_argument("--model-size", type=str, default="huge", choices=["small", "default", "large", "huge"])
+    parser.add_argument("--model-size", type=str, default="large", choices=["small", "default", "large", "huge"])
     parser.add_argument("--use-mixed-precision", action="store_true", default=True)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=2,
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4,
                        help="Gradient accumulation steps for larger effective batch size")
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--validate-only", action="store_true",
@@ -141,7 +141,8 @@ if __name__ == "__main__":
         model_type="transformer",
         model_size=args.model_size,
         mixed_precision=args.use_mixed_precision,
-        gradient_accumulation_steps=args.gradient_accumulation_steps
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        batch_size=get_optimal_batch_size(args.model_size)
     )
 
     # Create model

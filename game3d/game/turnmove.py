@@ -226,6 +226,18 @@ def _make_move_unchecked(game_state: 'GameState', mv: np.ndarray) -> 'GameState'
         swapped_piece = dest_piece
         captured_piece = None  # Not a capture
 
+    # --- King Capture Check ---
+    if captured_piece is not None and captured_piece["piece_type"] == PieceType.KING:
+        piece_name = PieceType(from_piece["piece_type"]).name
+        color_name = Color(from_piece["color"]).name
+        king_color_name = Color(captured_piece["color"]).name
+        logger.critical(
+            f"👑 KING CAPTURE DETECTED! 👑\n"
+            f"Captured King Color: {king_color_name}\n"
+            f"Capturing Piece: {color_name} {piece_name}\n"
+            f"Location: {mv[3:]}"
+        )
+
     # --- 3. CALCULATE & APPLY UPDATES (Functional Core) ---
     buffer = state_to_buffer(game_state, readonly=True)
     effects = calculate_move_effects(mv, buffer)
@@ -237,6 +249,22 @@ def _make_move_unchecked(game_state: 'GameState', mv: np.ndarray) -> 'GameState'
         
     # Explicit clears (if any remaining)
     if effects.coords_to_clear.size > 0:
+         # --- LOGGING: Check for King Removal (Bomb/Archery) ---
+         for i in range(effects.coords_to_clear.shape[0]):
+             coord = effects.coords_to_clear[i]
+             removed_data = cache_manager.occupancy_cache.get(coord)
+             if removed_data is not None and removed_data["piece_type"] == PieceType.KING:
+                 k_color = Color(removed_data["color"]).name
+                 attacker_info = f"{Color(from_piece['color']).name} {PieceType(from_piece['piece_type']).name}"
+                 logger.critical(
+                     f"👑 KING EXPLODED/SNIPED! 👑\n"
+                     f"Captured King Color: {k_color}\n"
+                     f"Attacker: {attacker_info}\n"
+                     f"Location: {coord}\n"
+                     f"Method: Indirect (Bomb/Archery)"
+                 )
+         # ------------------------------------------------------
+
          n_clear = effects.coords_to_clear.shape[0]
          clear_data = np.zeros((n_clear, 2), dtype=PIECE_TYPE_DTYPE)
          cache_manager.occupancy_cache.batch_set_positions(effects.coords_to_clear, clear_data)
@@ -466,6 +494,21 @@ def _process_trailblazer_effects(game_state: 'GameState', mv: np.ndarray, from_p
     for _ in range(counters_to_add):
         is_captured_by_counters = trailblaze_cache.increment_counter(mv[3:])
         if is_captured_by_counters:
+            # --- LOGGING: Check for King Removal (Trailblazer) ---
+            removed_data = game_state.cache_manager.occupancy_cache.get(mv[3:])
+            if removed_data is not None and removed_data["piece_type"] == PieceType.KING:
+                 k_color = Color(removed_data["color"]).name
+                 attacker_info = f"{Color(from_piece['color']).name} {PieceType(from_piece['piece_type']).name}"
+                 logger.critical(
+                     f"👑 KING DISSOLVED BY TRAILBLAZER! 👑\n"
+                     f"Captured King Color: {k_color}\n"
+                     f"Attacker: {attacker_info}\n"
+                     f"Location: {mv[3:]}\n"
+                     f"Method: Trailblazer Counters"
+                 )
+            # -----------------------------------------------------
+
+            # Piece limit reached; remove from cache only (cache is source of truth)
             # Piece limit reached; remove from cache only (cache is source of truth)
             game_state.cache_manager.occupancy_cache.set_position(mv[3:], None)
             trailblaze_cache.clear_counter(mv[3:])

@@ -10,7 +10,13 @@ import torch.nn as nn
 import torch.optim as optim
 from typing import List, Dict, Any, Optional, Union
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    print("Warning: Tensorboard not found. Logging will be disabled.")
+    class SummaryWriter:
+        def __init__(self, *args, **kwargs): pass
+        def add_scalar(self, *args, **kwargs): pass
 import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,33 +37,37 @@ from game3d.common.shared_types import N_CHANNELS, SIZE, MAX_COORD_VALUE, MIN_CO
 if HAS_GRAPH_TRANSFORMER:
     setup_rocm_optimizations()
 
-# Dynamic batch size adjustment
-BATCH_SIZE = 32  # Default safe value
-if torch.cuda.is_available():
+# Dynamic batch size adjustment function
+def get_optimal_batch_size(model_size: str = "default") -> int:
+    """Calculate optimal batch size based on VRAM and model size."""
+    if not torch.cuda.is_available():
+        return 16
+
     try:
         vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        if vram_gb >= 23:
-            # Check if we are using the huge model
-            if hasattr(TrainingConfig, 'model_size') and TrainingConfig.model_size == 'huge':
-                BATCH_SIZE = 32  # Lower batch size for huge model
-                print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM (Huge Model)")
+        print(f"Detected VRAM: {vram_gb:.1f}GB")
+        
+        if vram_gb >= 70:  # A100 80GB
+             return 256 if model_size == 'huge' else 512
+        elif vram_gb >= 23:  # 3090/4090 (24GB)
+            if model_size == 'huge':
+                return 32
+            elif model_size == 'large':
+                return 128
             else:
-                BATCH_SIZE = 128  # 24GB+ cards (3090, 4090, 7900XTX)
-                print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
-        elif vram_gb >= 15:
-            BATCH_SIZE = 64   # 16GB cards
-            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
-        elif vram_gb >= 11:
-            BATCH_SIZE = 32   # 12GB cards
-            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
+                return 128
+        elif vram_gb >= 15:  # 16GB cards
+            return 16 if model_size == 'huge' else 32
+        elif vram_gb >= 11:  # 12GB cards
+            return 8 if model_size == 'huge' else 16
         else:
-            BATCH_SIZE = 16   # 8GB or less
-            print(f"Auto-configured batch size: {BATCH_SIZE} for {vram_gb:.1f}GB VRAM")
+            return 4  # 8GB or less
     except:
-        print("Could not detect VRAM, using default batch size 32")
-else:
-    print("Running on CPU, using batch size 16")
-    BATCH_SIZE = 16
+        print("Could not detect VRAM, using default safe batch size")
+        return 16
+
+# Set constant for backward compatibility
+BATCH_SIZE = get_optimal_batch_size(TrainingConfig.model_size)
 NUM_WORKERS = 8  # Parallel data loading - ROCm handles multiprocessing well
 PIN_MEMORY = True  # Faster CPU-GPU transfers on ROCm
 
@@ -219,13 +229,17 @@ class ChessTrainer:
         # Gradient accumulation for larger effective batch size
         self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
         
-        # Auto-adjust gradient accumulation for huge model if batch size was lowered
-        if config.model_size == 'huge' and config.batch_size < 128:
-            target_effective_batch = 128
-            calculated_steps = max(1, target_effective_batch // config.batch_size)
-            if calculated_steps > self.gradient_accumulation_steps:
-                print(f"Auto-adjusting gradient accumulation to {calculated_steps} for huge model")
-                self.gradient_accumulation_steps = calculated_steps
+        # Auto-adjust gradient accumulation for STABILITY
+        # Target effective batch size of 512 for AlphaZero-style stability
+        TARGET_EFFECTIVE_BATCH = 512
+        if config.batch_size > 0:
+            recommended_steps = max(1, TARGET_EFFECTIVE_BATCH // config.batch_size)
+            
+            if recommended_steps > self.gradient_accumulation_steps:
+                print(f"Auto-stabilizing: Increasing gradient accumulation from {self.gradient_accumulation_steps} to {recommended_steps}")
+                print(f"  -> Physical Batch: {config.batch_size}")
+                print(f"  -> Effective Batch: {config.batch_size * recommended_steps} (Target: {TARGET_EFFECTIVE_BATCH})")
+                self.gradient_accumulation_steps = recommended_steps
 
         if config.use_ema:
             self.ema_model = self._create_model()

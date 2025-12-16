@@ -45,13 +45,29 @@ class StructureManager:
         # Check left neighbor (x-1)
         if x > 0:
             if get_type(x-1, y, z) == PieceType.WALL:
-                return False
+                # If neighbor is Wall, verify if it belongs to a valid wall starting at x-2
+                # If x-2 is Wall, we assume x-1 is part of THAT wall, so x is free to be an anchor.
+                x_minus_2_is_wall = False
+                if x > 1:
+                    if get_type(x-2, y, z) == PieceType.WALL:
+                        x_minus_2_is_wall = True
                 
+                # If x-2 is NOT wall, then x-1 is likely an anchor itself, so it COVERS x.
+                if not x_minus_2_is_wall:
+                    return False
+
         # Check up neighbor (y-1)
         if y > 0:
             if get_type(x, y-1, z) == PieceType.WALL:
-                return False
+                # If neighbor is Wall, verify if it belongs to a valid wall starting at y-2
+                y_minus_2_is_wall = False
+                if y > 1:
+                    if get_type(x, y-2, z) == PieceType.WALL:
+                         y_minus_2_is_wall = True
                 
+                if not y_minus_2_is_wall:
+                    return False
+        
         return True
 
     @staticmethod
