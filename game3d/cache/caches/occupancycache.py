@@ -488,6 +488,33 @@ class OccupancyCache:
         color_idx = 0 if color == Color.WHITE else 1
         return self._type_counts[color_idx, 25] > 0 or self._type_counts[color_idx, 26] > 0
 
+    def get_special_attacker_positions(self, color: int) -> tuple:
+        """Get positions and types of Bomb(26) and Archer(25) pieces for color.
+        
+        ✅ OPTIMIZATION: Avoids fetching ALL positions and filtering.
+        Returns empty arrays quickly if no special attackers exist (O(1) check).
+        
+        Returns:
+            Tuple of (positions: np.ndarray shape (N,3), types: np.ndarray shape (N,))
+        """
+        color_idx = 0 if color == Color.WHITE else 1
+        
+        # O(1) check if ANY special attackers exist
+        n_bomb = self._type_counts[color_idx, 26]
+        n_archer = self._type_counts[color_idx, 25]
+        
+        if n_bomb == 0 and n_archer == 0:
+            return np.empty((0, 3), dtype=COORD_DTYPE), np.empty(0, dtype=PIECE_TYPE_DTYPE)
+        
+        # Only now fetch positions and filter
+        positions = self.get_positions(color)
+        if positions.size == 0:
+            return np.empty((0, 3), dtype=COORD_DTYPE), np.empty(0, dtype=PIECE_TYPE_DTYPE)
+            
+        types = self.batch_get_types_only(positions)
+        mask = (types == 25) | (types == 26)
+        return positions[mask], types[mask]
+
     def get_color_at(self, x: int, y: int, z: int) -> int:
         """Scalar accessor for piece color - avoids array creation."""
         if 0 <= x < SIZE and 0 <= y < SIZE and 0 <= z < SIZE:

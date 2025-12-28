@@ -128,15 +128,16 @@ def push_candidates_vectorized(
     if enemy_coords.size == 0:
         return np.empty((0, 6), dtype=COORD_DTYPE)
 
-    # ✅ CRITICAL FIX: Filter out Walls (immune to physics)
+    # ✅ CRITICAL FIX: Filter out Walls AND Kings (immune to physics)
     # Walls are 2x2 structures and cannot be moved point-wise by physics
+    # Kings cannot be forcibly moved by physics effects
     enemy_types = cache_manager.occupancy_cache.batch_get_types_only(enemy_coords)
-    non_wall_mask = (enemy_types != PieceType.WALL.value)
+    immune_mask = (enemy_types != PieceType.WALL.value) & (enemy_types != PieceType.KING.value)
     
-    if not np.any(non_wall_mask):
+    if not np.any(immune_mask):
         return np.empty((0, 6), dtype=COORD_DTYPE)
         
-    enemy_coords = enemy_coords[non_wall_mask]
+    enemy_coords = enemy_coords[immune_mask]
 
     # Run fused kernel
     flattened_occ = cache_manager.occupancy_cache.get_flattened_occupancy()

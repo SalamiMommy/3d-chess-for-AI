@@ -14,6 +14,7 @@ import logging
 import time
 import gc
 from tqdm import tqdm
+from training.training_types import TrainingExample
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -228,8 +229,7 @@ def _game_worker_client(args):
         move_count = 0
         examples = []
         error_count = 0
-        start_time = time.perf_counter()
-
+        
         # --- GAME LOOP ---
         while move_count < max_moves and not game.is_game_over():
 
@@ -338,7 +338,7 @@ def _game_worker_client(args):
             game._state._legal_moves_cache = None
             move_count += 1
 
-            # ✅ FIX: Check if game is over after move execution
+            # FIX: Check if game is over after move execution
             if receipt.is_game_over:
                 worker_logger.debug(f"Worker {worker_id}: Game over detected via receipt (result={receipt.result})")
                 break
@@ -375,162 +375,12 @@ def _game_worker_client(args):
         return []
 
 
-# =============================================================================
-# ORCHESTRATION
-# =============================================================================
-
-def generate_training_data_parallel(
-    model_checkpoint_path: str,
-    num_games: int = 10,
-    device: str = "cuda",
-    opponent_types: Optional[List[str]] = None,
-    epsilon: float = 0.1,
-    num_parallel: int = 4,
-    max_moves: int = 100_000,
-    model_size: str = "default",
-):
-    """
-    Orchestrates Client-Server self-play.
-    """
-    if opponent_types is None:
-        opponent_types = ["piece_capture", "piece_capture"]
-
-    logger.info(f"Starting Client-Server Self-Play: {num_games} games, {num_parallel} workers")
-
-    # 1. Setup Queues
-    # Use 'spawn' context for CUDA compatibility
-    ctx = mp.get_context('spawn')
-    manager = ctx.Manager()
-    request_queue = manager.Queue()
-    # Create private response queue for each worker ID (0 to num_parallel-1)
-    response_queues = {i: manager.Queue() for i in range(num_parallel)}
-    stop_event = ctx.Event()
-
-    # 2. Start Inference Server
-    server_process = ctx.Process(
-        target=_inference_server_loop,
-        args=(
-            model_checkpoint_path,
-            device,
-            model_size,
-            request_queue,
-            response_queues,
-            stop_event,
-            num_parallel # batch size = number of workers
-        ),
-        name="InferenceServer"
-    )
-    server_process.start()
-
-    # Wait briefly for server to initialize
-    time.sleep(2)
-    if not server_process.is_alive():
-        raise RuntimeError("Inference Server failed to start. Check logs.")
-
-    all_examples = []
-    pool = None
-
-    try:
-        # 3. Prepare Worker Args
-        # We need to distribute num_games across num_parallel workers
-        # Strategy: Each task is 1 game. We create a pool of size num_parallel.
-        # The worker_id passed to the function must stay within 0..num_parallel-1
-        # so it maps to a response queue.
-        # CAUTION: multiprocessing Pool doesn't guarantee fixed IDs.
-        # SOLUTION: We can't use Pool.map comfortably if we need fixed IDs for queues.
-        # ALTERNATIVE: Use manually managed Process list or a Semaphore-protected ID pool.
-        #
-        # Simpler approach for Pool: The worker acquires an ID from a Queue on start
-        # and releases it on finish.
-
-        id_queue = manager.Queue()
-        for i in range(num_parallel):
-            id_queue.put(i)
-
-        # Wrapper to handle ID acquisition
-        def worker_wrapper(args):
-            # args: (game_idx, ...)
-            try:
-                w_id = id_queue.get() # Block until a slot is free
-                real_args = (
-                    args[0], # game_id
-                    w_id,    # worker_id (0..N-1)
-                    *args[1:]
-                )
-                # Pass the SPECIFIC response queue for this ID
-                # We need to inject the specific response queue based on w_id
-                # But we can't inject it here easily as queues are in the dict.
-                # Actually, we passed the WHOLE dict? No, passing Manager objects is slow.
-                # Better: Worker uses request_queue and response_queues[w_id].
-
-                # To make this clean, let's just pass the response_queue corresponding to w_id
-                # But we can't access the dict from here easily if it's not in args.
-
-                # REVISED STRATEGY:
-                # Pass the dict of queues to the worker.
-                # Worker gets ID, picks its queue from dict.
-
-                result = _game_worker_client(real_args)
-                return result
-            finally:
-                id_queue.put(w_id) # Release ID
-
-        pool = ctx.Pool(processes=num_parallel)
-
-        game_args = []
-        for i in range(num_games):
-            gid = f"{i}"
-            # Note: We pass response_queues (the dict) and let worker pick
-            args = (
-                gid,
-                opponent_types,
-                epsilon,
-                max_moves,
-                request_queue,
-                response_queues # Pass the dict
-            )
-            game_args.append(args)
-
-        # Redefine _game_worker_client signature in the worker function to match this
-        # ... (adjusted below in the helper function logic) ...
-
-        logger.info("Launching workers...")
-
-        # Using a custom wrapper function for the pool that handles ID assignment
-        results = []
-        for res in tqdm(pool.imap_unordered(_pool_worker_shim,
-                                     [(a, id_queue) for a in game_args]), total=num_games, desc="Self-Play Games"):
-            if res:
-                all_examples.extend(res)
-                if len(all_examples) % 100 == 0:
-                    logger.info(f"Collected {len(all_examples)} examples...")
-
-    except Exception as e:
-        logger.error(f"Self-play failed: {e}", exc_info=True)
-        raise
-    finally:
-        # Shutdown
-        logger.info("Stopping Server...")
-        stop_event.set()
-
-        if pool:
-            pool.close()
-            pool.join()
-
-        server_process.join(timeout=5)
-        if server_process.is_alive():
-            server_process.terminate()
-
-        manager.shutdown()
-
-    return all_examples
-
-
 def _pool_worker_shim(packed_args):
     """
     Shim to handle Worker ID assignment inside the Pool.
     """
     game_args, id_queue = packed_args
+    # Acquire ID (blocks if none available)
     worker_id = id_queue.get()
 
     try:
@@ -553,7 +403,192 @@ def _pool_worker_shim(packed_args):
 
         return _game_worker_client(client_args)
     finally:
+        # Release ID so another task can run on this process (or another process)
+        # Note: In a Pool, processes reuse this shim, so we must release the ID.
         id_queue.put(worker_id)
 
-def generate_training_data(**kwargs):
-    return generate_training_data_parallel(**kwargs)
+
+# =============================================================================
+# SELF-PLAY ENGINE (PERSISTENT)
+# =============================================================================
+
+class SelfPlayEngine:
+    """
+    Persistent engine that manages the worker pool and inference server.
+    Avoids expensive process spawning every iteration.
+    """
+    def __init__(self, num_parallel: int = 4, device: str = "cuda"):
+        self.num_parallel = num_parallel
+        self.device = device
+        self.logger = logging.getLogger("SelfPlayEngine")
+        
+        # 1. Setup Multiprocessing Context
+        # Use 'spawn' context for CUDA compatibility
+        self.ctx = mp.get_context('spawn')
+        self.manager = self.ctx.Manager()
+        
+        # 2. Setup Queues (Persistent)
+        self.request_queue = self.manager.Queue()
+        self.response_queues = {i: self.manager.Queue() for i in range(num_parallel)}
+        
+        # 3. Setup ID Queue (for Pool workers to claim persistent slot IDs)
+        self.id_queue = self.manager.Queue()
+        for i in range(num_parallel):
+            self.id_queue.put(i)
+            
+        # 4. Setup Worker Pool (Persistent)
+        # We start the pool once. It will stay alive waiting for tasks.
+        self.logger.info(f"Initializing Worker Pool with {num_parallel} processes...")
+        self.pool = self.ctx.Pool(processes=num_parallel)
+        
+        # 5. Server State
+        self.server_process = None
+        self.stop_event = self.ctx.Event()
+
+    def update_model(self, model_checkpoint_path: str, model_size: str = "default"):
+        """
+        Restart the inference server with new model weights.
+        """
+        self.logger.info(f"Updating model to: {model_checkpoint_path}")
+        
+        # Stop existing server if any
+        if self.server_process and self.server_process.is_alive():
+            self.logger.info("Stopping old inference server...")
+            self.stop_event.set()
+            self.server_process.join(timeout=5)
+            if self.server_process.is_alive():
+                self.server_process.terminate()
+            self._drain_queues()
+            
+        # Reset stop event for new server
+        self.stop_event.clear()
+        
+        # Start new server
+        self.logger.info("Starting new inference server...")
+        self.server_process = self.ctx.Process(
+            target=_inference_server_loop,
+            args=(
+                model_checkpoint_path,
+                self.device,
+                model_size,
+                self.request_queue,
+                self.response_queues,
+                self.stop_event,
+                self.num_parallel
+            ),
+            name="InferenceServer"
+        )
+        self.server_process.start()
+        
+        # Wait specifically for startup
+        time.sleep(2)
+        if not self.server_process.is_alive():
+            raise RuntimeError("Inference server failed to start immediately.")
+
+    def generate_games(
+        self,
+        num_games: int,
+        opponent_types: Optional[List[str]] = None,
+        epsilon: float = 0.1,
+        max_moves: int = 100_000
+    ) -> List[TrainingExample]:
+        """
+        Dispatch game tasks to the persistent pool.
+        """
+        if opponent_types is None:
+            opponent_types = ["piece_capture", "piece_capture"]
+            
+        self.logger.info(f"Dispatching {num_games} games to pool...")
+        
+        game_args = []
+        for i in range(num_games):
+            gid = f"{int(time.time())}_{i}"
+            args = (
+                gid,
+                opponent_types,
+                epsilon,
+                max_moves,
+                self.request_queue,
+                self.response_queues
+            )
+            game_args.append(args)
+            
+        all_examples = []
+        
+        # Use imap_unordered to process results as they come in
+        try:
+            # Note: we pass id_queue separately to the shim
+            packed_args = [(a, self.id_queue) for a in game_args]
+            
+            iterator = self.pool.imap_unordered(_pool_worker_shim, packed_args)
+            
+            for res in tqdm(iterator, total=num_games, desc="Self-Play Games"):
+                if res:
+                    all_examples.extend(res)
+                    
+            return all_examples
+            
+        except Exception as e:
+            self.logger.error(f"Error during game generation: {e}")
+            raise
+
+    def _drain_queues(self):
+        """Helper to clear queues on server restart."""
+        try:
+            while not self.request_queue.empty():
+                try: self.request_queue.get_nowait()
+                except: break
+            for q in self.response_queues.values():
+                while not q.empty():
+                    try: q.get_nowait()
+                    except: break
+        except:
+            pass
+
+    def shutdown(self):
+        """
+        Full cleanup of pool, server, and manager.
+        """
+        self.logger.info("Shutting down SelfPlayEngine...")
+        
+        # 1. Stop Server
+        self.stop_event.set()
+        if self.server_process:
+            self.server_process.join(timeout=5)
+            if self.server_process.is_alive():
+                self.server_process.terminate()
+        
+        # 2. Stop Pool
+        if self.pool:
+            self.pool.terminate()
+            self.pool.join()
+            
+        # 3. Stop Manager
+        try:
+            self.manager.shutdown()
+        except:
+            pass
+            
+        self.logger.info("Shutdown complete.")
+
+
+def generate_training_data_parallel(
+    model_checkpoint_path: str,
+    num_games: int,
+    device: str,
+    model_size: str = "default",
+    opponent_types: Optional[List[str]] = None
+) -> List[TrainingExample]:
+    """
+    Convenience wrapper for SelfPlayEngine to generate training data.
+    Useful for one-off calls (e.g., from simple training loops).
+    """
+    # Use fewer processes for simple wrapper calls to avoid system overload
+    num_workers = min(4, mp.cpu_count() - 1)
+    
+    engine = SelfPlayEngine(num_parallel=num_workers, device=device)
+    try:
+        engine.update_model(model_checkpoint_path, model_size=model_size)
+        return engine.generate_games(num_games, opponent_types)
+    finally:
+        engine.shutdown()

@@ -65,21 +65,26 @@ def _special_attacker_in_range(occ_cache, attacker_color: int, square: np.ndarra
     
     This avoids falling back to full geometric check when special attackers exist
     but are far from the target square.
+    
+    Uses get_special_attacker_positions for O(1) early-exit when no special attackers exist.
     """
-    positions = occ_cache.get_positions(attacker_color)
-    if positions.size == 0:
+    # ✅ OPTIMIZATION: Use dedicated method that does O(1) check first
+    if hasattr(occ_cache, 'get_special_attacker_positions'):
+        special_positions, special_types = occ_cache.get_special_attacker_positions(attacker_color)
+    else:
+        # Fallback for older cache implementations
+        positions = occ_cache.get_positions(attacker_color)
+        if positions.size == 0:
+            return False
+        types = occ_cache.batch_get_types_only(positions)
+        special_mask = (types == 25) | (types == 26)
+        if not np.any(special_mask):
+            return False
+        special_positions = positions[special_mask]
+        special_types = types[special_mask]
+    
+    if special_positions.size == 0:
         return False
-    
-    # Get types for positioned pieces
-    types = occ_cache.batch_get_types_only(positions)
-    
-    # Filter to only Bomb (26) and Archer (25)
-    special_mask = (types == 25) | (types == 26)
-    if not np.any(special_mask):
-        return False
-    
-    special_positions = positions[special_mask]
-    special_types = types[special_mask]
     
     tx, ty, tz = int(square[0]), int(square[1]), int(square[2])
     
@@ -156,6 +161,20 @@ def move_would_leave_king_in_check(game_state: 'GameState', move: np.ndarray, ca
         return False
     
     is_king_move = (ptype == PieceType.KING.value)
+
+    # ✅ FIX: Explicit enemy King adjacency check for King moves
+    # If moving a King and player has 0 priests (already checked above),
+    # moving adjacent to enemy King = moving into check (always illegal)
+    if is_king_move:
+        opponent_color = Color(player_color).opposite().value
+        enemy_king_pos = occ_cache.find_king(opponent_color)
+        if enemy_king_pos is not None:
+            dx = abs(int(to_coord[0]) - int(enemy_king_pos[0]))
+            dy = abs(int(to_coord[1]) - int(enemy_king_pos[1]))
+            dz = abs(int(to_coord[2]) - int(enemy_king_pos[2]))
+            # Adjacent = all deltas <= 1 and at least one > 0
+            if dx <= 1 and dy <= 1 and dz <= 1 and (dx + dy + dz) > 0:
+                return True  # Moving adjacent to enemy King = unsafe
 
     # ✅ OPTIMIZATION: Use fast simulation that skips auxiliary updates
     # For king moves, we need to track the position manually
@@ -331,6 +350,11 @@ def batch_moves_leave_king_in_check(
     
     # For king moves: check destination against attack mask
     king_indices = np.where(king_move_mask)[0]
+    
+    # ✅ FIX: Explicit enemy King adjacency check
+    # Get enemy King position for adjacency check
+    enemy_king_pos = occ_cache.find_king(opponent_color)
+    
     for idx in king_indices:
         dest = moves[idx, 3:6].astype(np.int32)
         dx, dy, dz = int(dest[0]), int(dest[1]), int(dest[2])
@@ -339,6 +363,19 @@ def batch_moves_leave_king_in_check(
         if not (0 <= dx < SIZE and 0 <= dy < SIZE and 0 <= dz < SIZE):
             results[idx] = True  # Out of bounds = unsafe
             continue
+        
+        # ✅ FIX: Check if this move would place King adjacent to enemy King
+        # This always applies when player has 0 priests (checked at entry)
+        if enemy_king_pos is not None:
+            ekx, eky, ekz = int(enemy_king_pos[0]), int(enemy_king_pos[1]), int(enemy_king_pos[2])
+            delta_x = abs(dx - ekx)
+            delta_y = abs(dy - eky)
+            delta_z = abs(dz - ekz)
+            
+            # Adjacent = all deltas <= 1 and at least one > 0
+            if delta_x <= 1 and delta_y <= 1 and delta_z <= 1 and (delta_x + delta_y + delta_z) > 0:
+                results[idx] = True  # Would be adjacent to enemy King = unsafe
+                continue
         
         # King moves to attacked square
         if attack_mask[dx, dy, dz]:
@@ -352,7 +389,7 @@ def batch_moves_leave_king_in_check(
             else:
                 # No capture, moving to attacked square = unsafe
                 results[idx] = True
-        # else: Destination not attacked = safe
+        # else: Destination not attacked and not adjacent to enemy King = safe
     
     return results
 
@@ -682,21 +719,44 @@ def batch_moves_leave_king_in_check_fused(
             # Vectorized attack mask lookup
             dest_attacked = attack_mask[valid_dests[:, 0], valid_dests[:, 1], valid_dests[:, 2]]
             
+            # ✅ FIX: Explicit enemy King adjacency check
+            # The attack mask is built from pseudolegal moves, which excludes squares 
+            # occupied by friendly pieces. But a King ATTACKS all adjacent squares,
+            # even if it can't move there. Without this check, a King could move
+            # adjacent to an enemy King if the enemy had a piece there that gets captured.
+            enemy_king_pos = occ_cache.find_king(opponent_color)
+            enemy_adjacent_mask = np.zeros(len(valid_dests), dtype=BOOL_DTYPE)
+            
+            if enemy_king_pos is not None:
+                # ✅ FIX: Adjacency restriction ALWAYS applies when player has 0 priests
+                # (player priest check is done at function entry, so here we always block)
+                # Check Chebyshev distance (King attacks = range 1)
+                ekx, eky, ekz = int(enemy_king_pos[0]), int(enemy_king_pos[1]), int(enemy_king_pos[2])
+                dx = np.abs(valid_dests[:, 0] - ekx)
+                dy = np.abs(valid_dests[:, 1] - eky)
+                dz = np.abs(valid_dests[:, 2] - ekz)
+                
+                # Adjacent = all deltas <= 1 and at least one > 0
+                enemy_adjacent_mask = (dx <= 1) & (dy <= 1) & (dz <= 1) & ((dx + dy + dz) > 0)
+            
             # Check if move captures a piece (potential attacker removal)
             dest_colors, dest_types = occ_cache.batch_get_attributes_unsafe(valid_dests)
             is_capture = dest_types > 0
             
-            # Safe if: (not attacked) OR (capture AND destination only attacked by captured piece)
-            # For simplicity, mark attacked destinations as unsafe unless capturing the sole attacker
+            # Safe if: (not attacked) AND (not adjacent to enemy King)
+            # OR (capture that removes the only attacker AND not adjacent to enemy King)
             for local_idx, global_idx in enumerate(valid_indices):
-                if dest_attacked[local_idx]:
+                # ✅ FIX: Enemy King adjacency is ALWAYS unsafe (can't move adjacent to enemy King)
+                if enemy_adjacent_mask[local_idx]:
+                    results[global_idx] = True
+                elif dest_attacked[local_idx]:
                     if is_capture[local_idx]:
                         # Check if captured piece is the only attacker of this square
                         # Use fallback for accuracy in complex capture scenarios
                         results[global_idx] = move_would_leave_king_in_check(game_state, moves[global_idx], cache)
                     else:
                         results[global_idx] = True
-                # else: destination not attacked = safe (results[global_idx] stays False)
+                # else: destination not attacked and not adjacent to enemy King = safe
     
     return results
 
@@ -1307,7 +1367,7 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
     """
     Get a list of attackers targeting the current player's king.
     
-    Uses geometric attack detection (same as is_check) to identify attackers.
+    ✅ FIX: Uses CACHED MOVES (same as is_check) to identify attackers.
     This ensures consistency with how check was detected.
     
     Returns:
@@ -1327,9 +1387,39 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
         return []
         
     king_pos_arr = king_pos.astype(COORD_DTYPE)
+    kx, ky, kz = int(king_pos_arr[0]), int(king_pos_arr[1]), int(king_pos_arr[2])
     
-    # 2. ✅ FIX: Use GEOMETRIC attack detection (same as is_check)
-    # Get all opponent pieces and check which ones can attack the king geometrically
+    # 2. ✅ FIX: Use CACHED MOVES (same as is_check via square_attacked_by)
+    # This ensures we find the same attackers that triggered is_check=True
+    attackers_info = []
+    ptype_grid = occ_cache._ptype
+    
+    # Try to get attackers from cached moves first (same source as is_check)
+    if hasattr(cache, 'move_cache'):
+        cached_moves = cache.move_cache.get_pseudolegal_moves(opponent_color)
+        if cached_moves is not None and cached_moves.size > 0:
+            # Find moves that target the king's position
+            hits = (cached_moves[:, 3] == kx) & (cached_moves[:, 4] == ky) & (cached_moves[:, 5] == kz)
+            hitting_moves = cached_moves[hits]
+            
+            if hitting_moves.size > 0:
+                # Get unique attacker positions
+                attacker_from_coords = hitting_moves[:, :3]
+                unique_attackers = np.unique(attacker_from_coords, axis=0)
+                
+                for pos in unique_attackers:
+                    ax, ay, az = int(pos[0]), int(pos[1]), int(pos[2])
+                    ptype = ptype_grid[ax, ay, az]
+                    if ptype > 0:
+                        ptype_name = PieceType(ptype).name
+                        attackers_info.append(f"{ptype_name} at ({ax},{ay},{az})")
+                    else:
+                        # Piece might have been captured/moved - check occupancy
+                        attackers_info.append(f"UNKNOWN at ({ax},{ay},{az})")
+                
+                return attackers_info
+    
+    # Fallback: Use geometric detection if cache is unavailable or no attackers found in cache
     from game3d.attacks.attack_registry import (
         _fast_attack_kernel_extended,
         _JUMP_MOVES_FLAT, _JUMP_SQ_OFFSETS, _JUMP_TYPE_MAP,
@@ -1338,12 +1428,10 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
     
     attacker_positions = occ_cache.get_positions(opponent_color)
     if attacker_positions.shape[0] == 0:
+        logger.warning(f"get_attackers: No opponent pieces found for color {opponent_color}")
         return []
     
-    # 3. Check each opponent piece individually for geometric attack on king
-    attackers_info = []
     occ_grid = occ_cache._occ
-    ptype_grid = occ_cache._ptype
     
     for i in range(attacker_positions.shape[0]):
         pos = attacker_positions[i:i+1]  # Keep as (1, 3) shape
@@ -1435,7 +1523,6 @@ def get_attackers(game_state: 'GameState', cache=None) -> List[str]:
                 
                 moves = generate_pseudolegal_moves(buffer)
                 if moves.size > 0:
-                    kx, ky, kz = king_pos_arr[0], king_pos_arr[1], king_pos_arr[2]
                     hits = (moves[:, 3] == kx) & (moves[:, 4] == ky) & (moves[:, 5] == kz)
                     if np.any(hits):
                         ptype_name = PieceType(ptype).name

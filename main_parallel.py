@@ -82,7 +82,7 @@ if __name__ == "__main__":
 
     # Now safe to import modules (logging is ready)
     from training.optim_train import ChessTrainer, get_optimal_batch_size
-    from training.parallel_self_play import generate_training_data_parallel
+    # from training.parallel_self_play import generate_training_data_parallel  # Unused here, using SelfPlayEngine directly
     from training.training_types import TrainingConfig, TrainingExample, clear_policy_pool, clear_state_pool, ReplayBuffer
     from training.opponents import AVAILABLE_OPPONENTS, create_opponent
     from game3d.common.shared_types import N_CHANNELS, SIZE, MAX_COORD_VALUE, MIN_COORD_VALUE
@@ -300,6 +300,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # ============ MAIN TRAINING LOOP WITH MEMORY SAFETY ============
+    from training.parallel_self_play import SelfPlayEngine
+
+    # Initialize Engine (Persistent Process Pool)
+    # We do this OUTSIDE the loop so workers stay alive
+    engine = SelfPlayEngine(num_parallel=args.num_parallel, device=args.device)
+
     iteration = start_iteration
     pbar = tqdm(
         total=args.max_iter if args.max_iter else None,
@@ -329,16 +335,15 @@ if __name__ == "__main__":
                 torch.save(trainer.model.state_dict(), temp_checkpoint)
                 logger.info(f"Saved temporary checkpoint: {temp_checkpoint}")
                 
-                # Generate training data with per-worker models
-                fresh = generate_training_data_parallel(
-                    model_checkpoint_path=str(temp_checkpoint),
+                # 1. Update Engine with new model weights (Restarts Server only)
+                engine.update_model(str(temp_checkpoint), model_size=args.model_size)
+
+                # 2. Generate Training Data (Uses persistent workers)
+                fresh = engine.generate_games(
                     num_games=args.games_per_iter,
-                    device=args.device,
                     opponent_types=[white_type, black_type],
                     epsilon=args.epsilon,
-                    num_parallel=args.num_parallel,
-                    max_moves=100000,
-                    model_size=args.model_size,
+                    max_moves=100000
                 )
 
 
@@ -448,6 +453,10 @@ if __name__ == "__main__":
         pbar.close()
         replay.cleanup()
         clear_all_caches()
+        
+        # Shutdown Engine
+        if 'engine' in locals():
+            engine.shutdown()
 
     # Save final model
     final_path = run_dir / "model_final.pt"
