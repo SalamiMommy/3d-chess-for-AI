@@ -709,53 +709,81 @@ __all__ = [
 # =============================================================================
 
 class ReplayBuffer(torch.utils.data.Dataset):
-    """In-memory replay buffer acting as a Lazy Dataset."""
+    """Memory-mapped replay buffer acting as a Lazy Dataset."""
 
     def __init__(self, max_size: int = 300000, temp_dir: str = None):
         self.max_size = max_size
-        # Storage: list of compressed dicts
-        self._buffer = []
         self.size = 0
         self.position = 0
+        self.temp_dir = temp_dir if temp_dir else tempfile.mkdtemp()
+        
+        # Ensure directory exists
+        os.makedirs(self.temp_dir, exist_ok=True)
+        
+        # Initialize memory-mapped arrays
+        # This offloads the RAM requirement to disk, supporting massive replay buffers
+        self.states = np.memmap(
+            os.path.join(self.temp_dir, 'states.dat'),
+            dtype=np.uint8, mode='w+', shape=(self.max_size, N_TOTAL_PLANES, SIZE, SIZE, SIZE)
+        )
+        self.from_targets = np.memmap(
+            os.path.join(self.temp_dir, 'from_targets.dat'),
+            dtype=np.float32, mode='w+', shape=(self.max_size, POLICY_DIM)
+        )
+        self.to_targets = np.memmap(
+            os.path.join(self.temp_dir, 'to_targets.dat'),
+            dtype=np.float32, mode='w+', shape=(self.max_size, POLICY_DIM)
+        )
+        self.values = np.memmap(
+            os.path.join(self.temp_dir, 'values.dat'),
+            dtype=np.float32, mode='w+', shape=(self.max_size,)
+        )
 
     def append(self, examples: List[TrainingExample]) -> None:
         """Append examples with circular buffer overwrite behavior."""
         for ex in examples:
-            # Convert to compact uint8 format (75% memory savings vs float32)
-            data = {
-                'state': (ex.state_tensor * 255).clip(0, 255).astype(np.uint8),
-                'from_target': ex.from_target.astype(np.float32),
-                'to_target': ex.to_target.astype(np.float32),
-                'value': float(ex.value_target),
-            }
+            # Write directly to memory-mapped files
+            # Handle both float32 and already-compressed uint8 states safely
+            if ex.state_tensor.dtype == np.uint8:
+                self.states[self.position] = ex.state_tensor
+            else:
+                self.states[self.position] = (ex.state_tensor * 255).clip(0, 255).astype(np.uint8)
+                
+            self.from_targets[self.position] = ex.from_target.astype(np.float32)
+            self.to_targets[self.position] = ex.to_target.astype(np.float32)
+            self.values[self.position] = float(ex.value_target)
 
             if self.size < self.max_size:
-                self._buffer.append(data)
                 self.size += 1
-            else:
-                self._buffer[self.position] = data
-                self.position = (self.position + 1) % self.max_size
+            
+            self.position = (self.position + 1) % self.max_size
+            
+        # Flush to disk occasionally to prevent massive OS write spikes
+        self.states.flush()
+        self.from_targets.flush()
+        self.to_targets.flush()
+        self.values.flush()
 
     def __len__(self) -> int:
         return self.size
 
     def __getitem__(self, idx: int):
-        """Lazy decompression of a single example."""
-        data = self._buffer[idx]
-        
-        # Decompress state on-the-fly
-        state = data['state'].astype(np.float32) / 255.0
+        """Lazy read from memmap."""
+        state = self.states[idx].astype(np.float32) / 255.0
         
         return (
             torch.from_numpy(state),
-            torch.from_numpy(data['from_target']),
-            torch.from_numpy(data['to_target']),
-            torch.tensor(data['value'], dtype=torch.float32)
+            torch.from_numpy(self.from_targets[idx].copy()),
+            torch.from_numpy(self.to_targets[idx].copy()),
+            torch.tensor(self.values[idx], dtype=torch.float32)
         )
 
-    def cleanup(self) -> None:
-        """Clear buffer memory."""
-        self._buffer.clear()
+    def clear(self) -> None:
+        """Clear buffer conceptually without reallocating files."""
         self.size = 0
         self.position = 0
+
+    def cleanup(self) -> None:
+        """Clear buffer memory conceptually."""
+        self.clear()
 

@@ -439,3 +439,7 @@ class ZobristHash:
                 ]
 
         return result_hashes.astype(HASH_DTYPE)
+
+    def clear(self) -> None:
+        """Clear cache state."""
+        pass

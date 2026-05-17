@@ -36,56 +36,12 @@ from game3d.common.geometry_utils import batch_check_alignment
 # =============================================================================
 # GLOBAL REGISTRY - NUMPY-NATIVE IMPLEMENTATION
 # =============================================================================
-
-_MAX_MANAGERS = 128
-_REGISTRY_DTYPE = np.dtype([
-    ('board_id', np.int64),
-    ('color', COLOR_DTYPE),
-    ('manager_weakref', np.int64),  # id() of manager for weak reference simulation
-    ('active', BOOL_DTYPE)
-])
-
-_ACTIVE_CACHE_MANAGERS = np.zeros(_MAX_MANAGERS, dtype=_REGISTRY_DTYPE)
-_REGISTRY_LOCK = threading.Lock()
-_REGISTRY_COUNT = np.array([0], dtype=INDEX_DTYPE)
-
-@njit(cache=True, nogil=True)
-def _find_manager_idx(registry: np.ndarray, board_id: int, color: int) -> int:
-    """Numba-optimized registry lookup."""
-    for i in range(len(registry)):
-        if (registry[i]['active'] and
-            registry[i]['board_id'] == board_id and
-            registry[i]['color'] == color):
-            return i
-    return -1
+# Removed static registry because it caused memory leaks and registry overflows
+# Each game gets its own transient OptimizedCacheManager now.
 
 def get_cache_manager(board, color: int = 0, initial_data: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None) -> "OptimizedCacheManager":
-    """Thread-safe manager retrieval/caching using numpy registry."""
-    global _ACTIVE_CACHE_MANAGERS, _REGISTRY_COUNT
-
-    board_id = id(board)
-
-    with _REGISTRY_LOCK:
-        idx = _find_manager_idx(_ACTIVE_CACHE_MANAGERS, board_id, color)
-
-        if idx >= 0:
-            # Manager exists - would use weakref in production
-            return OptimizedCacheManager(board, color, initial_data)
-
-        # Create new manager
-        if _REGISTRY_COUNT[0] >= _MAX_MANAGERS:
-            logger.error(f"Registry full ({_MAX_MANAGERS} managers)")
-            raise RuntimeError("Cache manager registry overflow")
-
-        manager = OptimizedCacheManager(board, color, initial_data)
-
-        _ACTIVE_CACHE_MANAGERS[_REGISTRY_COUNT[0]] = (
-            board_id, color, id(manager), True
-        )
-        _REGISTRY_COUNT[0] += 1
-
-        logger.debug(f"Created cache manager #{_REGISTRY_COUNT[0]} for board {board_id}")
-        return manager
+    """Create a new transient manager without caching to avoid RAM leaks."""
+    return OptimizedCacheManager(board, color, initial_data)
 
 def _get_adjacent_squares(coord: np.ndarray) -> np.ndarray:
     """Return adjacent coordinates for capture effect processing."""
@@ -393,9 +349,15 @@ class OptimizedCacheManager:
             from game3d.cache.parallelmanager import ParallelManager
 
             config = ManagerConfig()
-            n_cpus = os.cpu_count() or 6
-            config.max_workers = max(1, n_cpus - 1)
-            config.enable_parallel = True
+            
+            import multiprocessing
+            if multiprocessing.current_process().name != 'MainProcess':
+                config.max_workers = 1
+                config.enable_parallel = False
+            else:
+                n_cpus = os.cpu_count() or 6
+                config.max_workers = max(1, n_cpus - 1)
+                config.enable_parallel = True
 
             self._parallel_executor = ParallelManager(config)
 
@@ -464,6 +426,49 @@ class OptimizedCacheManager:
                 # Batch invalidate
                 c_indices = np.full(dep_keys.size, c_idx, dtype=np.int8)
                 self.move_cache.mark_pieces_invalid_batch(c_indices, dep_keys)
+
+    def cleanup(self) -> None:
+        """Break circular references and shutdown resources to prevent memory leaks."""
+        if hasattr(self, '_parallel_executor') and self._parallel_executor is not None:
+            self._parallel_executor.shutdown(wait=False)
+            self._parallel_executor = None
+
+        if hasattr(self, '_board') and self._board is not None:
+            if hasattr(self._board, '_cache_manager'):
+                self._board._cache_manager = None
+            self._board = None
+
+        # Explicitly clear/invalidate internal caches to free numpy arrays immediately
+        if hasattr(self, 'move_cache') and self.move_cache is not None:
+            if hasattr(self.move_cache, 'invalidate'): self.move_cache.invalidate()
+            self.move_cache = None
+            
+        if hasattr(self, 'occupancy_cache') and self.occupancy_cache is not None:
+            if hasattr(self.occupancy_cache, 'clear'): self.occupancy_cache.clear()
+            self.occupancy_cache = None
+            
+        if hasattr(self, 'aura_cache') and self.aura_cache is not None:
+            if hasattr(self.aura_cache, 'invalidate_all'): self.aura_cache.invalidate_all()
+            elif hasattr(self.aura_cache, 'clear'): self.aura_cache.clear()
+            self.aura_cache = None
+            
+        if hasattr(self, 'transposition_table') and self.transposition_table is not None:
+            if hasattr(self.transposition_table, 'clear'): self.transposition_table.clear()
+            self.transposition_table = None
+
+        if hasattr(self, '_effect_cache_instances') and self._effect_cache_instances:
+            for c in self._effect_cache_instances:
+                if hasattr(c, 'invalidate_all'): c.invalidate_all()
+                elif hasattr(c, 'clear'): c.clear()
+            self._effect_cache_instances = None
+
+        # Clear remaining references
+        self.symmetry_manager = None
+        self.dependency_graph = None
+        self.zobrist_cache = None
+        if hasattr(self, '_effect_caches') and self._effect_caches is not None:
+            self._effect_caches.clear()
+            self._effect_caches = None
 
 
 # =============================================================================

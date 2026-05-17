@@ -118,13 +118,16 @@ def _inference_server_loop(
                     first_req = request_queue.get(timeout=1.0)
                     requests.append(first_req)
 
+                    import time
+                    time.sleep(0.01) # Sleep 10ms to let queue fill up
+                    
                     # Opportunistic fetch for rest of batch
                     while len(requests) < batch_size:
                         try:
                             req = request_queue.get_nowait()
                             requests.append(req)
                         except Empty:
-                            break # No more immediate requests
+                            break # Queue empty, process what we have
 
                 except Empty:
                     continue # Loop back to check stop_event
@@ -287,15 +290,19 @@ def _game_worker_client(args):
 
             # Create Example
             player_sign = 1.0 if game.state.color == Color.WHITE.value else -1.0
+            # Compress state immediately to save 75% RAM and IPC bandwidth
+            compressed_state = (state_array * 255).clip(0, 255).astype(np.uint8)
+            
             ex = TrainingExample(
-                state_tensor=state_array.copy(),
-                from_target=from_target.copy(),
-                to_target=to_target.copy(),
+                state_tensor=compressed_state,
+                from_target=from_target.astype(np.float32),
+                to_target=to_target.astype(np.float32),
                 value_target=value_pred_scalar,
                 move_count=move_count,
                 player_sign=player_sign,
                 game_id=f"{game_id}_{move_count}"
             )
+            ex._is_validated = True  # Skip validation since we generated it
             examples.append(ex)
 
             # 3. SELECT MOVE
@@ -369,10 +376,17 @@ def _game_worker_client(args):
                 ex.value_target = -0.05 # Draw penalty for both
 
         return valid_examples
-
+        
     except Exception as e:
         worker_logger.error(f"Worker {worker_id} failed: {e}", exc_info=True)
         return []
+    finally:
+        # Break circular references to avoid RAM and Thread leaks
+        try:
+            if 'game' in locals() and hasattr(game, 'state') and hasattr(game.state, 'cache_manager') and game.state.cache_manager is not None:
+                game.state.cache_manager.cleanup()
+        except Exception as cleanup_err:
+            worker_logger.warning(f"Cleanup failed: {cleanup_err}")
 
 
 def _pool_worker_shim(packed_args):
@@ -444,6 +458,17 @@ class SelfPlayEngine:
         # 5. Server State
         self.server_process = None
         self.stop_event = self.ctx.Event()
+
+    def stop_server(self):
+        """Stop the inference server to free VRAM."""
+        if self.server_process and self.server_process.is_alive():
+            self.logger.info("Stopping inference server to free VRAM...")
+            self.stop_event.set()
+            self.server_process.join(timeout=5)
+            if self.server_process.is_alive():
+                self.server_process.terminate()
+            self._drain_queues()
+            self.server_process = None
 
     def update_model(self, model_checkpoint_path: str, model_size: str = "default"):
         """
@@ -583,8 +608,8 @@ def generate_training_data_parallel(
     Convenience wrapper for SelfPlayEngine to generate training data.
     Useful for one-off calls (e.g., from simple training loops).
     """
-    # Use fewer processes for simple wrapper calls to avoid system overload
-    num_workers = min(4, mp.cpu_count() - 1)
+    # Use reasonable number of processes to avoid system overload while utilizing many cores
+    num_workers = min(32, max(4, mp.cpu_count() - 2))
     
     engine = SelfPlayEngine(num_parallel=num_workers, device=device)
     try:

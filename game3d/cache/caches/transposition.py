@@ -164,3 +164,9 @@ class TranspositionTable:
             'hit_rate': self.hits / max(total, 1),
             'entries': int(np.count_nonzero(self.entries['hash_key']))
         }
+
+    def clear(self) -> None:
+        """Clear all entries to free memory."""
+        # Using fill is faster than allocating a new array, but reallocating immediately frees old memory
+        self.entries = np.zeros(self.size, dtype=TT_ENTRY_DTYPE)
+        self.hits = self.misses = self.collisions = self.age_counter = 0

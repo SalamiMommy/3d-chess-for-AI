@@ -525,3 +525,8 @@ class SymmetryManager:
             raise ValueError(f"Transform index must be 0-{self.n_symmetries-1}, got {transform_idx}")
 
         return int(self.inverse_transforms[transform_idx])
+
+    def clear(self) -> None:
+        """Clear internal caches to free memory."""
+        self._canonical_cache.clear()
+        self._hash_canonical_cache.clear()

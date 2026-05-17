@@ -1,8 +1,8 @@
 """Optimized training loop for 3D chess model with Graph Transformer."""
 import os
+import multiprocessing
 if __name__ == '__main__':
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-    import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)
 
 import torch
@@ -68,7 +68,7 @@ def get_optimal_batch_size(model_size: str = "default") -> int:
 
 # Set constant for backward compatibility
 BATCH_SIZE = get_optimal_batch_size(TrainingConfig.model_size)
-NUM_WORKERS = 8  # Parallel data loading - ROCm handles multiprocessing well
+NUM_WORKERS = 0  # CRITICAL FIX: Must be 0 to prevent OOM when self-play workers are also running
 PIN_MEMORY = True  # Faster CPU-GPU transfers on ROCm
 
 

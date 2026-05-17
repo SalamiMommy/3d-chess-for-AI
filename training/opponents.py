@@ -544,7 +544,8 @@ def _get_recent_history_coords(state: 'GameState', n_recent: int = 8) -> np.ndar
 
     start_index = hist_len - n_items
     # itertools.islice avoids copying the whole deque into a list
-    for i, move in enumerate(itertools.islice(state.history, start_index, hist_len)):
+    for i, move_record in enumerate(itertools.islice(state.history, start_index, hist_len)):
+        move = move_record[0] if isinstance(move_record, np.ndarray) and move_record.ndim > 0 else move_record
         from_coords[i, 0] = move['from_x']
         from_coords[i, 1] = move['from_y']
         from_coords[i, 2] = move['from_z']

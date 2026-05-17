@@ -189,3 +189,9 @@ class SymmetryAwareTranspositionTable(TranspositionTable):
             'hit_rate': self._stats[1] / max(total_probes, 1),
             'cache_size': len(self._sym_cache)
         }
+
+    def clear(self) -> None:
+        """Clear all entries in the transposition table and symmetry caches."""
+        super().clear()
+        if hasattr(self, '_sym_cache'):
+            self._sym_cache.clear()

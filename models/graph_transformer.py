@@ -287,7 +287,8 @@ class GraphTransformer3D(nn.Module):
 
 def create_optimized_model(
     model_size: str = "large",
-    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    compile_model: bool = False
 ) -> GraphTransformer3D:
     """Create optimized Graph Transformer model based on size specification."""
 
@@ -359,8 +360,8 @@ def create_optimized_model(
         # Set model to use less memory
         model = model.to(device)
         
-        # Apply torch.compile for ROCm optimization (PyTorch 2.0+)
-        if hasattr(torch, 'compile') and torch.__version__ >= '2.0':
+        # Apply torch.compile for ROCm optimization (PyTorch 2.0+) if requested
+        if compile_model and hasattr(torch, 'compile') and torch.__version__ >= '2.0':
             try:
                 # Use default mode for better stability on ROCm
                 model = torch.compile(

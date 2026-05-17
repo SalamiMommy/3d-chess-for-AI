@@ -1,4 +1,4 @@
-torch
+# ROCM or CUDA torch
 numpy
 sageattention
 tensorboard

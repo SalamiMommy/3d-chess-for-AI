@@ -7,6 +7,8 @@ os.environ['NUMBA_WARNINGS'] = '0'
 os.environ['NUMBA_DISABLE_PERFORMANCE_WARNINGS'] = '1'
 os.environ['NUMBA_DEBUG'] = '0'
 os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'
+os.environ['NUMBA_NUM_THREADS'] = '1'  # Crucial: 1 thread per worker in multiprocessing
+os.environ['OMP_NUM_THREADS'] = '1'    # Prevent PyTorch/NumPy thread thrashing
 # =====================================================
 
 # ============ CRITICAL: LOGGING SETUP MUST BE FIRST ============
@@ -103,7 +105,7 @@ if __name__ == "__main__":
     # CLI configuration
     parser = argparse.ArgumentParser()
     parser.add_argument("--games-per-iter", type=int, default=120)  # Increased from 24 for more data
-    parser.add_argument("--num-parallel", type=int, default=12)  # Optimized for 6-core CPU
+    parser.add_argument("--num-parallel", type=int, default=max(4, mp.cpu_count() - 4))  # Optimized for high-core CPUs (e.g. 9950X3D)
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--replay-file", type=str, default="replay_buffer.pkl")
     parser.add_argument("--max-replay", type=int, default=500000)  # Increased to utilize 64GB RAM
@@ -360,14 +362,26 @@ if __name__ == "__main__":
                     # Buffer auto-manages size via overwrite
                     pbar.write(f"  -> replay buffer at capacity, will overwrite oldest")
 
+                # Free python objects from memory (frees ~4GB+ RAM)
+                del fresh
+                gc.collect()
+
+                # Stop the inference server to free up 10GB+ of VRAM for training
+                engine.stop_server()
+
                 # Train model
                 pbar.write("Training...")
 
-                # Get examples from buffer
-                # training_examples = replay.get_all_examples()  <-- REMOVED
-
                 results = trainer.train(replay)  # Pass dataset directly
                 pbar.write(f"  -> best val-loss: {results['best_val_loss']:.4f}")
+                
+                # Clear replay buffer after training round as requested by the user
+                replay.clear()
+                pbar.write(f"  -> replay buffer cleared")
+                
+                # IMPORTANT: Clear PyTorch VRAM cache before restarting server
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # Save replay buffer metadata (not full data)
                 replay_meta_path = run_dir / "replay_metadata.pkl"
@@ -379,7 +393,7 @@ if __name__ == "__main__":
                 pbar.write(f"  -> replay metadata saved")
 
                 # Save model checkpoint
-                if iteration > start_iteration and iteration % args.save_interval == 0:
+                if iteration >= start_iteration and iteration % args.save_interval == 0:
                     checkpoint = {
                         "iteration": iteration,
                         "model_state_dict": trainer.model.state_dict(),
